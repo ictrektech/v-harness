@@ -78,7 +78,9 @@ export function verifySession(value, secret, now = Date.now()) {
   const [version, body, encoded] = parts;
   if (version !== `v${COOKIE_VERSION}` || !body || !encoded) return undefined;
 
-  const expected = signature(secret, body);
+  // `signature` returns base64url text for the cookie; compare raw bytes, not
+  // the string against a Buffer (that comparison is always false).
+  const expected = Buffer.from(signature(secret, body), 'base64url');
   const actual = Buffer.from(encoded, 'base64url');
   if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected)) {
     return undefined;

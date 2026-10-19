@@ -5,9 +5,10 @@ set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/data}"
 
-mkdir -p "${DATA_ROOT}"
-# The data root holds every tenant's home; only root may traverse it.
-chmod 0700 "${DATA_ROOT}"
+mkdir -p "${DATA_ROOT}" "${DATA_ROOT}/users"
+# 0711: a tenant must traverse /data to reach its own home, but cannot list it.
+# `users.json` and the session secret stay 0600, so traversal grants nothing.
+chmod 0711 "${DATA_ROOT}" "${DATA_ROOT}/users"
 
 # dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
 # usable the bash tool refuses to run. Record the verdict at startup so a broken

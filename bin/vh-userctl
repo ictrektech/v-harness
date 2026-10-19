@@ -42,10 +42,14 @@ ensure() {
   # The default landing directory for chats without a project.
   mkdir -p "$home/workspace/日常"
 
+  # Traversable but not listable: the account must reach its own home through
+  # both parents, while neither parent reveals the other tenants.
+  chmod 0711 "$(dirname "$home")"
   chown "$name:$name" "$home"
   # Tighten only: never widen an existing mode.
   chmod 0700 "$home"
   chown -R "$name:$name" "$home/.dsh" "$home/.agents" "$home/workspace"
+  chmod 0700 "$home/.dsh" "$home/.agents"
 }
 
 main() {

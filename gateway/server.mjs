@@ -234,7 +234,7 @@ try{
     if(!tokens.access_token)throw new Error('VOS OIDC 未返回 access token');
     const res=await fetch('/__vh/auth',{
       method:'POST',credentials:'same-origin',
-      headers:{'content-type':'application/json'},
+      headers:{'content-type':'application/json','x-vh-csrf':cfg.csrf||''},
       body:JSON.stringify({access_token:tokens.access_token})});
     const body=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(body.error||'VOS 登录失败');
@@ -434,7 +434,9 @@ async function handleControl(req, res, url) {
       return;
     }
     const csrf = newCsrfToken();
-    json(res, 200, { authenticated: false, clientId: CLIENT_ID, scope: SCOPE }, {
+    // The double-submit token must also reach the page: the cookie is
+    // HttpOnly, so the client cannot read it back to set the header.
+    json(res, 200, { authenticated: false, clientId: CLIENT_ID, scope: SCOPE, csrf }, {
       'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
     });
     return;
