@@ -311,6 +311,13 @@
     - id: skill-filesystem
       name: '@deepseek-ai/dsh-skill-filesystem'
 
+    # Optional local generation service. Off until a deployment names an
+    # endpoint or auth file; profiles may also enable it with `disabled: false`
+    # and an explicit `baseUrl`.
+    - id: skill-image-studio
+      name: '@deepseek-ai/dsh-skill-image-studio'
+      disabled: !!js "!process.env.IMAGE_STUDIO_BASE_URL && !process.env.IMAGE_STUDIO_AUTH_FILE"
+
     - id: tool-skill
       name: '@deepseek-ai/dsh-tool-skill'
 

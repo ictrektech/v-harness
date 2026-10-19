@@ -3115,6 +3115,33 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-skill-filesystem -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-skill-image-studio -->
+<a id="deepseek-aidsh-skill-image-studio"></a>
+
+## `@deepseek-ai/dsh-skill-image-studio`
+
+- `inject`: `skills`
+- `source`: [`packages/skill/skill-image-studio/src/index.ts:20`](../packages/skill/skill-image-studio/src/index.ts)
+
+```ts config-catalog
+/** Image Studio skill resource location and service endpoint. */
+export interface Config {
+  /** Absolute assets directory containing skill folders and the CLI; defaults to packaged assets. */
+  assetRoot?: string
+  /** Standalone Node executable; defaults to the current executable outside Electron and SEA. */
+  node?: string
+  /** Absolute Image Studio CLI entry; defaults to the script shipped in the assets directory. */
+  cli?: string
+  /** Image Studio backend or VOS gateway prefix; defaults to the in-network backend service. */
+  baseUrl?: string
+  /** Absolute JSON file holding `{ "baseUrl"?: string, "token"?: string }`; defaults to the user config directory. */
+  authFile?: string
+  /** Per-request HTTP timeout for CLI calls. */
+  requestTimeoutMs?: number
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-skill-image-studio -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-skill-office -->
 <a id="deepseek-aidsh-skill-office"></a>
 

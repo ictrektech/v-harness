@@ -1,0 +1,37 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/skill/skill-image-studio/README.md
+/:
+  en: cfd79dd101e99281
+  zh: cb9fac53c6a58bc2
+/deepseek-ai-dsh-skill-image-studio:
+  en: 0951188ffff91a9f
+  zh: 423f38946b4bdd39
+/deepseek-ai-dsh-skill-image-studio/summary:
+  en: 63ea8092e699e588
+  zh: 1314a1e82646ef13
+/deepseek-ai-dsh-skill-image-studio/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: 1db86285abf6c499
+/deepseek-ai-dsh-skill-image-studio/use-this-package:
+  en: 1b8ecfa5f0514f10
+  zh: 1669624cdd77d2b8
+/deepseek-ai-dsh-skill-image-studio/understand-the-implementation:
+  en: 621370c1f52838fa
+  zh: d9af5cbdce731963
+/deepseek-ai-dsh-skill-image-studio/further-exploration:
+  en: 962b12abdb79418d
+  zh: 6c41a591a0b6f69a
+/deepseek-ai-dsh-skill-image-studio/model-experience:
+  en: 53d835f8625736a1
+  zh: 04aa20dbbec5613e
+/deepseek-ai-dsh-skill-image-studio/model-experience/kv-cache-effect:
+  en: a24c76120313316d
+  zh: 7811500a795b785e
+/deepseek-ai-dsh-skill-image-studio/known-limitations-and-deferred-work:
+  en: 973b71318118ca98
+  zh: 8cdd6e4506be0061
+/deepseek-ai-dsh-skill-image-studio/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: b2ee0fbaa165910d
