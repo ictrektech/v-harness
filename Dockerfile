@@ -8,7 +8,10 @@
 # `runuser`. That is the container's only privileged action: every filesystem
 # mutation goes through bin/vh-userctl, and the only bytes the gateway reads
 # from a user home are the dsh launch URL on that process's stdout.
-FROM node:22-bookworm-slim
+# Base image is overridable so the build host can pull it from SWR instead of
+# Docker Hub; build_image.sh mirrors it once and reuses it afterwards.
+ARG BASE_IMAGE=node:22-bookworm-slim
+FROM ${BASE_IMAGE}
 
 ARG DSH_VERSION=0.2.1-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com

@@ -14,11 +14,18 @@ set -euo pipefail
 APP_REGISTRY_PREFIX="swr.cn-southwest-2.myhuaweicloud.com/ictrek"
 IMAGE="${APP_REGISTRY_PREFIX}/v-harness"
 SERVICE_NAME="v-harness"
+# Mirrored into SWR once so repeat builds, and the other architecture's host,
+# never depend on Docker Hub being reachable.
+BASE_IMAGE="node:22-bookworm-slim"
+SWR_BASE_IMAGE="${APP_REGISTRY_PREFIX}/node:22-bookworm-slim"
 
 FEISHU_CONFIG_FILE="${FEISHU_CONFIG_FILE:-${HOME}/.feishu.json}"
-# Never hardcoded: a spreadsheet token in git history is permanent. Supplied by
-# the environment or by `feishu_spreadsheet_token` in the untracked config file.
-FEISHU_SPREADSHEET_TOKEN="${FEISHU_SPREADSHEET_TOKEN:-}"
+# A spreadsheet token identifies a document; reading it still requires a
+# tenant token minted from feishu_app_secret. Committing the id therefore does
+# not expose data, and a fresh clone can build without extra setup — the same
+# arrangement v-office uses. Override with the environment or with
+# `feishu_spreadsheet_token` in the config file when pointing at another table.
+FEISHU_SPREADSHEET_TOKEN="${FEISHU_SPREADSHEET_TOKEN:-Htotsn3oahO1zxt73YMcaB1zn8e}"
 TARGET="${V_HARNESS_BUILD_TARGET:-}"
 TARGET_SHEET_SPEC="${FEISHU_SHEET_TITLE:-}"
 PROFILE_TAG=""
@@ -69,6 +76,51 @@ require_cmd() {
 
 configure_build_engine() {
   if docker buildx version >/dev/null 2>&1; then BUILD_ENGINE="buildx"; else BUILD_ENGINE="docker"; fi
+}
+
+normalize_official_image_path() {
+  local image="$1"
+  local without_tag="${image%%:*}"
+  if [[ "$without_tag" != */* ]]; then printf 'library/%s\n' "$image"; else printf '%s\n' "$image"; fi
+}
+
+# Docker Hub is often unreachable from build hosts. Try the upstream registry,
+# then the same mirrors v-office uses, and re-tag whatever succeeds.
+pull_base_image() {
+  local image="$1" normalized mirrored
+  if docker pull "$image"; then return 0; fi
+  normalized="$(normalize_official_image_path "$image")"
+  for mirror in docker.m.daocloud.io docker.1ms.run dockerproxy.com; do
+    mirrored="${mirror}/${normalized}"
+    log "Direct pull failed for ${image}; trying ${mirrored}"
+    if docker pull "$mirrored"; then
+      docker tag "$mirrored" "$image"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Reuse the SWR copy when another host (or a previous build) already mirrored it.
+ensure_base_image() {
+  if docker image inspect "$SWR_BASE_IMAGE" >/dev/null 2>&1; then
+    log "Base image cached locally: ${SWR_BASE_IMAGE}"
+    return 0
+  fi
+  if docker pull "$SWR_BASE_IMAGE" >/dev/null 2>&1; then
+    log "Base image pulled from SWR: ${SWR_BASE_IMAGE}"
+    return 0
+  fi
+  if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+    log "Pulling base image from upstream: ${BASE_IMAGE}"
+    pull_base_image "$BASE_IMAGE" || { err "cannot pull ${BASE_IMAGE} from any registry"; exit 1; }
+  fi
+  docker tag "$BASE_IMAGE" "$SWR_BASE_IMAGE"
+  if docker push "$SWR_BASE_IMAGE"; then
+    log "Base image mirrored to SWR: ${SWR_BASE_IMAGE}"
+  else
+    err "warning: could not push ${SWR_BASE_IMAGE}; continuing with the local copy"
+  fi
 }
 
 docker_build_image() {
@@ -405,7 +457,9 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
   require_cmd docker
   configure_build_engine
   log "BUILD_ENGINE=${BUILD_ENGINE}"
+  ensure_base_image
   docker_build_image \
+    --build-arg "BASE_IMAGE=${SWR_BASE_IMAGE}" \
     --build-arg "DSH_VERSION=${DSH_VERSION}" \
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" \
     -f Dockerfile \

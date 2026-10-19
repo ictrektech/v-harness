@@ -13,8 +13,10 @@ APP_ID="com.ictrek.v-harness"
 ROUTER_PAGE_ID="v-harness"
 ROUTER_IFRAME_SRC="/app/com.ictrek.v-harness/?v=__APP_VERSION__"
 FRONTEND_BASE_PATH="/app/com.ictrek.v-harness"
-# Never hardcoded: supplied by CI, or read from the untracked config file.
-SPREADSHEET_TOKEN="${FEISHU_SPREADSHEET_TOKEN:-}"
+# A spreadsheet token only identifies the release table; reading it still needs
+# a tenant token derived from feishu_app_secret. Keeping the default lets a
+# fresh clone package without extra setup, matching v-office.
+SPREADSHEET_TOKEN="${FEISHU_SPREADSHEET_TOKEN:-Htotsn3oahO1zxt73YMcaB1zn8e}"
 FEISHU_CONFIG_FILE="${FEISHU_CONFIG_FILE:-${HOME}/.feishu.components.json}"
 FEISHU_FALLBACK_CONFIG_FILE="${FEISHU_FALLBACK_CONFIG_FILE:-${HOME}/.feishu.json}"
 

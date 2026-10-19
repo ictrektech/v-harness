@@ -38,6 +38,41 @@ v-harness 有两条**独立**的流水线，顺序不能颠倒：
 两个脚本的解析顺序一致：环境变量 `FEISHU_SPREADSHEET_TOKEN` → 配置文件里的
 `feishu_spreadsheet_token` → 报错退出。缺失时**不会静默使用内置默认值**。
 
+## 0.1 新机器准备
+
+换一台构建机只需要三件事，仓库里没有对本机路径的任何依赖：
+
+**① 装工具**
+
+```bash
+# 必需
+docker            # 24+，建议装 buildx
+python3           # 脚本用它读写飞书 JSON
+python3 -c 'import yaml'   # 缺失时：pip install pyyaml
+git curl tar
+```
+
+**② 登录 SWR**
+
+```bash
+docker login swr.cn-southwest-2.myhuaweicloud.com
+```
+
+**③ 写飞书凭据**
+
+```json
+// ~/.feishu.json   （0600，不在仓库里）
+{
+  "feishu_app_id": "...",
+  "feishu_app_secret": "...",
+  "feishu_spreadsheet_token": "..."
+}
+```
+
+三个值向平台管理员索取。**不要从别的机器复制整个 home 目录**，也不要把它们写进仓库。
+
+基础镜像会被镜像到 `swr.../ictrek/node:22-bookworm-slim`，第二台机器构建时直接拉 SWR，不再依赖 Docker Hub。首次拉不到时会自动尝试 `docker.m.daocloud.io` 等镜像源。
+
 ## 1. 发布镜像
 
 在对应架构的构建机上执行（amd 用 x86_64，arm 用 aarch64）：
