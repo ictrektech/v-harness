@@ -17,6 +17,13 @@ import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 
+import {
+  WorkspaceError,
+  listWorkspace,
+  openWorkspaceFile,
+  statWorkspace,
+  uploadWorkspaceFile,
+} from './files.mjs';
 import { ensureInstance, liveInstance, stopAll } from './instances.mjs';
 import {
   CSRF_COOKIE,
@@ -208,6 +215,116 @@ function isDocumentRequest(req) {
 }
 
 /**
+ * Resolve the caller's user record, or reply and return undefined.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<import('./users.mjs').UserRecord | undefined>}
+ */
+async function requireUser(req, res) {
+  const session = authenticate(req);
+  if (!session) {
+    json(res, 401, { error: 'unauthenticated' });
+    return undefined;
+  }
+  const record = await findUser(USERS_FILE, session.subject);
+  if (!record) {
+    json(res, 401, { error: 'unknown user' });
+    return undefined;
+  }
+  return record;
+}
+
+/**
+ * Drawer endpoints: list, download, upload. All confined to `workspace/`.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @param {URL} url
+ * @returns {Promise<void>}
+ */
+async function handleFiles(req, res, url) {
+  const record = await requireUser(req, res);
+  if (!record) return;
+
+  if (url.pathname === '/__vh/files' && req.method === 'GET') {
+    try {
+      const listing = await listWorkspace(record, url.searchParams.get('dir') ?? '');
+      json(res, 200, listing);
+    } catch (error) {
+      json(res, 404, { error: error instanceof WorkspaceError ? error.message : 'cannot list directory' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/__vh/files/raw' && req.method === 'GET') {
+    const path = url.searchParams.get('path') ?? '';
+    if (!path) {
+      json(res, 400, { error: 'path is required' });
+      return;
+    }
+    try {
+      // Stat first: a missing file must answer 404 before any body byte is sent.
+      const info = await statWorkspace(record, path);
+      if (info.type !== 'file') {
+        json(res, 400, { error: 'not a file' });
+        return;
+      }
+      const name = path.split('/').pop() ?? 'download';
+      const child = openWorkspaceFile(record, path);
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-length': String(info.size),
+        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+        'cache-control': 'no-store',
+      });
+      child.stdout.pipe(res);
+      child.stdout.on('error', () => res.destroy());
+      child.on('close', (code) => { if (code !== 0) res.destroy(); });
+    } catch (error) {
+      json(res, 404, { error: error instanceof WorkspaceError ? error.message : 'not found' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/__vh/files/upload' && req.method === 'POST') {
+    const site = req.headers['sec-fetch-site'];
+    if (site === 'cross-site') {
+      json(res, 403, { error: 'cross-site upload rejected' });
+      return;
+    }
+    const dir = url.searchParams.get('dir') ?? '';
+    const name = url.searchParams.get('name') ?? '';
+    if (!name) {
+      json(res, 400, { error: 'name is required' });
+      return;
+    }
+    const child = uploadWorkspaceFile(record, dir, name);
+    let output = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { output += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.on('error', (error) => {
+      json(res, 500, { error: error.message });
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        json(res, 400, { error: stderr.trim() || 'upload rejected' });
+        return;
+      }
+      try {
+        json(res, 200, JSON.parse(output.trim()));
+      } catch {
+        json(res, 200, { ok: true });
+      }
+    });
+    req.pipe(child.stdin);
+    req.on('aborted', () => child.kill('SIGTERM'));
+    return;
+  }
+
+  json(res, 404, { error: 'not found' });
+}
+
+/**
  * Control endpoints owned by the gateway itself.
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
@@ -215,6 +332,11 @@ function isDocumentRequest(req) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
+  if (url.pathname.startsWith('/__vh/files')) {
+    await handleFiles(req, res, url);
+    return;
+  }
+
   if (url.pathname === '/__vh/health') {
     json(res, 200, { ok: true });
     return;

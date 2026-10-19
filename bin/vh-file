@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Root-side file assistant for the v-harness drawer.
+#
+# The gateway holds zero permission on user data: this helper is the only path
+# into a workspace. Root validates the account name and the directory shape,
+# then drops to the user with `runuser` so the actual read or write happens with
+# that user's own permissions. There is no TOCTOU window: root never opens a
+# file itself.
+#
+# Usage:
+#   vh-file list <account> <home> <dir>
+#   vh-file stat <account> <home> <path>
+#   vh-file read <account> <home> <path>
+#   vh-file put  <account> <home> <dir> <name>
+set -euo pipefail
+
+DATA_ROOT="${DATA_ROOT:-/data}"
+NAME_RE='^vh-[0-9a-f]{8}$'
+IMPL="/opt/v-harness/bin/vh-file-impl.mjs"
+
+die() { printf 'vh-file: %s\n' "$*" >&2; exit 1; }
+
+[[ "${EUID}" -eq 0 ]] || die 'must run as root'
+
+op="${1:-}"
+[[ -n "$op" ]] || die 'usage: vh-file <list|stat|read|put> <account> <home> ...'
+shift
+
+account="${1:-}"
+home="${2:-}"
+shift 2 || die 'missing account or home'
+
+[[ "$account" =~ $NAME_RE ]] || die "invalid account: ${account}"
+[[ "$home" == /* ]] || die "home must be absolute: ${home}"
+case "$home" in
+  "${DATA_ROOT}"/users/*) ;;
+  *) die "home outside data root: ${home}" ;;
+esac
+[[ "$(basename "$home")" =~ ^[0-9a-f]{40}$ ]] || die "home is not a namespace directory: ${home}"
+
+# The drawer only ever sees the workspace. `.dsh`, `.agents` and the user table
+# stay out of reach even though the account owns them.
+workspace="${home}/workspace"
+[[ -d "$workspace" ]] || die "workspace missing: ${workspace}"
+
+case "$op" in
+  list)
+    exec runuser -u "$account" -- node "$IMPL" list "$workspace" "${1:-}"
+    ;;
+  stat)
+    exec runuser -u "$account" -- node "$IMPL" stat "$workspace" "${1:-}"
+    ;;
+  read)
+    exec runuser -u "$account" -- node "$IMPL" read "$workspace" "${1:-}"
+    ;;
+  put)
+    exec runuser -u "$account" -- node "$IMPL" put "$workspace" "${1:-}" "${2:-}"
+    ;;
+  *)
+    die "unknown operation: ${op}"
+    ;;
+esac
