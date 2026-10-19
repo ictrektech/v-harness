@@ -381,7 +381,27 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# Fail before the build, not after it. A missing token used to surface only
+# once the image was built and pushed, which wastes the whole run.
+preflight_feishu() {
+  [[ "$UPDATE_FEISHU" == "1" ]] || return 0
+  [[ -f "$FEISHU_CONFIG_FILE" ]] || {
+    err "Feishu config not found: $FEISHU_CONFIG_FILE"
+    err "Create it with feishu_app_id, feishu_app_secret and feishu_spreadsheet_token."
+    exit 1
+  }
+  resolve_spreadsheet_token
+  local app_id app_secret
+  app_id="$(read_feishu_field "feishu_app_id" 2>/dev/null || true)"
+  app_secret="$(read_feishu_field "feishu_app_secret" 2>/dev/null || true)"
+  [[ -n "$app_id" && -n "$app_secret" ]] || {
+    err "feishu_app_id / feishu_app_secret missing in $FEISHU_CONFIG_FILE"
+    exit 1
+  }
+}
+
 if [[ "$SKIP_BUILD" != "1" ]]; then
+  preflight_feishu
   require_cmd docker
   configure_build_engine
   log "BUILD_ENGINE=${BUILD_ENGINE}"
