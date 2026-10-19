@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Run one user's dsh inside a mount + pid namespace.
+#
+# Without this, a tenant can still see that other tenants exist: /data/users is
+# traversable (0711) so `cd /data/users` and `ps` both reveal neighbours. Inside
+# the namespace every home is shadowed by a tmpfs and only the caller's own home
+# is bound back, so the path `/data/users/<someone-else>` simply does not exist.
+#
+# Requires CAP_SYS_ADMIN plus unconfined seccomp, declared in the app manifest.
+#
+# Usage: vh-jail <account> <uid> <home> <command...>
+set -euo pipefail
+
+DATA_ROOT="${DATA_ROOT:-/data}"
+USERS_ROOT="${DATA_ROOT}/users"
+
+die() { printf 'vh-jail: %s\n' "$*" >&2; exit 1; }
+
+[[ "${EUID}" -eq 0 ]] || die 'must run as root'
+
+account="${1:-}"
+uid="${2:-}"
+home="${3:-}"
+shift 3 || die 'usage: vh-jail <account> <uid> <home> <command...>'
+
+[[ "$account" =~ ^vh-[0-9a-f]{8}$ ]] || die "invalid account: ${account}"
+[[ "$uid" =~ ^[0-9]+$ ]] || die "invalid uid: ${uid}"
+[[ "$home" == "${USERS_ROOT}"/* ]] || die "home outside ${USERS_ROOT}: ${home}"
+namespace="$(basename "$home")"
+[[ "$namespace" =~ ^[0-9a-f]{40}$ ]] || die "invalid namespace: ${namespace}"
+
+export VH_JAIL_UID="$uid"
+export VH_JAIL_HOME="$home"
+export VH_JAIL_USERS="$USERS_ROOT"
+export VH_JAIL_NAMESPACE="$namespace"
+
+# --mount-proc gives the pid namespace its own /proc, so `ps` only lists this
+# user's processes. --fork is required for --pid to take effect.
+exec unshare --mount --pid --fork --mount-proc bash -c '
+  set -euo pipefail
+  # Keep these mounts inside this namespace; propagating them would corrupt the
+  # container for every other user.
+  mount --make-rprivate /
+
+  # Park the real home on a root-only path FIRST. Binding it after the tmpfs
+  # would bind the empty tmpfs directory instead, and the tenant would see a
+  # home that does not exist.
+  stash="/data/.jail/$VH_JAIL_NAMESPACE"
+  mkdir -p "$stash"
+  mount --bind "$VH_JAIL_HOME" "$stash"
+
+  # Now hide every tenant, then put this tenant back where it belongs.
+  mount -t tmpfs -o mode=0711 tmpfs "$VH_JAIL_USERS"
+  mkdir -p "$VH_JAIL_USERS/$VH_JAIL_NAMESPACE"
+  mount --bind "$stash" "$VH_JAIL_USERS/$VH_JAIL_NAMESPACE"
+  chmod 0700 /data/.jail
+  exec setpriv --reuid="$VH_JAIL_UID" --regid="$VH_JAIL_UID" --init-groups "$@"
+' -- "$@"

@@ -21,6 +21,7 @@ import { join } from 'node:path';
 const LAUNCH_TIMEOUT_MS = 45_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const LOG_DIR_NAME = 'logs';
+const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
 
 /**
  * @typedef {object} Instance
@@ -183,8 +184,10 @@ async function launch(options) {
 
   const state = await readState(statePath);
 
-  const child = spawn('runuser', [
-    '-u', record.linuxName, '--',
+  // vh-jail drops to the user *after* entering a mount+pid namespace, so the
+  // instance cannot see other tenants' homes or processes.
+  const child = spawn(JAIL_BIN, [
+    record.linuxName, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
     '--host', '127.0.0.1',
     '--port', String(record.port),
@@ -198,6 +201,11 @@ async function launch(options) {
       DSH_PERMISSION_MODE: 'workspace-write',
       PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       NODE_ENV: 'production',
+      // Without a UTF-8 locale bash escapes non-ASCII names: the default
+      // workspace `日常` shows up as $'\346\227\245\345\270\270' in terminals
+      // and in tool output.
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

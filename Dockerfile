@@ -19,10 +19,20 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 ENV NODE_ENV=production \
     DATA_ROOT=/data \
     PORT=8080 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     DSH_BIN=/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
 
+# Build toolchain is a product requirement, not a convenience: plugins that ship
+# native modules (node-pty, ssh2, better-sqlite3) run `node-gyp` at install time
+# inside the user's own profile. Without gcc/make/python3 every such plugin
+# fails, which removes a large part of why dsh is extensible at all.
+# Costs roughly 300 MB in the image; it does not slow down users who install
+# pure-JS plugins, because nothing is compiled for them.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends sudo util-linux ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      sudo util-linux ca-certificates \
+      build-essential python3 \
  && rm -rf /var/lib/apt/lists/*
 
 # pnpm is needed the first time a user's profile installs its bundles.
@@ -34,7 +44,7 @@ RUN corepack enable \
 COPY gateway/ /opt/v-harness/gateway/
 COPY bin/ /opt/v-harness/bin/
 
-RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file \
+RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
  && chown -R root:root /opt/v-harness/bin \
  && printf 'root ALL=(root) NOPASSWD: /opt/v-harness/bin/vh-userctl, /opt/v-harness/bin/vh-file\n' > /etc/sudoers.d/vh \
