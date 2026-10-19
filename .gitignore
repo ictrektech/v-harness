@@ -47,3 +47,7 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+
+# Local credentials and packaging output (never commit these)
+.feishu*.json
+ictrek.app/dist/

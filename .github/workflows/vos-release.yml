@@ -1,0 +1,145 @@
+name: VOS Pull Package Release
+
+on:
+  push:
+    tags: ["vos-v-harness-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all release tags
+        run: git fetch --force --tags origin
+
+      - name: Write Feishu component credentials
+        run: |
+          cat > "$HOME/.feishu.components.json" <<EOF
+          {
+            "feishu_app_id": "${{ secrets.FEISHU_APP_ID }}",
+            "feishu_app_secret": "${{ secrets.FEISHU_APP_SECRET }}"
+          }
+          EOF
+
+      - name: Build pull-mode package
+        env:
+          FEISHU_SPREADSHEET_TOKEN: ${{ secrets.FEISHU_SPREADSHEET_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
+          PACKAGE_VERSION="$VERSION" ./ictrek.app/scripts/package.sh
+          test -f "ictrek.app/dist/v-harness_${VERSION}_pull.tar"
+
+      - name: Create release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_PREFIX: vos-v-harness-v
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
+          CURRENT="${GITHUB_REF_NAME}"
+          PUBLIC_TAG="v${VERSION}"
+          export PUBLIC_TAG
+          PREVIOUS="$(gh release list --limit 100 --json tagName,publishedAt --jq '[.[] | select(.tagName != env.PUBLIC_TAG) | select((.tagName | startswith("v")) or (.tagName | startswith(env.TAG_PREFIX)))] | sort_by(.publishedAt) | reverse | .[0].tagName // ""')"
+          {
+            echo "Pull-mode VOS app package for com.ictrek.v-harness."
+            echo
+            if [[ -n "$PREVIOUS" ]]; then
+              echo "Changes since ${PREVIOUS}:"
+              git log --no-merges --pretty='- %s (%h)' "${PREVIOUS}..${CURRENT}"
+            else
+              echo "Initial VOS package release."
+              git log --no-merges --pretty='- %s (%h)' -20 "${CURRENT}"
+            fi
+          } > release-notes.md
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
+          PUBLIC_TAG="v${VERSION}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${PUBLIC_TAG}" >/dev/null 2>&1; then
+            git tag "$PUBLIC_TAG" "$GITHUB_SHA"
+            git push origin "$PUBLIC_TAG"
+          fi
+          gh release create "$PUBLIC_TAG" "ictrek.app/dist/v-harness_${VERSION}_pull.tar" \
+            --verify-tag --latest --title "v${VERSION}" --notes-file release-notes.md
+
+      - name: Publish package to VOS App Store
+        env:
+          APPSTORE_IP: ${{ secrets.APPSTORE_IP }}
+          APPSTORE_TOKEN: ${{ secrets.APPSTORE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${APPSTORE_IP:-}" || { echo "APPSTORE_IP is not configured." >&2; exit 1; }
+          test -n "${APPSTORE_TOKEN:-}" || { echo "APPSTORE_TOKEN is not configured." >&2; exit 1; }
+
+          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
+          PACKAGE="ictrek.app/dist/v-harness_${VERSION}_pull.tar"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          ssh-keyscan -H -p 32222 "$APPSTORE_IP" >> "$HOME/.ssh/known_hosts"
+
+          askpass="$RUNNER_TEMP/vos-appstore-askpass.sh"
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' "$APPSTORE_TOKEN"
+          EOF
+          chmod 700 "$askpass"
+          export SSH_ASKPASS="$askpass"
+          export SSH_ASKPASS_REQUIRE=force
+          export DISPLAY=:0
+
+          control_socket="$RUNNER_TEMP/vos-appstore-ssh.sock"
+          trap 'ssh -S "$control_socket" -O exit -p 32222 tunneluser@"$APPSTORE_IP" >/dev/null 2>&1 || true' EXIT
+
+          ssh \
+            -M \
+            -S "$control_socket" \
+            -f \
+            -N \
+            -L 18899:127.0.0.1:18090 \
+            -p 32222 \
+            -o BatchMode=no \
+            -o ExitOnForwardFailure=yes \
+            -o PreferredAuthentications=password \
+            -o PubkeyAuthentication=no \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            tunneluser@"$APPSTORE_IP" </dev/null
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:18899/api/health" >/dev/null; then
+              ready=true
+              break
+            fi
+            if ! ssh -S "$control_socket" -O check -p 32222 tunneluser@"$APPSTORE_IP" >/dev/null 2>&1; then
+              echo "VOS App Store SSH tunnel exited before becoming ready." >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          [[ "$ready" == true ]] || { echo "VOS App Store SSH tunnel did not become ready." >&2; exit 1; }
+
+          publish_response="$(curl -kfsS -F "package=@${PACKAGE}" -F "force=true" -F "channel=stable" "http://127.0.0.1:18899/api/appstore/apps")" \
+            || publish_response="$(curl -kfsS -F "package=@${PACKAGE}" -F "force=true" "http://127.0.0.1:18899/api/appstore/apps")"
+          RESPONSE="$publish_response" python3 - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(os.environ["RESPONSE"])
+          if payload.get("code") != 0:
+              print(payload, file=sys.stderr)
+              raise SystemExit("App Store publish failed")
+          data = payload.get("data") or {}
+          print(f"Published {data.get('app_id')}@{data.get('version')} to VOS App Store")
+          PY

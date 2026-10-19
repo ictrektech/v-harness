@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Root-side helper for v-harness. The gateway runs it through a fixed-path
+# sudoers entry and never touches user directories itself.
+#
+# Every command is idempotent: re-running `ensure` after a container rebuild
+# re-adopts the existing volume instead of replacing it.
+set -euo pipefail
+
+DATA_ROOT="${DATA_ROOT:-/data}"
+NAME_RE='^vh-[0-9a-f]{8}$'
+
+die() { printf 'vh-userctl: %s\n' "$*" >&2; exit 1; }
+
+require_root() {
+  [[ "${EUID}" -eq 0 ]] || die 'must run as root'
+}
+
+# ensure <linuxName> <uid> <home>
+ensure() {
+  local name="${1:-}" uid="${2:-}" home="${3:-}"
+
+  [[ "$name" =~ $NAME_RE ]] || die "invalid account name: ${name}"
+  [[ "$uid" =~ ^[0-9]+$ ]] || die "invalid uid: ${uid}"
+  (( uid >= 20000 && uid <= 59999 )) || die "uid out of range: ${uid}"
+  [[ "$home" == /* ]] || die "home must be absolute: ${home}"
+  case "$home" in
+    "${DATA_ROOT}"/*) ;;
+    *) die "home outside data root: ${home}" ;;
+  esac
+
+  if ! getent group "$uid" >/dev/null 2>&1; then
+    groupadd -g "$uid" --system "$name"
+  fi
+  if ! getent passwd "$name" >/dev/null 2>&1; then
+    useradd -u "$uid" -g "$uid" --no-create-home --home "$home" \
+      --shell /usr/sbin/nologin "$name"
+  fi
+
+  # Rebuild the layout without deleting anything: the volume may already hold
+  # sessions, plugins and workspace files from a previous container.
+  mkdir -p "$home" "$home/.dsh" "$home/.agents" "$home/workspace"
+  # The default landing directory for chats without a project.
+  mkdir -p "$home/workspace/日常"
+
+  chown "$name:$name" "$home"
+  # Tighten only: never widen an existing mode.
+  chmod 0700 "$home"
+  chown -R "$name:$name" "$home/.dsh" "$home/.agents" "$home/workspace"
+}
+
+main() {
+  local command="${1:-}"
+  [[ -n "$command" ]] || die 'usage: vh-userctl ensure <name> <uid> <home>'
+  require_root
+  case "$command" in
+    ensure)
+      shift
+      ensure "$@"
+      ;;
+    *)
+      die "unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"

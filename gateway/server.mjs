@@ -1,0 +1,494 @@
+/**
+ * v-harness gateway: VOS SSO front door and per-user dsh reverse proxy.
+ *
+ * Request flow:
+ *   1. An unauthenticated document request receives a bootstrap page that runs
+ *      the VOS Fastpath exchange and posts the access token to `/__vh/auth`.
+ *   2. `/__vh/auth` verifies the token through VOS userinfo, ensures the user's
+ *      instance exists, and mints a signed `vh_session` cookie.
+ *   3. Every later request is forwarded to that user's loopback instance with
+ *      the browser Cookie replaced by the instance's own dsh cookie and Host
+ *      rewritten to `127.0.0.1:<port>`.
+ *
+ * @module v-harness/gateway/server
+ */
+
+import { createServer, request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
+import { join } from 'node:path';
+
+import { ensureInstance, liveInstance, stopAll } from './instances.mjs';
+import {
+  CSRF_COOKIE,
+  SESSION_COOKIE,
+  cookie,
+  csrfMatches,
+  loadSecret,
+  newCsrfToken,
+  parseCookies,
+  signSession,
+  verifySession,
+} from './session.mjs';
+import { findUser, upsertUser } from './users.mjs';
+import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
+
+const DATA_ROOT = process.env.DATA_ROOT ?? '/data';
+const PORT = Number(process.env.PORT ?? 8080);
+const HOST = process.env.HOST ?? '0.0.0.0';
+const USERS_FILE = process.env.USERS_FILE ?? join(DATA_ROOT, 'users.json');
+const STATE_FILE = process.env.STATE_FILE ?? join(DATA_ROOT, 'state-instances.json');
+const SECRET_FILE = process.env.SECRET_FILE ?? join(DATA_ROOT, 'session-secret');
+const DSH_BIN = process.env.DSH_BIN ?? '/opt/v-harness/dsh/apps/cli/lib/bin.js';
+const NODE_BIN = process.env.NODE_BIN ?? process.execPath;
+const USER_HELPER = process.env.USER_HELPER ?? '/opt/v-harness/bin/vh-userctl';
+const CLIENT_ID = process.env.VOS_OIDC_CLIENT_ID ?? 'com.ictrek.v-harness';
+const SCOPE = process.env.VOS_OIDC_SCOPE ?? 'openid profile email';
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1_000);
+const APP_BASE_PATH = process.env.APP_BASE_PATH ?? '/app/com.ictrek.v-harness';
+const MAX_AUTH_BODY = 8 * 1024;
+
+const HOP_BY_HOP = new Set([
+  'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding',
+  'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
+]);
+
+const secret = await loadSecret(SECRET_FILE);
+
+/**
+ * Whether the browser reached us over HTTPS (terminated by the VOS ingress).
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {boolean}
+ */
+function isSecure(req) {
+  const forwarded = req.headers['x-forwarded-proto'];
+  const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  return value?.split(',')[0]?.trim().toLowerCase() === 'https';
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {import('./session.mjs').SessionPayload | undefined}
+ */
+function authenticate(req) {
+  return verifySession(parseCookies(req.headers.cookie)[SESSION_COOKIE], secret);
+}
+
+/**
+ * Strip the VOS application prefix so the same routes work behind either a
+ * prefix-preserving or a prefix-stripping ingress.
+ * @param {string} url
+ * @returns {string}
+ */
+function stripPrefix(url) {
+  if (!APP_BASE_PATH) return url;
+  if (url === APP_BASE_PATH) return '/';
+  if (url.startsWith(`${APP_BASE_PATH}/`) || url.startsWith(`${APP_BASE_PATH}?`)) {
+    const rest = url.slice(APP_BASE_PATH.length);
+    return rest.startsWith('/') ? rest : `/${rest}`;
+  }
+  return url;
+}
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ * @param {number} status
+ * @param {unknown} body
+ * @param {Record<string, string>} [headers]
+ */
+function json(res, status, body, headers = {}) {
+  const payload = Buffer.from(JSON.stringify(body), 'utf8');
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(payload.byteLength),
+    'cache-control': 'no-store',
+    ...headers,
+  });
+  res.end(payload);
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function readJsonBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > MAX_AUTH_BODY) throw new VosAuthError('body-too-large', 'auth body exceeds limit');
+    chunks.push(buffer);
+  }
+  const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new VosAuthError('invalid-body', 'auth body must be a JSON object');
+  }
+  return parsed;
+}
+
+/** Bootstrap page that performs the Fastpath exchange inside the VOS iframe. */
+const BOOTSTRAP = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>v-harness</title>
+<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0d10;color:#c8ccd4;font:14px/1.7 system-ui,sans-serif}
+#m{opacity:.8}#e{color:#e06c75;max-width:34rem;text-align:center;white-space:pre-wrap}</style>
+</head><body><div id="m">正在接入平台身份…</div><div id="e"></div>
+<script type="module">
+const b64=(b)=>btoa(String.fromCharCode(...b)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+const rand=(n=32)=>b64(crypto.getRandomValues(new Uint8Array(n)));
+async function bridge(){
+  const direct=window.vos_platform?.api?.v1000?.oauth2;
+  if(direct)return direct;
+  if(window.parent===window)return null;
+  const t0=Date.now();
+  while(Date.now()-t0<4000){
+    await new Promise(r=>setTimeout(r,50));
+    const found=window.vos_platform?.api?.v1000?.oauth2;
+    if(found)return found;
+  }
+  return null;
+}
+function fail(m){
+  document.getElementById('m').textContent='无法进入 v-harness';
+  document.getElementById('e').textContent=m;
+}
+try{
+  const cfg=await(await fetch('/__vh/session',{credentials:'same-origin',cache:'no-store'})).json();
+  if(cfg.authenticated){location.replace('./');}
+  else{
+    const oauth2=await bridge();
+    if(!oauth2)throw new Error('当前 VOS 未提供 OIDC Fastpath，无法验证用户身份');
+    const verifier=rand(),state=rand();
+    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
+    const authorized=await oauth2.authorize({
+      client_id:cfg.clientId,response_type:'code',scope:cfg.scope,
+      state,nonce:rand(),code_challenge:b64(digest),code_challenge_method:'S256'});
+    if(authorized.state!==state)throw new Error('VOS OIDC state mismatch');
+    const tokens=await oauth2.token({
+      grant_type:'authorization_code',code:authorized.code,
+      code_verifier:verifier,client_id:cfg.clientId});
+    if(!tokens.access_token)throw new Error('VOS OIDC 未返回 access token');
+    const res=await fetch('/__vh/auth',{
+      method:'POST',credentials:'same-origin',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({access_token:tokens.access_token})});
+    const body=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(body.error||'VOS 登录失败');
+    location.replace('./');
+  }
+}catch(error){fail(error?.message||String(error));}
+</script></body></html>`;
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ */
+function sendBootstrap(res) {
+  const body = Buffer.from(BOOTSTRAP, 'utf8');
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': String(body.byteLength),
+    'cache-control': 'no-store',
+    'x-frame-options': 'SAMEORIGIN',
+  });
+  res.end(body);
+}
+
+/**
+ * Whether the request is a browser navigation that should receive the
+ * bootstrap page rather than a 401.
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {boolean}
+ */
+function isDocumentRequest(req) {
+  if (req.method !== 'GET') return false;
+  const destination = req.headers['sec-fetch-dest'];
+  if (destination === 'document' || destination === 'iframe' || destination === 'frame') return true;
+  return String(req.headers.accept ?? '').includes('text/html');
+}
+
+/**
+ * Control endpoints owned by the gateway itself.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @param {URL} url
+ * @returns {Promise<void>}
+ */
+async function handleControl(req, res, url) {
+  if (url.pathname === '/__vh/health') {
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/__vh/session' && req.method === 'GET') {
+    const session = authenticate(req);
+    if (session) {
+      json(res, 200, {
+        authenticated: true,
+        user: { username: session.username, namespace: session.namespace },
+      });
+      return;
+    }
+    const csrf = newCsrfToken();
+    json(res, 200, { authenticated: false, clientId: CLIENT_ID, scope: SCOPE }, {
+      'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/__vh/auth' && req.method === 'POST') {
+    const cookies = parseCookies(req.headers.cookie);
+    const presented = req.headers['x-vh-csrf'];
+    if (!csrfMatches(String(presented ?? ''), cookies[CSRF_COOKIE] ?? '')) {
+      json(res, 403, { authenticated: false, error: 'CSRF 校验失败' });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const identity = await verifyVosToken(body.access_token);
+      const { record, created } = await upsertUser(USERS_FILE, identity);
+      if (created) {
+        console.log(`user created namespace=${record.namespace} port=${String(record.port)}`);
+      }
+      await ensureInstance({
+        record,
+        dataRoot: DATA_ROOT,
+        dshBin: DSH_BIN,
+        nodeBin: NODE_BIN,
+        statePath: STATE_FILE,
+        userHelper: USER_HELPER,
+      });
+      const value = signSession({
+        subject: record.subject,
+        namespace: record.namespace,
+        username: record.username,
+        expiresAt: Date.now() + SESSION_TTL_MS,
+      }, secret);
+      json(res, 200, {
+        authenticated: true,
+        user: { username: record.username, namespace: record.namespace },
+      }, {
+        'set-cookie': cookie(SESSION_COOKIE, value, {
+          maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
+          secure: isSecure(req),
+        }),
+      });
+    } catch (error) {
+      const code = error instanceof VosAuthError ? error.code : 'auth-failed';
+      const status = code === 'vos-userinfo-unreachable' ? 502 : 401;
+      console.warn(`auth rejected: ${code} ${error instanceof Error ? error.message : String(error)}`);
+      json(res, status, { authenticated: false, error: '身份验证失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/__vh/logout' && req.method === 'POST') {
+    json(res, 200, { authenticated: false }, {
+      'set-cookie': cookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, secure: isSecure(req) }),
+    });
+    return;
+  }
+
+  json(res, 404, { error: 'not found' });
+}
+
+/**
+ * Build upstream headers for one forwarded request.
+ *
+ * The browser Cookie is dropped: dsh binds its cookie to the request authority,
+ * so only the instance's own `dsh-auth-*` cookie can authenticate it.
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} port
+ * @param {string} instanceCookie
+ * @returns {Record<string, string | string[]>}
+ */
+function upstreamHeaders(req, port, instanceCookie) {
+  /** @type {Record<string, string | string[]>} */
+  const headers = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value === undefined) continue;
+    if (HOP_BY_HOP.has(name)) continue;
+    if (name === 'host' || name === 'cookie' || name === 'origin' || name === 'referer') continue;
+    if (name.startsWith('sec-fetch-')) continue;
+    headers[name] = value;
+  }
+  headers.host = `127.0.0.1:${String(port)}`;
+  headers.cookie = instanceCookie;
+  const forwarded = req.socket.remoteAddress;
+  if (forwarded) headers['x-forwarded-for'] = forwarded;
+  headers['x-forwarded-proto'] = isSecure(req) ? 'https' : 'http';
+  return headers;
+}
+
+/**
+ * Resolve the instance for one authenticated request, starting it if needed.
+ * @param {import('./session.mjs').SessionPayload} session
+ * @returns {Promise<{ port: number, cookie: string | undefined } | undefined>}
+ */
+async function instanceFor(session) {
+  const cached = liveInstance(session.namespace);
+  if (cached?.cookie) return cached;
+  const record = await findUser(USERS_FILE, session.subject);
+  if (!record) return undefined;
+  return ensureInstance({
+    record,
+    dataRoot: DATA_ROOT,
+    dshBin: DSH_BIN,
+    nodeBin: NODE_BIN,
+    statePath: STATE_FILE,
+    userHelper: USER_HELPER,
+  });
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+async function proxyRequest(req, res) {
+  const session = authenticate(req);
+  if (!session) {
+    if (isDocumentRequest(req)) {
+      sendBootstrap(res);
+      return;
+    }
+    json(res, 401, { error: 'unauthenticated' });
+    return;
+  }
+
+  const instance = await instanceFor(session);
+  if (!instance?.cookie) {
+    res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('实例尚未就绪，请稍后重试');
+    return;
+  }
+
+  const path = stripPrefix(req.url ?? '/');
+  const headers = upstreamHeaders(req, instance.port, instance.cookie);
+
+  await new Promise((resolve) => {
+    const upstream = httpRequest({
+      host: '127.0.0.1',
+      port: instance.port,
+      method: req.method,
+      path,
+      headers,
+    }, (upstreamRes) => {
+      /** @type {Record<string, string | string[]>} */
+      const responseHeaders = {};
+      for (const [name, value] of Object.entries(upstreamRes.headers)) {
+        if (value === undefined) continue;
+        if (HOP_BY_HOP.has(name) && name !== 'upgrade') continue;
+        responseHeaders[name] = value;
+      }
+      // dsh regenerates its SPA boot manifest on restart; a cached shell pins
+      // the browser to stale plugin bundles.
+      if (String(upstreamRes.headers['content-type'] ?? '').startsWith('text/html')) {
+        responseHeaders['cache-control'] = 'no-store';
+      }
+      res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+      upstreamRes.pipe(res);
+      upstreamRes.on('end', resolve);
+      upstreamRes.on('error', resolve);
+    });
+
+    upstream.on('error', (error) => {
+      console.error(`upstream ${String(instance.port)} failed:`, error.message);
+      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('实例不可用');
+      resolve();
+    });
+    res.on('close', () => { upstream.destroy(); resolve(); });
+    req.pipe(upstream);
+  });
+}
+
+/**
+ * Proxy one WebSocket upgrade (`/api/remote.mux`) to the user's instance.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:stream').Duplex} socket
+ * @param {Buffer} head
+ * @returns {Promise<void>}
+ */
+async function proxyUpgrade(req, socket, head) {
+  const session = authenticate(req);
+  if (!session) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  const instance = await instanceFor(session);
+  if (!instance?.cookie) {
+    socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const headers = upstreamHeaders(req, instance.port, instance.cookie);
+  headers.connection = 'Upgrade';
+  headers.upgrade = 'websocket';
+
+  const lines = [`${req.method ?? 'GET'} ${stripPrefix(req.url ?? '/')} HTTP/1.1`];
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) for (const item of value) lines.push(`${name}: ${item}`);
+    else lines.push(`${name}: ${value}`);
+  }
+  lines.push('', '');
+  const raw = lines.join('\r\n');
+
+  const upstream = connect(instance.port, '127.0.0.1', () => {
+    upstream.write(raw);
+    if (head?.length) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.on('error', () => socket.destroy());
+  socket.on('error', () => upstream.destroy());
+  socket.on('close', () => upstream.destroy());
+}
+
+const server = createServer((req, res) => {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  if (url.pathname.startsWith('/__vh/')) {
+    void handleControl(req, res, url).catch((error) => {
+      console.error('control handler failed:', error);
+      if (!res.headersSent) json(res, 500, { error: 'internal' });
+      else res.destroy();
+    });
+    return;
+  }
+  void proxyRequest(req, res).catch((error) => {
+    console.error('proxy failed:', error);
+    if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('网关错误');
+  });
+});
+
+server.on('upgrade', (req, socket, head) => {
+  void proxyUpgrade(req, socket, head).catch((error) => {
+    console.error('upgrade failed:', error);
+    socket.destroy();
+  });
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`v-harness gateway listening on ${HOST}:${String(PORT)}`);
+});
+
+/**
+ * Drain open instances before exiting: dsh aborts a running turn on SIGTERM,
+ * so give it the same bounded window a direct shutdown would.
+ */
+function shutdown(signal) {
+  console.log(`received ${signal}, stopping instances`);
+  server.close();
+  const deadline = setTimeout(() => process.exit(1), 8_000);
+  void stopAll().finally(() => {
+    clearTimeout(deadline);
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

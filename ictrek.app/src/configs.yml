@@ -1,0 +1,40 @@
+configs:
+  - name: VOS_OIDC_USERINFO_URL
+    type: string
+    title:
+      zh-CN: VOS OIDC 用户信息地址
+      en: VOS OIDC Userinfo URL
+    description:
+      zh-CN: 网关校验 VOS Fastpath access token 使用的 /v1000/oauth2/userinfo 地址。默认适配 VOS backend host 网络，一般不改。
+      en: Reachable /v1000/oauth2/userinfo endpoint used to verify VOS Fastpath access tokens. The default matches the VOS backend host network.
+    default: http://172.17.0.1:8105/v1000/oauth2/userinfo
+
+  - name: SESSION_TTL_MS
+    type: integer
+    title:
+      zh-CN: 会话有效期（毫秒）
+      en: Session TTL (ms)
+    description:
+      zh-CN: 网关签发的登录会话有效期。到期后浏览器静默重新换取 VOS token，用户无感。默认 12 小时。
+      en: Lifetime of the gateway session cookie. The browser silently re-exchanges the VOS token on expiry. Defaults to 12 hours.
+    default: 43200000
+
+  - name: V_HARNESS_MEM_LIMIT
+    type: string
+    title:
+      zh-CN: 容器内存上限
+      en: Container memory limit
+    description:
+      zh-CN: 整个 v-harness 容器的内存上限，需要覆盖所有在线用户的 dsh 实例。每个实例常驻约 200–400 MB。
+      en: Memory limit for the whole v-harness container, shared by every online dsh instance (about 200–400 MB each).
+    default: 8g
+
+  - name: V_HARNESS_CPU_LIMIT
+    type: integer
+    title:
+      zh-CN: 容器 CPU 上限
+      en: Container CPU limit
+    description:
+      zh-CN: 整个容器的 CPU 核数上限。
+      en: CPU cores available to the whole container.
+    default: 4

@@ -1,0 +1,9 @@
+# The image only needs the gateway sources and the root helper. Everything
+# else in this repository is the dsh monorepo: sending it as build context
+# costs gigabytes for no benefit.
+*
+!Dockerfile
+!gateway/
+!gateway/**
+!bin/
+!bin/**

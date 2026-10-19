@@ -1,0 +1,61 @@
+x-v-harness-env: &v-harness-env
+  PORT: 8080
+  DATA_ROOT: /data
+  APP_BASE_PATH: /app/com.ictrek.v-harness
+  VOS_OIDC_CLIENT_ID: com.ictrek.v-harness
+  VOS_OIDC_SCOPE: openid profile email
+  VOS_OIDC_USERINFO_URL: ${VOS_OIDC_USERINFO_URL:-http://172.17.0.1:8105/v1000/oauth2/userinfo}
+  SESSION_TTL_MS: ${SESSION_TTL_MS:-43200000}
+  DSH_PERMISSION_MODE: workspace-write
+  NODE_ENV: production
+
+x-v-harness-base: &v-harness-base
+  restart: unless-stopped
+  environment: *v-harness-env
+  volumes:
+    - ${VOS_APP_STORAGE_PATH}/data:/data
+  networks:
+    vos_default:
+      aliases:
+        - v-harness
+  labels:
+    - "traefik.enable=true"
+    - "traefik.docker.network=vos_default"
+    # Application entry: strip the VOS prefix, hand the SPA shell to dsh.
+    - "traefik.http.routers.v-harness-app.rule=PathPrefix(`/app/com.ictrek.v-harness`)"
+    - "traefik.http.routers.v-harness-app.service=v-harness"
+    - "traefik.http.routers.v-harness-app.middlewares=v-harness-strip"
+    - "traefik.http.middlewares.v-harness-strip.stripprefix.prefixes=/app/com.ictrek.v-harness"
+    # dsh's SPA uses absolute paths, so these reach the gateway at the root.
+    # Referer pins them to this application.
+    - "traefik.http.routers.v-harness-api.rule=(PathPrefix(`/api`) || PathPrefix(`/plugins`) || PathPrefix(`/assets`) || PathPrefix(`/__vh`) || Path(`/favicon.ico`)) && (HeaderRegexp(`Referer`, `/app/com\\.ictrek\\.v-harness/`) || PathPrefix(`/__vh`))"
+    - "traefik.http.routers.v-harness-api.priority=1300"
+    - "traefik.http.routers.v-harness-api.service=v-harness"
+    - "traefik.http.services.v-harness.loadbalancer.server.port=8080"
+  healthcheck:
+    test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/__vh/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+    interval: 30s
+    timeout: 10s
+    start_period: 60s
+    retries: 3
+
+services:
+  v-harness-amd:
+    <<: *v-harness-base
+    profiles: ["amd"]
+    image: ${V_HARNESS_AMD_IMAGE}
+    pull_policy: always
+    mem_limit: ${V_HARNESS_MEM_LIMIT:-8g}
+    cpus: ${V_HARNESS_CPU_LIMIT:-4}
+
+  v-harness-arm:
+    <<: *v-harness-base
+    profiles: ["arm"]
+    image: ${V_HARNESS_ARM_IMAGE}
+    pull_policy: always
+    mem_limit: ${V_HARNESS_MEM_LIMIT:-8g}
+    cpus: ${V_HARNESS_CPU_LIMIT:-4}
+
+networks:
+  vos_default:
+    external: true

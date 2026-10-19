@@ -1,0 +1,61 @@
+id: com.ictrek.v-harness
+name:
+  zh-CN: v-harness
+  en: v-harness
+description:
+  zh-CN: 多用户 agent 工作台：每位用户独立的会话、工作区与产物，互不可见。
+  en: Multi-user agent workspace with per-user sessions, workspaces, and deliverables.
+version: __APP_VERSION__
+author: ictrek
+category: [productivity]
+icon: icon.png
+arch: [amd64, arm64]
+
+frontend:
+  enabled: true
+  basePath: /app/com.ictrek.v-harness
+
+platform:
+  version: ">=3.0.0"
+
+oauth2:
+  client:
+    id: com.ictrek.v-harness
+    redirect_uris:
+      - https://app.vos-platform.internal/callback
+    grant_types: [authorization_code, refresh_token]
+    response_types: [code]
+    scopes: [openid, profile, email]
+    pkce_required: true
+    token_endpoint_auth_method: none
+    access_token_ttl: 3600
+    refresh_token_ttl: 1209600
+
+profiles:
+  - name: amd
+    title:
+      zh-CN: AMD64
+      en: AMD64
+    description:
+      zh-CN: AMD64 平台。
+      en: AMD64 platform.
+    caps:
+      arch: amd64
+    conflicts: [arm]
+  - name: arm
+    title:
+      zh-CN: ARM64
+      en: ARM64
+    description:
+      zh-CN: ARM64 平台。
+      en: ARM64 platform.
+    caps:
+      arch: arm64
+    conflicts: [amd]
+
+require-profiles: true
+
+storage:
+  directories:
+    - path: data
+      mode: "0700"

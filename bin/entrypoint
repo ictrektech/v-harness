@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Container entrypoint: prepare the shared data root, then hand over to the
+# gateway. dsh instances are started on first sign-in, not here.
+set -euo pipefail
+
+DATA_ROOT="${DATA_ROOT:-/data}"
+
+mkdir -p "${DATA_ROOT}"
+# The data root holds every tenant's home; only root may traverse it.
+chmod 0700 "${DATA_ROOT}"
+
+# Containers have no init loop for the per-user accounts, so rebuild them from
+# the durable user table before the gateway can accept a request. The helper is
+# idempotent and never touches existing data.
+if [[ -f "${DATA_ROOT}/users.json" ]]; then
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const path = "/opt/v-harness/bin/vh-userctl";
+    const table = JSON.parse(readFileSync(`${process.env.DATA_ROOT}/users.json`, "utf8"));
+    const { execFileSync } = require("node:child_process");
+    for (const record of Object.values(table)) {
+      execFileSync(path, ["ensure", record.linuxName, String(record.uid), `${process.env.DATA_ROOT}/users/${record.namespace}`], { stdio: "inherit" });
+    }
+  '
+fi
+
+exec node /opt/v-harness/gateway/server.mjs

@@ -1,0 +1,12 @@
+routers:
+  - id: v-harness
+    kind: page
+    title:
+      zh-CN: v-harness
+      en: v-harness
+    icon: lucide:bot
+    order: 210
+    iframe-src: /app/com.ictrek.v-harness/?v=__APP_VERSION__
+    keep-alive: true
+    entry-point: true
+    embed: true
