@@ -9,6 +9,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { dirname } from 'node:path';
 
 export const SESSION_COOKIE = 'vh_session';
 export const CSRF_COOKIE = 'vh_csrf';
@@ -31,7 +32,7 @@ const COOKIE_VERSION = 1;
  * @returns {Promise<Buffer>}
  */
 export async function loadSecret(path) {
-  const { readFile, writeFile } = await import('node:fs/promises');
+  const { mkdir, readFile, writeFile } = await import('node:fs/promises');
   try {
     const text = (await readFile(path, 'utf8')).trim();
     if (text) return Buffer.from(text, 'base64url');
@@ -39,6 +40,9 @@ export async function loadSecret(path) {
     // Absent on first boot; fall through to creation. Any other read error
     // surfaces on the write below rather than being swallowed here.
   }
+  // The data root may not exist yet when the gateway runs outside the image
+  // entrypoint (local debugging, tests).
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const generated = randomBytes(32);
   await writeFile(path, `${generated.toString('base64url')}\n`, { mode: 0o600, flag: 'wx' })
     .catch((error) => {

@@ -13,6 +13,7 @@
  * @module v-harness/gateway/server
  */
 
+import { createHash } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
@@ -53,6 +54,11 @@ const SCOPE = process.env.VOS_OIDC_SCOPE ?? 'openid profile email';
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1_000);
 const APP_BASE_PATH = process.env.APP_BASE_PATH ?? '/app/com.ictrek.v-harness';
 const MAX_AUTH_BODY = 8 * 1024;
+// Standalone debugging escape hatch, mirroring V_OFFICE_AUTH_DISABLED: skip
+// VOS entirely and sign in as one local user. Never enable it on VOS.
+const AUTH_DISABLED = /^(1|true|yes)$/i.test(process.env.VH_AUTH_DISABLED ?? '');
+const DEV_SUBJECT = 'local-dev';
+const DEV_NAMESPACE = createHash('sha256').update(`vos-oidc\0${DEV_SUBJECT}`).digest('hex').slice(0, 40);
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding',
@@ -166,6 +172,7 @@ try{
   else{
     const oauth2=await bridge();
     if(!oauth2)throw new Error('当前 VOS 未提供 OIDC Fastpath，无法验证用户身份');
+    if(!crypto.subtle)throw new Error('当前页面不是安全上下文（需要 HTTPS 或 localhost），浏览器不提供 WebCrypto');
     const verifier=rand(),state=rand();
     const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
     const authorized=await oauth2.authorize({
@@ -348,6 +355,32 @@ async function handleControl(req, res, url) {
       json(res, 200, {
         authenticated: true,
         user: { username: session.username, namespace: session.namespace },
+      });
+      return;
+    }
+    if (AUTH_DISABLED) {
+      // Local debugging: mint a session for one fixed user so the UI can be
+      // exercised without VOS. The instance starts on the first proxied request.
+      const { record } = await upsertUser(USERS_FILE, {
+        subject: DEV_SUBJECT,
+        namespace: DEV_NAMESPACE,
+        username: 'dev',
+      });
+      const value = signSession({
+        subject: record.subject,
+        namespace: record.namespace,
+        username: record.username,
+        expiresAt: Date.now() + SESSION_TTL_MS,
+      }, secret);
+      console.warn('VH_AUTH_DISABLED is set: signing in as the local dev user');
+      json(res, 200, {
+        authenticated: true,
+        user: { username: record.username, namespace: record.namespace },
+      }, {
+        'set-cookie': cookie(SESSION_COOKIE, value, {
+          maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
+          secure: isSecure(req),
+        }),
       });
       return;
     }
