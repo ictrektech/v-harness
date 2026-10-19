@@ -25,7 +25,13 @@ import {
   statWorkspace,
   uploadWorkspaceFile,
 } from './files.mjs';
-import { ensureInstance, liveInstance, stopAll } from './instances.mjs';
+import { ensureInstance, liveInstance, stopAll, userPaths } from './instances.mjs';
+import {
+  closeOfficeCapabilities,
+  ensureOfficeCapability,
+  expiryFromToken,
+  rememberTokens,
+} from './office.mjs';
 import {
   CSRF_COOKIE,
   SESSION_COOKIE,
@@ -235,7 +241,8 @@ try{
     const res=await fetch('/__vh/auth',{
       method:'POST',credentials:'same-origin',
       headers:{'content-type':'application/json','x-vh-csrf':cfg.csrf||''},
-      body:JSON.stringify({access_token:tokens.access_token})});
+      body:JSON.stringify({access_token:tokens.access_token,
+        refresh_token:tokens.refresh_token,expires_in:tokens.expires_in})});
     const body=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(body.error||'VOS 登录失败');
     location.replace('./');
@@ -456,6 +463,12 @@ async function handleControl(req, res, url) {
       if (created) {
         console.log(`user created namespace=${record.namespace} port=${String(record.port)}`);
       }
+      const accessToken = String(body.access_token);
+      rememberTokens(record.namespace, {
+        access: accessToken,
+        ...typeof body.refresh_token === 'string' && body.refresh_token ? { refresh: body.refresh_token } : {},
+        expiresAt: expiryFromToken(accessToken, Number(body.expires_in)),
+      });
       await ensureInstance({
         record,
         dataRoot: DATA_ROOT,
@@ -464,6 +477,7 @@ async function handleControl(req, res, url) {
         statePath: STATE_FILE,
         userHelper: USER_HELPER,
       });
+      await startOfficeCapability(record);
       const value = signSession({
         subject: record.subject,
         namespace: record.namespace,
@@ -528,6 +542,25 @@ function upstreamHeaders(req, port, instanceCookie) {
 }
 
 /**
+ * Give one tenant its V-Office capability socket. Idempotent; failures are
+ * logged rather than fatal so a broken upstream never blocks sign-in.
+ * @param {import('./users.mjs').UserRecord} record
+ * @returns {Promise<void>}
+ */
+async function startOfficeCapability(record) {
+  try {
+    await ensureOfficeCapability({
+      namespace: record.namespace,
+      linuxName: record.linuxName,
+      home: userPaths(DATA_ROOT, record.namespace).home,
+      userHelper: USER_HELPER,
+    });
+  } catch (error) {
+    console.error(`v-office capability for ${record.namespace} failed:`, error);
+  }
+}
+
+/**
  * Resolve the instance for one authenticated request, starting it if needed.
  * @param {import('./session.mjs').SessionPayload} session
  * @returns {Promise<{ port: number, cookie: string | undefined } | undefined>}
@@ -537,7 +570,7 @@ async function instanceFor(session) {
   if (cached?.cookie) return cached;
   const record = await findUser(USERS_FILE, session.subject);
   if (!record) return undefined;
-  return ensureInstance({
+  const instance = await ensureInstance({
     record,
     dataRoot: DATA_ROOT,
     dshBin: DSH_BIN,
@@ -545,6 +578,8 @@ async function instanceFor(session) {
     statePath: STATE_FILE,
     userHelper: USER_HELPER,
   });
+  await startOfficeCapability(record);
+  return instance;
 }
 
 /**
@@ -690,7 +725,7 @@ function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void stopAll().finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });

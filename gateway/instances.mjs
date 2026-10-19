@@ -22,6 +22,7 @@ const LAUNCH_TIMEOUT_MS = 45_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const LOG_DIR_NAME = 'logs';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
+const BUNDLED_SKILL_DIR = process.env.BUNDLED_SKILL_DIR ?? '/opt/v-harness/skills';
 
 /**
  * @typedef {object} Instance
@@ -89,7 +90,7 @@ async function writeState(path, state) {
  * @param {string[]} args
  * @returns {Promise<void>}
  */
-async function runUserHelper(helper, args) {
+export async function runUserHelper(helper, args) {
   // Root (the container case) runs the helper directly; a non-root deployment
   // needs the fixed-path sudoers entry documented in the Dockerfile.
   const privileged = process.geteuid?.() === 0;
@@ -199,6 +200,10 @@ async function launch(options) {
       DSH_HOME: paths.dshHome,
       DSH_AGENTS_HOME: paths.agentsHome,
       DSH_PERMISSION_MODE: 'workspace-write',
+      // Product skills shipped in the image (V-Office today). The provider
+      // scans this root at rank 600, so a tenant cannot shadow them from
+      // `$DSH_HOME/skills` or `.agents/skills`.
+      DSH_BUNDLED_SKILL_DIR: BUNDLED_SKILL_DIR,
       PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       NODE_ENV: 'production',
       // Without a UTF-8 locale bash escapes non-ASCII names: the default

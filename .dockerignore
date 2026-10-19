@@ -7,3 +7,5 @@
 !gateway/**
 !bin/
 !bin/**
+!skills/
+!skills/**

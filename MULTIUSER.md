@@ -45,9 +45,11 @@ dsh 实例 × N　（runuser -u vh-xxxxxxxx）
 | `gateway/vos-auth.mjs` | VOS token 验证、身份映射 |
 | `gateway/session.mjs` | `vh_session` HMAC cookie、CSRF |
 | `gateway/users.mjs` | `users.json`，uid/端口一次性分配 |
-| `gateway/instances.mjs` | 启动 dsh、抓 launch token、换 cookie |
+| `gateway/instances.mjs` | 启动 dsh、抓 launch token、换 cookie、注入 bundled skill 目录 |
+| `gateway/office.mjs` | 按租户的 V-Office 能力端点（Unix socket），保管 VOS 令牌 |
 | `gateway/files.mjs` | 文件抽屉后端（list/read/upload） |
-| `bin/vh-userctl` | root：建号、目录权限（幂等） |
+| `skills/voffice/` | V-Office 云端文档 skill（`SKILL.md` + 零依赖 CLI） |
+| `bin/vh-userctl` | root：建号、目录权限、把能力 socket 交给属主（幂等） |
 | `bin/vh-file` | root：校验参数后 `runuser` 降权 |
 | `bin/vh-file-impl.mjs` | 用户身份下实际读写，路径锁死 workspace |
 | `bin/entrypoint` | 容器启动：探测沙盒 → 重建账号 → 起网关 |
@@ -66,6 +68,19 @@ dsh 实例 × N　（runuser -u vh-xxxxxxxx）
 3. **沙盒只防写不防读**。`workspace-write` 下全盘可读（`--ro-bind / /`），agent 能读自己的 `.credentials.yaml`。
 4. **终端默认开启且不受沙盒约束**。`ui-sidebar-terminal` 里的命令用系统用户权限，能读 key、改 profile、装插件。必须关。
 5. **目录名必须由 `sub` 派生**，不能用用户名：两个 VOS 账号可能解析成同一个显示名。
+6. **dsh 会清洗子进程环境**：名字带 `KEY|PASSWORD|SECRET|TOKEN` 的变量和所有 `DSH_*` 都不会进 bash 工具（`scrubbedParentEnv`）。所以令牌不能靠环境变量下发，见下面 V-Office 一节。
+
+## V-Office 文档能力
+
+skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access token（那等于全平台身份）。做法是**能力而非凭证**：
+
+- 登录时网关把 VOS `access_token` / `refresh_token` 收在**内存**里（`/__vh/auth`），不落盘。
+- 网关在每个租户的 `$HOME/.dsh/voffice.sock` 上起一个只讲 `/api/v1/*` 的端点，socket 由 `vh-userctl claim` 交给该租户（0600，目录 0700）。**只有这个租户能连**，代理补 `Authorization` 后转发。
+- skill 只按 `/api/v1/...` 调用这个 socket，拿不到 token；能做的也只有该用户名下的文档。
+- 访问令牌临期时网关直接用 refresh_token 向 VOS 续期（public client，无需 secret，已用 `invalid_grant` 探测确认端点接受 grant）。续期也失败（用户被登出/撤销）才返回 401 + 稳定错误码，skill 直接告诉用户重新登录，不空转重试。
+- 浏览器侧的「查看文档」不另做页面：下载到 workspace 后调 `present`，dsh 客户端自带交付卡片和右侧预览（docx/pptx 本地转 PDF、xlsx 表格渲染）。
+
+`VH_OFFICE_BASE` 可覆盖上游地址（默认 `http://10.144.144.232:1182/api/com.ictrek.v-office`）。
 
 ## 数据布局
 
@@ -73,6 +88,7 @@ dsh 实例 × N　（runuser -u vh-xxxxxxxx）
 /data/users.json                    用户表：subject / namespace / linuxName / uid / port
 /data/users/<namespace>/            0700，属主 vh-xxxxxxxx
   .dsh/                             会话、凭据、profile
+    voffice.sock                    V-Office 能力端点（0600，属主本人）
   .agents/                          skills
   workspace/日常/                    默认落点
 /data/logs/<namespace>.log          实例日志
@@ -96,7 +112,7 @@ VOS 里部署走 `build_image.sh` + `ictrek.app/scripts/package.sh`，见 [RELEA
 
 ## 现在的状态
 
-**能跑通的**：本地语法检查、网关空跑（health / session / bootstrap）、文件助手的读写与三类越权拦截。
+**能跑通的**：本地语法检查、网关空跑（health / session / bootstrap）、文件助手的读写与三类越权拦截、V-Office skill 的 CLI（用 mock 上游验证过 me/list/upload/download/rename/delete 与 401/404/409 文案、20MB 往返字节一致）与能力端点的路由白名单/令牌隔离。
 
 **没验证的**：登录全流程、dsh 实例启动、cookie 交换、反代、沙盒在容器里的可用性。**一次都没在容器里跑过。**
 
@@ -114,6 +130,6 @@ VOS 里部署走 `build_image.sh` + `ictrek.app/scripts/package.sh`，见 [RELEA
 - **key 由每个用户自己填写**，与 dsh 官方一致：写进该用户私有的 `.credentials.yaml`（0600）。不做网关代持/代理——没有平台共享 key，也就不存在"一个用户泄露等于全平台泄露"。
 - **agent 能读自己的 key**：沙盒只防写。这是用户在自己的账号里读自己的凭据，影响面仅限本人。
 - **单用户能拖垮全容器**：容器内做不到每用户 cgroup，只有容器级限制。
-- **`ps` 能看到别人的进程**：同 PID namespace，不影响文件隔离。
+- **已做 mount / pid namespace 隔离**：`vh-jail` 先进入 mount+pid namespace，用 tmpfs 遮住 `/data/users` 再只 bind 回自己的 home，然后降权。租户看不到别人的目录或进程。
+- **不做 net namespace 隔离**：容器仍是共享网络，`127.0.0.1:<port>` 对其他租户可见。跨租户访问靠 cookie / socket 权限挡住（V-Office 能力端点就是 0600 socket）。将来要补，在 `vh-jail` 里加 `--net` 并配好 loopback。
 - **不做 iptables**：容器无 `NET_ADMIN`；且跨用户需要对方的 cookie，协议层已经挡住。
-- **不做 net / pid namespace 隔离**：每用户一个进程已经给了文件和故障隔离；`ps` 能看到彼此、端口共享，属于本期接受的取舍。将来要补，在 `runuser` 外面套一层 `unshare` 即可。

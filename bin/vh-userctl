@@ -52,14 +52,39 @@ ensure() {
   chmod 0700 "$home/.dsh" "$home/.agents"
 }
 
+# claim <linuxName> <socketPath>
+#
+# The gateway creates a tenant's V-Office capability socket as root; the owner
+# of the account must be the only one able to connect to it. Only that one
+# socket name under a namespace home is accepted, so this cannot become a
+# general-purpose chown.
+claim() {
+  local name="${1:-}" path="${2:-}"
+
+  [[ "$name" =~ $NAME_RE ]] || die "invalid account name: ${name}"
+  [[ "$path" == "${DATA_ROOT}/users/"*"/.dsh/voffice.sock" ]] || die "unexpected claim path: ${path}"
+  [[ -S "$path" ]] || die "not a socket: ${path}"
+
+  local home="${path%/.dsh/voffice.sock}"
+  [[ "$(basename "$home")" =~ ^[0-9a-f]{40}$ ]] || die "home is not a namespace directory: ${home}"
+  getent passwd "$name" >/dev/null 2>&1 || die "unknown account: ${name}"
+
+  chown "$name:$name" "$path"
+  chmod 0600 "$path"
+}
+
 main() {
   local command="${1:-}"
-  [[ -n "$command" ]] || die 'usage: vh-userctl ensure <name> <uid> <home>'
+  [[ -n "$command" ]] || die 'usage: vh-userctl ensure <name> <uid> <home> | claim <name> <socket>'
   require_root
   case "$command" in
     ensure)
       shift
       ensure "$@"
+      ;;
+    claim)
+      shift
+      claim "$@"
       ;;
     *)
       die "unknown command: ${command}"

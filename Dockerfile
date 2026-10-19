@@ -43,9 +43,13 @@ RUN corepack enable \
 
 COPY gateway/ /opt/v-harness/gateway/
 COPY bin/ /opt/v-harness/bin/
+# Product skills are discovered through DSH_BUNDLED_SKILL_DIR (see
+# gateway/instances.mjs) and stay root-owned, so a tenant cannot edit them.
+COPY skills/ /opt/v-harness/skills/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
+ && chmod 0755 /opt/v-harness/skills/voffice/scripts/voffice.mjs \
  && chown -R root:root /opt/v-harness/bin \
  && printf 'root ALL=(root) NOPASSWD: /opt/v-harness/bin/vh-userctl, /opt/v-harness/bin/vh-file\n' > /etc/sudoers.d/vh \
  && chmod 0440 /etc/sudoers.d/vh
