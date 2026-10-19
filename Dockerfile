@@ -31,7 +31,7 @@ RUN corepack enable \
 COPY gateway/ /opt/v-harness/gateway/
 COPY bin/ /opt/v-harness/bin/
 
-RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/entrypoint \
+RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
  && chown -R root:root /opt/v-harness/bin \
  && printf 'root ALL=(root) NOPASSWD: /opt/v-harness/bin/vh-userctl\n' > /etc/sudoers.d/vh \
  && chmod 0440 /etc/sudoers.d/vh

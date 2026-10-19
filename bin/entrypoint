@@ -9,6 +9,11 @@ mkdir -p "${DATA_ROOT}"
 # The data root holds every tenant's home; only root may traverse it.
 chmod 0700 "${DATA_ROOT}"
 
+# dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
+# usable the bash tool refuses to run. Record the verdict at startup so a broken
+# container is diagnosed from the log instead of from a user report.
+node /opt/v-harness/bin/sandbox-probe.mjs
+
 # Containers have no init loop for the per-user accounts, so rebuild them from
 # the durable user table before the gateway can accept a request. The helper is
 # idempotent and never touches existing data.
