@@ -3,6 +3,8 @@ name: VOS Pull Package Release
 on:
   push:
     tags: ["vos-v-harness-v*"]
+  # Re-run a failed release without deleting and re-pushing the tag.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,8 +20,37 @@ jobs:
       - name: Fetch all release tags
         run: git fetch --force --tags origin
 
+      # A tag push names the version; a manual dispatch falls back to the
+      # version committed in VERSION.
+      - name: Resolve version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
+          else
+            VERSION="$(tr -d '[:space:]' < ictrek.app/VERSION)"
+          fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::cannot resolve version from ${GITHUB_REF_NAME}"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Resolved version: $VERSION"
+
+      # Fail with a readable message instead of an empty-credential API error.
+      - name: Check required secrets
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+        run: |
+          missing=0
+          [[ -n "${FEISHU_APP_ID:-}" ]] || { echo "::error::repository secret FEISHU_APP_ID is not set"; missing=1; }
+          [[ -n "${FEISHU_APP_SECRET:-}" ]] || { echo "::error::repository secret FEISHU_APP_SECRET is not set"; missing=1; }
+          [[ "$missing" == "0" ]] || { echo "::error::Configure them in Settings → Secrets and variables → Actions."; exit 1; }
+
+      - name: Install package dependencies
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+
       - name: Write Feishu component credentials
         run: |
+          umask 077
           cat > "$HOME/.feishu.components.json" <<EOF
           {
             "feishu_app_id": "${{ secrets.FEISHU_APP_ID }}",
@@ -32,7 +63,6 @@ jobs:
           FEISHU_SPREADSHEET_TOKEN: ${{ secrets.FEISHU_SPREADSHEET_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
           PACKAGE_VERSION="$VERSION" ./ictrek.app/scripts/package.sh
           test -f "ictrek.app/dist/v-harness_${VERSION}_pull.tar"
 
@@ -42,8 +72,7 @@ jobs:
           TAG_PREFIX: vos-v-harness-v
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
-          CURRENT="${GITHUB_REF_NAME}"
+          CURRENT="${GITHUB_SHA}"
           PUBLIC_TAG="v${VERSION}"
           export PUBLIC_TAG
           PREVIOUS="$(gh release list --limit 100 --json tagName,publishedAt --jq '[.[] | select(.tagName != env.PUBLIC_TAG) | select((.tagName | startswith("v")) or (.tagName | startswith(env.TAG_PREFIX)))] | sort_by(.publishedAt) | reverse | .[0].tagName // ""')"
@@ -64,14 +93,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
           PUBLIC_TAG="v${VERSION}"
           if ! git ls-remote --exit-code --tags origin "refs/tags/${PUBLIC_TAG}" >/dev/null 2>&1; then
             git tag "$PUBLIC_TAG" "$GITHUB_SHA"
             git push origin "$PUBLIC_TAG"
           fi
-          gh release create "$PUBLIC_TAG" "ictrek.app/dist/v-harness_${VERSION}_pull.tar" \
-            --verify-tag --latest --title "v${VERSION}" --notes-file release-notes.md
+          # A re-run may find the release already present; replace its asset.
+          if gh release view "$PUBLIC_TAG" >/dev/null 2>&1; then
+            gh release upload "$PUBLIC_TAG" "ictrek.app/dist/v-harness_${VERSION}_pull.tar" --clobber
+          else
+            gh release create "$PUBLIC_TAG" "ictrek.app/dist/v-harness_${VERSION}_pull.tar" \
+              --verify-tag --latest --title "v${VERSION}" --notes-file release-notes.md
+          fi
 
       - name: Publish package to VOS App Store
         env:
@@ -79,10 +112,12 @@ jobs:
           APPSTORE_TOKEN: ${{ secrets.APPSTORE_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${APPSTORE_IP:-}" || { echo "APPSTORE_IP is not configured." >&2; exit 1; }
-          test -n "${APPSTORE_TOKEN:-}" || { echo "APPSTORE_TOKEN is not configured." >&2; exit 1; }
+          if [[ -z "${APPSTORE_IP:-}" || -z "${APPSTORE_TOKEN:-}" ]]; then
+            echo "App Store credentials are not configured; skipping the store upload."
+            echo "Set APPSTORE_IP and APPSTORE_TOKEN to publish automatically."
+            exit 0
+          fi
 
-          VERSION="${GITHUB_REF_NAME#vos-v-harness-v}"
           PACKAGE="ictrek.app/dist/v-harness_${VERSION}_pull.tar"
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
