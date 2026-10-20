@@ -383,6 +383,9 @@
     - id: ui-reference
       name: '@deepseek-ai/dsh-client-ui-reference'
 
+    - id: ui-knowledge
+      name: '@deepseek-ai/dsh-client-ui-knowledge'
+
     # Display masking for recognized credentials in sent user text; remove
     # this entry to draw credentials as written.
     - id: ui-secret-mask
