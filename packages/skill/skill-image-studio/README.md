@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The catalog lists an Image Studio router plus generation and model-preparation skills. Generation and model work run through a zero-dependency Node CLI that submits jobs, polls them, downloads outputs, and manages weights over the Image Studio HTTP API. Credentials stay in an auth file consumed by the CLI, so the bearer token never enters the model context.
+The catalog lists an Image Studio router plus generation and model-preparation skills. Generation and model work run through a zero-dependency Node CLI that submits jobs, polls them, downloads outputs, and manages weights over the Image Studio HTTP API. Credentials stay in an auth file consumed by the CLI, so the bearer token never enters the model context. When the tools, question, and shell services are mounted, the package also registers `image_studio_generate`, which asks the user to confirm the model and prompts in one dialog before running that same CLI.
 
 ## Table of Contents
 
@@ -86,7 +86,7 @@ The CLI is a zero-dependency ESM script. It resolves the endpoint from `--base-u
 <a id="model-experience"></a>
 ## Model Experience
 
-Indirectly, through `dsh-tool-skill`, which renders the three Image Studio summaries and returns routing or selected subskill instructions from `skill(name)`.
+Two surfaces: `image_studio_generate` when the tool, question, and shell services are mounted, and otherwise the three skills through `dsh-tool-skill`, which renders the Image Studio summaries and returns routing or selected subskill instructions from `skill(name)`. The tool carries one prompt, one optional model key, and one optional negative prompt, so the model states an intent and the human confirms the rest in the dialog.
 
 #### KV Cache effect
 

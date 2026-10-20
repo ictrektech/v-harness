@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-目录包含一个 Image Studio 路由，以及生成与模型准备两类 skill。生成和模型操作通过零依赖 Node CLI 完成：提交任务、轮询、下载产物、管理权重，全部走 Image Studio 的 HTTP API。凭据只存在于 CLI 读取的 auth 文件中，bearer 令牌不会进入模型上下文。
+目录包含一个 Image Studio 路由，以及生成与模型准备两类 skill。生成和模型操作通过零依赖 Node CLI 完成：提交任务、轮询、下载产物、管理权重，全部走 Image Studio 的 HTTP API。凭据只存在于 CLI 读取的 auth 文件中，bearer 令牌不会进入模型上下文。当 tools、question 与 shell 服务都已挂载时，本包还会注册 `image_studio_generate`：先在同一个对话框里让用户确认模型与提示词，再调用同一个 CLI。
 
 ## 目录
 
@@ -86,7 +86,7 @@ CLI 是零依赖 ESM 脚本。端点依次取自 `--base-url`、`IMAGE_STUDIO_BA
 <a id="model-experience"></a>
 ## 模型体验
 
-间接经由 `dsh-tool-skill` 呈现：初始目录给出三条 Image Studio 摘要，`skill(name)` 返回路由或所选子 skill 的完整指令。
+两个面：tools、question 与 shell 服务都挂载时是 `image_studio_generate` 工具，否则经由 `dsh-tool-skill`：初始目录给出三条 Image Studio 摘要，`skill(name)` 返回路由或所选子 skill 的完整指令。工具只携带一个正向提示词、可选的模型与负向提示词，因此模型说明意图，其余参数由用户在对话框里确认。
 
 #### KV Cache 影响
 

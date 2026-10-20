@@ -73,7 +73,8 @@ async function startApi(): Promise<{ server: Server; baseUrl: string; recorded: 
     }
     if (url.pathname === '/api/v1/outputs/job_1/output.png') {
       res.writeHead(200, { 'content-type': 'image/png' })
-      return res.end(PNG)
+      res.end(PNG)
+      return
     }
     json({ detail: 'not found' }, 404)
     return

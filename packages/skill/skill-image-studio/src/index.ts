@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { BUNDLED_SKILL_RANK, type SkillCandidate, type SkillProvider } from '@deepseek-ai/dsh-skill'
 import { parse as parseYaml } from 'yaml'
+import { registerImageStudioTool } from './tool.ts'
 
 const SKILL_NAMES = ['image-studio', 'image-studio-generate', 'image-studio-models'] as const
 
@@ -141,4 +142,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
   }
   ctx.skills.registerProvider(() => provider)
+  // The tool needs the shell, the tool registry, and the question seam; a
+  // composition that only lists skills keeps the catalog without it.
+  ctx.inject(['tools', 'userQuestions', 'shell'], (toolCtx) => {
+    registerImageStudioTool(toolCtx, runtime)
+  })
 }

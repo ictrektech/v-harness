@@ -18,6 +18,15 @@
       "path": "../../../vendor/schemastery"
     },
     {
+      "path": "../../core/tools"
+    },
+    {
+      "path": "../../interaction/user-questions"
+    },
+    {
+      "path": "../../shell/shell"
+    },
+    {
       "path": "../skill"
     }
   ]
