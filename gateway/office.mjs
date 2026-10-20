@@ -164,10 +164,13 @@ async function refreshTokenSet(namespace, entry) {
 
 /**
  * Current usable access token, refreshing it first when it is near expiry.
+ *
+ * Exported because every capability endpoint authenticates upstream calls with
+ * the same VOS token; `weknora.mjs` forwards it unchanged.
  * @param {string} namespace
  * @returns {Promise<string | undefined>}
  */
-async function accessTokenFor(namespace) {
+export async function accessTokenFor(namespace) {
   const entry = tokens.get(namespace);
   if (!entry) return undefined;
   if (entry.expiresAt - TOKEN_EXPIRY_MARGIN_MS > Date.now()) return entry.access;

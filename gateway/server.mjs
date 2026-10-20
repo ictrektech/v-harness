@@ -45,6 +45,7 @@ import {
 } from './session.mjs';
 import { findUser, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
+import { closeWeknoraCapabilities, ensureWeknoraCapability, handleWeknoraControl } from './weknora.mjs';
 
 const DATA_ROOT = process.env.DATA_ROOT ?? '/data';
 const PORT = Number(process.env.PORT ?? 8080);
@@ -400,6 +401,13 @@ async function handleControl(req, res, url) {
     return;
   }
 
+  if (url.pathname.startsWith('/__vh/weknora/')) {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    await handleWeknoraControl(record.namespace, req, res, url.pathname.slice('/__vh/weknora'.length));
+    return;
+  }
+
   if (url.pathname === '/__vh/health') {
     json(res, 200, { ok: true });
     return;
@@ -477,7 +485,7 @@ async function handleControl(req, res, url) {
         statePath: STATE_FILE,
         userHelper: USER_HELPER,
       });
-      await startOfficeCapability(record);
+      await startCapabilities(record);
       const value = signSession({
         subject: record.subject,
         namespace: record.namespace,
@@ -542,21 +550,26 @@ function upstreamHeaders(req, port, instanceCookie) {
 }
 
 /**
- * Give one tenant its V-Office capability socket. Idempotent; failures are
- * logged rather than fatal so a broken upstream never blocks sign-in.
+ * Give one tenant its capability sockets. Idempotent; failures are logged
+ * rather than fatal so a broken upstream never blocks sign-in.
  * @param {import('./users.mjs').UserRecord} record
  * @returns {Promise<void>}
  */
-async function startOfficeCapability(record) {
-  try {
-    await ensureOfficeCapability({
-      namespace: record.namespace,
-      linuxName: record.linuxName,
-      home: userPaths(DATA_ROOT, record.namespace).home,
-      userHelper: USER_HELPER,
-    });
-  } catch (error) {
-    console.error(`v-office capability for ${record.namespace} failed:`, error);
+async function startCapabilities(record) {
+  const options = {
+    namespace: record.namespace,
+    linuxName: record.linuxName,
+    home: userPaths(DATA_ROOT, record.namespace).home,
+    userHelper: USER_HELPER,
+  };
+  const settled = await Promise.allSettled([
+    ensureOfficeCapability(options),
+    ensureWeknoraCapability(options),
+  ]);
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.error(`capability for ${record.namespace} failed:`, result.reason);
+    }
   }
 }
 
@@ -578,7 +591,7 @@ async function instanceFor(session) {
     statePath: STATE_FILE,
     userHelper: USER_HELPER,
   });
-  await startOfficeCapability(record);
+  await startCapabilities(record);
   return instance;
 }
 
@@ -725,7 +738,7 @@ function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void Promise.allSettled([stopAll(), closeOfficeCapabilities()]).finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });
