@@ -116,7 +116,16 @@ stage_client_plugins() {
   # Building an image is not a developer checkout: CI=true makes the package
   # postinstall skip git-hook installation, which otherwise races on
   # .git/dsh-lefthook-install.lock and aborts the whole build.
-  CI=true pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle
+  #
+  # pnpm is not on PATH on every builder (the ARM hosts ship only corepack), so
+  # fall back to the packageManager pin instead of failing the build here.
+  local -a pnpm_cmd=(pnpm)
+  if ! command -v pnpm >/dev/null 2>&1; then
+    command -v corepack >/dev/null 2>&1 || err 'pnpm is missing and corepack is unavailable'
+    log "pnpm not found; using corepack (packageManager pin in package.json)"
+    pnpm_cmd=(corepack pnpm)
+  fi
+  CI=true "${pnpm_cmd[@]}" --filter @deepseek-ai/dsh-client-ui-knowledge bundle
   rm -rf plugins/dsh-client-ui-knowledge
   mkdir -p plugins/dsh-client-ui-knowledge
   cp -R \
