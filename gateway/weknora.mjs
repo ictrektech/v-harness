@@ -44,6 +44,8 @@ const CANDIDATES = [
 const ROUTES = [
   { method: 'GET', pattern: /^\/health$/ },
   { method: 'GET', pattern: /^\/api\/v1\/knowledge-bases$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/knowledge-bases\/[^/]+\/knowledge$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/models$/ },
   { method: 'POST', pattern: /^\/api\/v1\/knowledge-search$/ },
   { method: 'GET', pattern: /^\/api\/v1\/knowledge\/[^/]+$/ },
   { method: 'GET', pattern: /^\/api\/v1\/chunks\/[^/]+$/ },
