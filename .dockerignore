@@ -9,3 +9,7 @@
 !bin/**
 !skills/
 !skills/**
+# Browser plugins built from this repository (see build_image.sh, which stages
+# them here before the build; gateway/plugins.mjs ships them into each profile).
+!plugins/
+!plugins/**

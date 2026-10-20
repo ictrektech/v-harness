@@ -56,6 +56,10 @@ COPY bin/ /opt/v-harness/bin/
 # Product skills are discovered through DSH_BUNDLED_SKILL_DIR (see
 # gateway/instances.mjs) and stay root-owned, so a tenant cannot edit them.
 COPY skills/ /opt/v-harness/skills/
+# Browser plugins built from this repository. A user's dsh profile installs its
+# web bundles from the registry, so gateway/plugins.mjs copies each of these
+# over the published copy right after dsh finishes installing the profile.
+COPY plugins/ /opt/v-harness/plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \

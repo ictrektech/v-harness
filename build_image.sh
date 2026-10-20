@@ -105,6 +105,24 @@ pull_base_image() {
   return 1
 }
 
+# Build the browser plugins this repository owns and stage them for the image.
+#
+# A user's dsh profile installs its web bundles from the registry, so a plugin
+# built here only reaches users when the image carries it (gateway/plugins.mjs
+# copies it over each profile after install). `plugins/` is build output, not
+# source: it is git-ignored and .dockerignore lets it through.
+stage_client_plugins() {
+  log "staging client plugins"
+  pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle
+  rm -rf plugins/dsh-client-ui-knowledge
+  mkdir -p plugins/dsh-client-ui-knowledge
+  cp -R \
+    packages/client/ui-knowledge/package.json \
+    packages/client/ui-knowledge/lib \
+    packages/client/ui-knowledge/locale \
+    plugins/dsh-client-ui-knowledge/
+}
+
 # Reuse the SWR copy when another host (or a previous build) already mirrored it.
 ensure_base_image() {
   if docker image inspect "$SWR_BASE_IMAGE" >/dev/null 2>&1; then
@@ -462,6 +480,7 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
   configure_build_engine
   log "BUILD_ENGINE=${BUILD_ENGINE}"
   ensure_base_image
+  stage_client_plugins
   docker_build_image \
     --build-arg "BASE_IMAGE=${SWR_BASE_IMAGE}" \
     --build-arg "DSH_VERSION=${DSH_VERSION}" \

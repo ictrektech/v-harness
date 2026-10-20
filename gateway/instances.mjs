@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises';
 import { join } from 'node:path';
+import { syncClientPlugins } from './plugins.mjs';
 
 const LAUNCH_TIMEOUT_MS = 45_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -224,6 +225,10 @@ async function launch(options) {
     const { cookie, expiresAt } = await exchangeCookie(launchUrl);
     state[record.namespace] = { cookie, cookieExpiresAt: expiresAt };
     await writeState(statePath, state);
+    // The launch URL only appears after dsh finished installing the profile, so
+    // replacing the published plugin copy here cannot race pnpm and reaches
+    // every tenant, including one signing in for the first time.
+    await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
     return {
       namespace: record.namespace,
       linuxName: record.linuxName,

@@ -51,3 +51,5 @@ native/system/test/bin/
 # Local credentials and packaging output (never commit these)
 .feishu*.json
 ictrek.app/dist/
+# Staged browser plugins: build output for the image, not source.
+plugins/
