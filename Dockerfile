@@ -15,6 +15,9 @@ FROM ${BASE_IMAGE}
 
 ARG DSH_VERSION=0.2.1-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+# Build hosts behind a restricted network cannot reach deb.debian.org; the
+# mirror is overridable, and an empty value keeps the image's own sources.
+ARG APT_MIRROR=mirrors.aliyun.com
 
 ENV NODE_ENV=production \
     DATA_ROOT=/data \
@@ -29,7 +32,14 @@ ENV NODE_ENV=production \
 # fails, which removes a large part of why dsh is extensible at all.
 # Costs roughly 300 MB in the image; it does not slow down users who install
 # pure-JS plugins, because nothing is compiled for them.
-RUN apt-get update \
+RUN if [ -n "${APT_MIRROR}" ]; then \
+      for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$source" ]; then \
+          sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$source"; \
+        fi; \
+      done; \
+    fi \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates \
       build-essential python3 \

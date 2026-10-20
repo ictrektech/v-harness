@@ -462,6 +462,7 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
     --build-arg "BASE_IMAGE=${SWR_BASE_IMAGE}" \
     --build-arg "DSH_VERSION=${DSH_VERSION}" \
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" \
+    --build-arg "APT_MIRROR=${APT_MIRROR}" \
     -f Dockerfile \
     -t "${IMAGE}:${TAG}" \
     .
