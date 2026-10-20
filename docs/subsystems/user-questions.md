@@ -24,6 +24,8 @@ interface AskUserQuestionOption {
 
 `AskUserQuestionIntent` optionally declares a known decision kind. It is tagged on `kind` so intents can be added; a UI that does not recognise a tag renders the generic option list. An intent changes presentation only — a UI honouring it answers with the same option labels a generic UI would send, so the caller reads the same answer fields either way. `approve` names the affirmative option instead of relying on option order. `ask()` rejects the two assertions no type can carry: an `approve` naming none of its own question's options, and an intent on a question with no `detail`.
 
+The `form` intent turns the whole batch into one parameter dialog: every question is a field, and a UI renders them together instead of walking them one by one. It asserts nothing, because each field still answers through the generic encoding — a menu answers its chosen label and a free field answers its text. `AskUserQuestionItem.input` describes the control such a dialog draws, including the value it starts with; a field left empty sends no value, letting the caller apply its own default.
+
 ```ts type-equiv
 /**
  * A caller-declared presentation intent: the question IS this kind of
@@ -32,17 +34,47 @@ interface AskUserQuestionOption {
  * not know a tag renders the generic flow, and the answer encoding is identical
  * either way — an intent changes presentation only, never the protocol.
  */
-type AskUserQuestionIntent = {
-  /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
-  kind: 'plan-review'
+type AskUserQuestionIntent =
+  | {
+    /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
+    kind: 'plan-review'
+    /**
+     * The option label that approves the plan; every other option declines it.
+     * Named rather than positional so no UI infers the verdict from option order.
+     * An `approve` naming no option of its own question is rejected at `ask()`.
+     */
+    approve: string
+    /** Logged tool invocation whose arguments contain the reviewed plan. */
+    callId?: ToolCallId
+  }
+  | {
+    /**
+     * A parameter form: every question of the request is one field, and the UI
+     * renders them together in one dialog instead of walking them one by one.
+     * Fields describe their own control through {@link AskUserQuestionItem.input}.
+     */
+    kind: 'form'
+  }
+```
+
+```ts type-equiv
+/** Control a form presentation renders for one question. */
+interface AskUserQuestionInput {
+  /** Control kind; `text` when absent. `longtext` renders a multi-line box. */
+  kind?: 'text' | 'number' | 'longtext'
   /**
-   * The option label that approves the plan; every other option declines it.
-   * Named rather than positional so no UI infers the verdict from option order.
-   * An `approve` naming no option of its own question is rejected at `ask()`.
+   * Value the form starts with. Submitting unchanged sends it back verbatim, so
+   * an asker that wants a model default shown rather than guessed puts it here.
    */
-  approve: string
-  /** Logged tool invocation whose arguments contain the reviewed plan. */
-  callId?: ToolCallId
+  default?: string
+  /** Lower bound for `number`; the UI clamps to it and the asker still validates. */
+  min?: number
+  /** Upper bound for `number`. */
+  max?: number
+  /** Step for `number`; browsers that ignore it still accept any value. */
+  step?: number
+  /** Empty-field hint. */
+  placeholder?: string
 }
 ```
 
@@ -65,6 +97,8 @@ interface AskUserQuestionItem {
   options?: AskUserQuestionOption[]
   /** Whether more than one option may be selected. Defaults to single-select. */
   multiSelect?: boolean
+  /** Optional control description a `form` intent renders; ignored by the generic flow. */
+  input?: AskUserQuestionInput
   /** Optional presentation intent for capable UIs; absent asks for the generic option list. */
   intent?: AskUserQuestionIntent
 }

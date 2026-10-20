@@ -1055,7 +1055,8 @@ describe('exit_plan_mode', () => {
     expect(question?.intent).toEqual({ kind: 'plan-review', approve: 'Approve', callId: `call-exit-${callCounter}` })
     // The named label is one this same question offers, so a UI honouring the
     // intent answers a choice this tool accepts.
-    expect(question?.options?.map(option => option.label)).toContain(question?.intent?.approve)
+    const approve = question?.intent?.kind === 'plan-review' ? question.intent.approve : undefined
+    expect(question?.options?.map(option => option.label)).toContain(approve)
   })
 
   it('reads a dismissed review as the user taking the turn back: a turn-concluding success, not a failure', async () => {

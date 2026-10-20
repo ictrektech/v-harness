@@ -30,9 +30,9 @@ import type {
 } from './types.ts'
 
 export type {
-  AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionIntent, AskUserQuestionItem,
-  AskUserQuestionOption, PendingUserQuestion, SettledUserQuestion, UserQuestionProjectionView,
-  UserQuestionState,
+  AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionInput, AskUserQuestionIntent,
+  AskUserQuestionItem, AskUserQuestionOption, PendingUserQuestion, SettledUserQuestion,
+  UserQuestionProjectionView, UserQuestionState,
 } from './types.ts'
 export { isTimedAskUserQuestionSchema, TIMED_WAIT_PARAMETER } from './projection.ts'
 
@@ -302,7 +302,9 @@ export class UserQuestionService extends TypertRemoteService {
     // the mistake is, rather than in each UI.
     for (const question of request.questions) {
       const intent = question.intent
-      if (intent === undefined) continue
+      // A form intent asserts nothing: its fields carry the answer encoding the
+      // generic flow already uses, so only the presentation differs.
+      if (intent === undefined || intent.kind !== 'plan-review') continue
       if (!(question.options ?? []).some(option => option.label === intent.approve)) {
         throw new UserQuestionError(
           `question ${question.id} declares intent ${intent.kind} whose approve label `

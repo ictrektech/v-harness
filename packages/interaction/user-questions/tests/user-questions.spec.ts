@@ -355,6 +355,32 @@ describe('UserQuestionService', () => {
     ])
     expect(p.seen[0]?.questions[1]?.intent).toEqual(intent)
   })
+
+  it('accepts a form intent, carrying each field control to the answerer', async () => {
+    const ctx = new Context()
+    await ctx.plugin(UserQuestionService)
+    const p = provider('sd15')
+    registerAnswerer(ctx, p)
+    const intent = { kind: 'form' } as const
+    const input = { kind: 'longtext', default: 'a tea house' } as const
+
+    const result = await ctx.userQuestions.ask({
+      questions: [
+        { id: 'prompt', question: 'Prompt', input, intent },
+        { id: 'model_key', question: 'Model', options: [{ label: 'sd15' }], intent },
+      ],
+    })
+
+    // A form intent asserts nothing about options or detail: only the
+    // presentation differs, so the request reaches the answerer unchanged and
+    // the answer keeps the generic encoding.
+    expect(result.answers).toEqual([
+      { id: 'prompt', selected: ['sd15'] },
+      { id: 'model_key', selected: ['sd15'] },
+    ])
+    expect(p.seen[0]?.questions[0]?.input).toEqual(input)
+    expect(p.seen[0]?.questions[1]?.intent).toEqual(intent)
+  })
 })
 
 /** Rejection as the Client runtime ships it across the wire: a plain Error carrying the typed name and code. */

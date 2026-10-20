@@ -21,17 +21,45 @@ export interface AskUserQuestionOption {
  * not know a tag renders the generic flow, and the answer encoding is identical
  * either way — an intent changes presentation only, never the protocol.
  */
-export type AskUserQuestionIntent = {
-  /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
-  kind: 'plan-review'
+export type AskUserQuestionIntent =
+  | {
+    /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
+    kind: 'plan-review'
+    /**
+     * The option label that approves the plan; every other option declines it.
+     * Named rather than positional so no UI infers the verdict from option order.
+     * An `approve` naming no option of its own question is rejected at `ask()`.
+     */
+    approve: string
+    /** Logged tool invocation whose arguments contain the reviewed plan. */
+    callId?: ToolCallId
+  }
+  | {
+    /**
+     * A parameter form: every question of the request is one field, and the UI
+     * renders them together in one dialog instead of walking them one by one.
+     * Fields describe their own control through {@link AskUserQuestionItem.input}.
+     */
+    kind: 'form'
+  }
+
+/** Control a form presentation renders for one question. */
+export interface AskUserQuestionInput {
+  /** Control kind; `text` when absent. `longtext` renders a multi-line box. */
+  kind?: 'text' | 'number' | 'longtext'
   /**
-   * The option label that approves the plan; every other option declines it.
-   * Named rather than positional so no UI infers the verdict from option order.
-   * An `approve` naming no option of its own question is rejected at `ask()`.
+   * Value the form starts with. Submitting unchanged sends it back verbatim, so
+   * an asker that wants a model default shown rather than guessed puts it here.
    */
-  approve: string
-  /** Logged tool invocation whose arguments contain the reviewed plan. */
-  callId?: ToolCallId
+  default?: string
+  /** Lower bound for `number`; the UI clamps to it and the asker still validates. */
+  min?: number
+  /** Upper bound for `number`. */
+  max?: number
+  /** Step for `number`; browsers that ignore it still accept any value. */
+  step?: number
+  /** Empty-field hint. */
+  placeholder?: string
 }
 
 /** One question in a user-questions request. */
@@ -48,6 +76,8 @@ export interface AskUserQuestionItem {
   options?: AskUserQuestionOption[]
   /** Whether more than one option may be selected. Defaults to single-select. */
   multiSelect?: boolean
+  /** Optional control description a `form` intent renders; ignored by the generic flow. */
+  input?: AskUserQuestionInput
   /** Optional presentation intent for capable UIs; absent asks for the generic option list. */
   intent?: AskUserQuestionIntent
 }
