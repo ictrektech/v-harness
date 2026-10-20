@@ -13,7 +13,9 @@
 import { isAppendSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { indexOf, isRecord, snippetOf, text, type KnowledgeCitation } from './weknora.ts'
+import {
+  indexOf, isRecord, snippetOf, text, type KnowledgeCitation, type Library,
+} from './weknora.ts'
 
 /** One passage with the sequence of the tool result that returned it. */
 export interface RetrievedCitation extends KnowledgeCitation {
@@ -23,11 +25,13 @@ export interface RetrievedCitation extends KnowledgeCitation {
 /** Immutable knowledge facts published against one Turn. */
 export interface KnowledgeTurnData {
   readonly citations: readonly RetrievedCitation[]
+  /** Libraries the run listed, in first-seen order; a `health` call fills it. */
+  readonly libraries: readonly Library[]
 }
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationTurnDataMap {
-    /** Passages the run retrieved in this Turn, in first-seen order. */
+    /** Passages and libraries the run named in this Turn, in first-seen order. */
     knowledge: KnowledgeTurnData
   }
 }
@@ -67,6 +71,18 @@ export function selectRetrieved(owner: TurnTailOwnerProps): readonly RetrievedCi
   return citations.length === 0 ? null : citations
 }
 
+/**
+ * The libraries the closing turn listed.
+ *
+ * A `health` call prints them, so the tail can show "which libraries exist"
+ * without the user opening any page — the answer names them, the card backs it.
+ * @param owner - Turn-tail owner currency for the closing assistant.
+ * @returns the libraries, empty when the turn listed none.
+ */
+export function selectLibraries(owner: TurnTailOwnerProps): readonly Library[] {
+  return owner.turn.data.get('knowledge')?.libraries ?? []
+}
+
 /** Turn-local retrieval accumulator; it publishes no view Node. */
 export const knowledgeDefinition: ConversationNodeDefinition<KnowledgeState> = {
   kind: 'knowledge',
@@ -79,33 +95,41 @@ export const knowledgeDefinition: ConversationNodeDefinition<KnowledgeState> = {
   },
   start: (_context, match) => {
     if (match.event.type !== 'turn/start') throw new Error('knowledge start requires turn/start')
-    return { turn: match.event.data.turn, citations: [] }
+    return { turn: match.event.data.turn, citations: [], libraries: [] }
   },
   update: (context, match) => {
     if (match.event.type !== 'tool/result') return context.state
     if (match.event.data.message.isError === true) return context.state
-    const retrieved = citationsInText(toolText(match.event.data.message.content))
-    if (retrieved.length === 0) return context.state
+    const printed = knowledgeInText(toolText(match.event.data.message.content))
+    if (printed.citations.length === 0 && printed.libraries.length === 0) return context.state
     const known = new Set(context.state.citations.map(citation => citation.chunkId))
     const added: RetrievedCitation[] = []
-    for (const citation of retrieved) {
+    for (const citation of printed.citations) {
       if (known.has(citation.chunkId)) continue
       known.add(citation.chunkId)
       added.push({ ...citation, seq: match.event.seq })
     }
-    return added.length === 0 ? context.state : { ...context.state, citations: [...context.state.citations, ...added] }
+    const knownLibraries = new Set(context.state.libraries.map(library => library.id))
+    const addedLibraries = printed.libraries.filter(library => !knownLibraries.has(library.id))
+    if (added.length === 0 && addedLibraries.length === 0) return context.state
+    return {
+      ...context.state,
+      citations: [...context.state.citations, ...added],
+      libraries: [...context.state.libraries, ...addedLibraries],
+    }
   },
   buildLocationData: (context, scope, previous) => {
     if (scope !== 'turn' || context.state === undefined) return null
     if (previous?.kind === 'turn'
       && previous.turn === context.state.turn
       && previous.key === 'knowledge'
-      && previous.value.citations === context.state.citations) return previous
+      && previous.value.citations === context.state.citations
+      && previous.value.libraries === context.state.libraries) return previous
     return {
       kind: 'turn',
       turn: context.state.turn,
       key: 'knowledge',
-      value: { citations: context.state.citations },
+      value: { citations: context.state.citations, libraries: context.state.libraries },
     }
   },
 }
@@ -122,31 +146,42 @@ function toolText(content: readonly { readonly type: string }[]): string {
   return printed.join('\n')
 }
 
-/**
- * Every knowledge citation printed in one tool result.
- * @param printed - the tool result text.
- * @returns the citations it names, in printed order.
- */
-function citationsInText(printed: string): readonly KnowledgeCitation[] {
-  const citations: KnowledgeCitation[] = []
-  for (const value of jsonObjects(printed)) collect(value, citations)
-  return citations
+/** Citations and libraries named by one printed tool result. */
+interface PrintedKnowledge {
+  readonly citations: readonly KnowledgeCitation[]
+  readonly libraries: readonly Library[]
 }
 
 /**
- * Read one printed JSON object, accepting both shapes the skill emits.
- * @param value - one parsed object.
- * @param into - accumulator for the citations it names.
+ * Every knowledge fact printed in one tool result.
+ * @param printed - the tool result text.
+ * @returns the citations and libraries it names, in printed order.
  */
-function collect(value: unknown, into: KnowledgeCitation[]): void {
+function knowledgeInText(printed: string): PrintedKnowledge {
+  const citations: KnowledgeCitation[] = []
+  const libraries: Library[] = []
+  for (const value of jsonObjects(printed)) collect(value, citations, libraries)
+  return { citations, libraries }
+}
+
+/**
+ * Read one printed JSON object, accepting every shape the skill emits: `search`
+ * citations, `read` chunks, and the `knowledge_bases` list a `health` call
+ * prints. One result may name both, so the shapes are independent, not exclusive.
+ * @param value - one parsed object.
+ * @param citations - accumulator for the passages it names.
+ * @param libraries - accumulator for the libraries it lists.
+ */
+function collect(value: unknown, citations: KnowledgeCitation[], libraries: Library[]): void {
   if (!isRecord(value)) return
+  collectLibraries(value.knowledge_bases, libraries)
   if (Array.isArray(value.citations)) {
     const rows: readonly unknown[] = value.citations
     for (const row of rows) {
       const citation = searchCitation(row)
-      if (citation !== undefined) into.push(citation)
+      if (citation === undefined || citations.some(item => item.chunkId === citation.chunkId)) continue
+      citations.push(citation)
     }
-    return
   }
   if (!Array.isArray(value.chunks)) return
   const rows: readonly unknown[] = value.chunks
@@ -155,7 +190,23 @@ function collect(value: unknown, into: KnowledgeCitation[]): void {
   const knowledgeId = text(knowledge.id)
   for (const row of rows) {
     const citation = readCitation(row, title, knowledgeId)
-    if (citation !== undefined) into.push(citation)
+    if (citation !== undefined) citations.push(citation)
+  }
+}
+
+/**
+ * Read the `knowledge_bases` field of one printed object.
+ * @param value - the field, which a failed `health` leaves out.
+ * @param into - accumulator for the libraries it names.
+ */
+function collectLibraries(value: unknown, into: Library[]): void {
+  if (!Array.isArray(value)) return
+  for (const row of value) {
+    if (!isRecord(row)) continue
+    const id = text(row.id)
+    const name = text(row.name)
+    if (id === undefined || name === undefined) continue
+    if (!into.some(library => library.id === id)) into.push({ id, name })
   }
 }
 

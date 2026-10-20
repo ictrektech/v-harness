@@ -1,17 +1,12 @@
 /**
- * Web knowledge-base surface: the `@knowledge` source, the source strip under an
- * answer, and the evidence page.
+ * Web knowledge-base surface: the `@hybrag` pick, the source strip under an
+ * answer, and the knowledge panel.
  *
- * Library lists, search results, and citations all come from the gateway
- * (`/__vh/weknora/...`), which forwards the caller's own VOS token upstream, so
- * neither the browser nor the agent handles a knowledge-base credential. A pick
- * inserts an atomic reference; the model side sees
- * `<knowledge-base>name</knowledge-base>` and passes that name to the `weknora`
- * skill's `--kb`.
- *
- * An unreachable gateway leaves only the "all knowledge bases" row. That is
- * deliberate: the pick still means "ask the knowledge service", and the skill
- * reports the real failure instead of the menu guessing at one.
+ * Library lists, documents, models, search results, and answers all come from
+ * the gateway (`/__vh/weknora/...`), which forwards the caller's own VOS token
+ * upstream, so neither the browser nor the agent handles a knowledge-base
+ * credential. Picking `@hybrag` opens the panel and inserts nothing — the whole
+ * interaction is the panel, not a message.
  *
  * @module @deepseek-ai/dsh-client-ui-knowledge/client
  */
@@ -19,7 +14,7 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {
-  InputTriggerCandidate, InputTriggerServiceContract, InputTriggerSource,
+  InputTriggerServiceContract, InputTriggerSource,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 // Type-only: pulls the Context merges these registrations land in.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -29,8 +24,7 @@ import { knowledgeDefinition } from './citations.ts'
 import { CitationStrip, type CitationStripInjected } from './CitationStrip.tsx'
 import { EVIDENCE_ID, EVIDENCE_KIND, evidenceDefinition } from './evidence-tab.ts'
 import { EvidenceBody, EvidenceTitle } from './EvidenceBody.tsx'
-import { en, NS, zh, type KnowledgeKey } from './locales.ts'
-import { libraries } from './weknora.ts'
+import { en, NS, zh } from './locales.ts'
 
 /** Required services: the trigger registry, the copy, the slot registry, the timeline, and the column. */
 export const inject = [
@@ -40,10 +34,8 @@ export const inject = [
 /** This plugin's identity in the turn-tail list. */
 const TAIL_ID = '@deepseek-ai/dsh-client-ui-knowledge'
 
-/** Sentinel reference meaning "every library the caller can see". */
-const ALL = '*'
-
-type Translate = (key: KnowledgeKey) => string
+/** The one thing this source offers: the knowledge surface itself, not a library. */
+const HYBRAG = 'hybrag'
 
 /**
  * Register every knowledge-base surface.
@@ -59,15 +51,18 @@ export function apply(ctx: ClientContext): void {
     name: 'knowledge',
     order: 10,
     showGroupTitle: false,
-    candidates: (_session, { query, signal }) => candidates(query, signal, t),
-    onPick({ candidate }) {
-      const value = candidate.value ?? ALL
-      const label = value === ALL ? t('all.label') : candidate.name
-      return { insert: { source: 'knowledge', ref: value, label, clipboardText: label } }
-    },
-    codec: {
-      clipboardText: ref => (ref === ALL ? t('all.label') : ref),
-      serialize: async ref => `<knowledge-base>${ref === ALL ? t('all.label') : ref}</knowledge-base>`,
+    candidates: async () => [{
+      name: HYBRAG,
+      description: t('hybrag.description'),
+      section: t('section'),
+      icon: 'file' as const,
+      value: HYBRAG,
+    }],
+    onPick() {
+      // The surface is the outcome: opening the panel is the whole pick, so no
+      // reference enters the draft and nothing is sent to the model.
+      void ctx.sidebarRight.openTab(EVIDENCE_KIND, { params: {} })
+      return 'handled'
     },
   }
   const inputTriggers = ctx.get('inputTriggers') as InputTriggerServiceContract
@@ -91,38 +86,4 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register(
     { name: 'sidebar.right.pane.tab.title', key: EVIDENCE_ID, locale: NS }, EvidenceTitle,
   )), 'ui-knowledge: evidence title')
-}
-
-/**
- * The "every library" row followed by the visible libraries whose name matches
- * the query.
- * @param query - text between `@` and the caret.
- * @param signal - aborted when the user keeps typing or closes the menu.
- * @param t - the knowledge dictionary.
- * @returns the menu rows.
- */
-async function candidates(
-  query: string,
-  signal: AbortSignal,
-  t: Translate,
-): Promise<readonly InputTriggerCandidate[]> {
-  const needle = query.toLowerCase()
-  const rows = ((await libraries(signal)) ?? [])
-    .filter(library => library.name.toLowerCase().includes(needle))
-    .map(library => ({
-      name: library.name,
-      section: t('section'),
-      icon: 'folder' as const,
-      value: library.name,
-    }))
-  return [
-    {
-      name: t('all.label'),
-      description: t('all.description'),
-      section: t('section'),
-      icon: 'file' as const,
-      value: ALL,
-    },
-    ...rows,
-  ]
 }

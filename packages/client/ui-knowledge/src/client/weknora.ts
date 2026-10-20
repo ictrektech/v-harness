@@ -56,22 +56,30 @@ export async function libraries(signal: AbortSignal): Promise<readonly Library[]
 }
 
 /**
- * Search the given libraries (all of them when `scope` is empty).
+ * Search the given libraries (all of them when `scope` is empty), optionally
+ * narrowed to individual documents.
  * @param query - the keywords to look for.
  * @param scope - library ids to search inside.
+ * @param documents - document ids to search inside; empty means the whole library.
  * @param signal - cancellation of this attempt.
  * @returns the passages, or undefined when the gateway cannot search.
  */
 export async function search(
   query: string,
   scope: readonly string[],
+  documents: readonly string[] = [],
   signal?: AbortSignal,
 ): Promise<readonly KnowledgeCitation[] | undefined> {
   const response = await fetch(`${ENDPOINT}/knowledge-search`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query, knowledge_base_ids: [...scope], match_count: MATCH_COUNT }),
+    body: JSON.stringify({
+      query,
+      knowledge_base_ids: [...scope],
+      ...(documents.length === 0 ? {} : { knowledge_ids: [...documents] }),
+      match_count: MATCH_COUNT,
+    }),
     ...(signal === undefined ? {} : { signal }),
   }).catch(() => undefined)
   if (!response?.ok) return undefined
@@ -83,6 +91,144 @@ export async function search(
     if (citation !== undefined) found.push(citation)
   }
   return found
+}
+
+/** One document a library contains. */
+export interface KnowledgeDocument {
+  readonly id: string
+  readonly name: string
+}
+
+/**
+ * The documents inside one library.
+ * @param kbId - the library to list.
+ * @param signal - cancellation of this attempt.
+ * @returns the documents, or undefined when the gateway cannot list them.
+ */
+export async function documents(
+  kbId: string,
+  signal: AbortSignal,
+): Promise<readonly KnowledgeDocument[] | undefined> {
+  const response = await fetch(
+    `${ENDPOINT}/knowledge-bases/${encodeURIComponent(kbId)}/knowledge?page=1&page_size=50`,
+    { credentials: 'same-origin', signal },
+  ).catch(() => undefined)
+  if (!response?.ok) return undefined
+  const body = (await response.json()) as { data?: unknown }
+  const rows: readonly unknown[] = Array.isArray(body.data) ? body.data : []
+  const found: KnowledgeDocument[] = []
+  for (const row of rows) {
+    if (!isRecord(row)) continue
+    const id = text(row.id)
+    if (id === undefined) continue
+    found.push({ id, name: text(row.title) ?? text(row.file_name) ?? id })
+  }
+  return found
+}
+
+/** One chat model this workspace offers. */
+export interface ModelOption {
+  readonly id: string
+  readonly name: string
+}
+
+/**
+ * The workspace's chat models.
+ * @param signal - cancellation of this attempt.
+ * @returns the models, or undefined when the gateway cannot list them.
+ */
+export async function models(signal: AbortSignal): Promise<readonly ModelOption[] | undefined> {
+  const response = await fetch(`${ENDPOINT}/models`, { credentials: 'same-origin', signal })
+    .catch(() => undefined)
+  if (!response?.ok) return undefined
+  const body = (await response.json()) as { data?: unknown }
+  const rows: readonly unknown[] = Array.isArray(body.data) ? body.data : []
+  const found: ModelOption[] = []
+  for (const row of rows) {
+    if (!isRecord(row)) continue
+    const id = text(row.id)
+    const name = text(row.name)
+    if (id === undefined || name === undefined) continue
+    found.push({ id, name })
+  }
+  return found
+}
+
+/** The answer one `ask` call produced, with the passages that grounded it. */
+export interface AskResult {
+  readonly answer: string
+  readonly citations: readonly KnowledgeCitation[]
+}
+
+/**
+ * Ask inside the given libraries through WeKnora's own RAG chat.
+ *
+ * Creates a session, then reads the SSE stream to completion and folds the
+ * `answer` pieces into one string and the `references` event into citations.
+ * @param query - the question.
+ * @param scope - library ids and document ids to ground the answer in.
+ * @param modelId - chat model override; empty keeps the workspace default.
+ * @param signal - cancellation of this attempt.
+ * @returns the answer and its citations, or undefined when the gateway cannot answer.
+ */
+export async function ask(
+  query: string,
+  scope: { readonly kbIds: readonly string[]; readonly docIds: readonly string[] },
+  modelId: string,
+  signal: AbortSignal,
+): Promise<AskResult | undefined> {
+  const created = await fetch(`${ENDPOINT}/sessions`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: query.slice(0, 40) }),
+    signal,
+  }).catch(() => undefined)
+  if (!created?.ok) return undefined
+  const session = (await created.json()) as { data?: unknown }
+  const sessionId = isRecord(session.data) ? text(session.data.id) : undefined
+  if (sessionId === undefined) return undefined
+
+  const response = await fetch(`${ENDPOINT}/knowledge-chat/${encodeURIComponent(sessionId)}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+    body: JSON.stringify({
+      query,
+      knowledge_base_ids: [...scope.kbIds],
+      ...(scope.docIds.length === 0 ? {} : { knowledge_ids: [...scope.docIds] }),
+      ...(modelId === '' ? {} : { model_id: modelId }),
+    }),
+    signal,
+  }).catch(() => undefined)
+  if (!response?.ok) return undefined
+
+  const stream = await response.text()
+  let answer = ''
+  const citations: KnowledgeCitation[] = []
+  for (const line of stream.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    const payload = trimmed.slice(5).trim()
+    if (payload === '' || payload === '[DONE]') continue
+    let event: unknown
+    try {
+      event = JSON.parse(payload) as unknown
+    } catch {
+      continue
+    }
+    if (!isRecord(event)) continue
+    if (event.response_type === 'answer' && typeof event.content === 'string') answer += event.content
+    if (event.response_type !== 'references') continue
+    const references: readonly unknown[] = Array.isArray(event.knowledge_references) ? event.knowledge_references : []
+    for (const row of references) {
+      const citation = citationOf(row)
+      if (citation !== undefined && !citations.some(item => item.chunkId === citation.chunkId)) {
+        citations.push(citation)
+      }
+    }
+  }
+  return { answer, citations }
 }
 
 /**
