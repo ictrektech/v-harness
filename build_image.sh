@@ -113,19 +113,24 @@ pull_base_image() {
 # source: it is git-ignored and .dockerignore lets it through.
 stage_client_plugins() {
   log "staging client plugins"
-  # Building an image is not a developer checkout: CI=true makes the package
-  # postinstall skip git-hook installation, which otherwise races on
-  # .git/dsh-lefthook-install.lock and aborts the whole build.
+  # The whole step runs inside the base image, the same way v-office builds:
+  # the host needs docker and nothing else. That is what makes an amd64 box
+  # with nvm and an arm64 box with no node installed behave identically.
   #
-  # pnpm is not on PATH on every builder (the ARM hosts ship only corepack), so
-  # fall back to the packageManager pin instead of failing the build here.
-  local -a pnpm_cmd=(pnpm)
-  if ! command -v pnpm >/dev/null 2>&1; then
-    command -v corepack >/dev/null 2>&1 || err 'pnpm is missing and corepack is unavailable'
-    log "pnpm not found; using corepack (packageManager pin in package.json)"
-    pnpm_cmd=(corepack pnpm)
-  fi
-  CI=true "${pnpm_cmd[@]}" --filter @deepseek-ai/dsh-client-ui-knowledge bundle
+  # node_modules lives in a named volume instead of the checkout. The name
+  # carries the architecture because compiled native modules (rolldown,
+  # esbuild) cannot be shared between amd64 and arm64, and keeping the volume
+  # between runs avoids reinstalling the workspace on every build.
+  local repo modules_volume
+  repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  modules_volume="v-harness-bundle-modules-$(uname -m)"
+  docker run --rm \
+    -v "${repo}:/src" \
+    -v "${modules_volume}:/src/node_modules" \
+    -e CI=true \
+    -w /src \
+    "${SWR_BASE_IMAGE}" \
+    sh -c 'corepack enable >/dev/null 2>&1; pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle'
   rm -rf plugins/dsh-client-ui-knowledge
   mkdir -p plugins/dsh-client-ui-knowledge
   cp -R \
@@ -391,6 +396,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The only host dependency is docker plus the python3 used to read the Feishu
+# table; node, pnpm and the bundler all run inside the image.
 require_cmd python3
 
 ARCH="$(uname -m)"
