@@ -33,6 +33,9 @@ TARGET_SHEET_TITLES=()
 
 DSH_VERSION="${DSH_VERSION:-0.2.1-rc.2}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+# Debian package mirror for the build stage; an empty value keeps the base
+# image's own sources.
+APT_MIRROR="${APT_MIRROR:-mirrors.aliyun.com}"
 
 PUSH_IMAGES=1
 UPDATE_FEISHU=1
@@ -67,6 +70,7 @@ Environment:
   FEISHU_SHEET_TITLE       Optional default for --sheet, comma-separated
   DSH_VERSION              dsh npm version baked into the image (default 0.2.1-rc.2)
   NPM_REGISTRY             npm registry used during the image build
+  APT_MIRROR               Debian package mirror for apt (empty keeps upstream)
 EOF
 }
 
