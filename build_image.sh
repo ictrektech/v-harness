@@ -113,7 +113,10 @@ pull_base_image() {
 # source: it is git-ignored and .dockerignore lets it through.
 stage_client_plugins() {
   log "staging client plugins"
-  pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle
+  # Building an image is not a developer checkout: CI=true makes the package
+  # postinstall skip git-hook installation, which otherwise races on
+  # .git/dsh-lefthook-install.lock and aborts the whole build.
+  CI=true pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle
   rm -rf plugins/dsh-client-ui-knowledge
   mkdir -p plugins/dsh-client-ui-knowledge
   cp -R \
