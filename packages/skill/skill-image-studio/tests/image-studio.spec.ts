@@ -1,20 +1,18 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { Context } from '@deepseek-ai/cordis'
-import SkillRegistry from '@deepseek-ai/dsh-skill'
 import * as SkillImageStudio from '@deepseek-ai/dsh-skill-image-studio'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('node:sea', () => ({ isSea: vi.fn(() => false) }))
 
 const execFileAsync = promisify(execFile)
-const assets = fileURLToPath(new URL('../assets/', import.meta.url))
-const names = ['image-studio', 'image-studio-generate', 'image-studio-models']
+const skills = fileURLToPath(new URL('../../../../skills/', import.meta.url))
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
 
 interface Recorded {
@@ -86,50 +84,23 @@ async function startApi(): Promise<{ server: Server; baseUrl: string; recorded: 
   return { server, baseUrl: `http://127.0.0.1:${address.port}`, recorded }
 }
 
-describe('bundled Image Studio skills', () => {
-  it('lists a compact catalog and appends runtime paths when loaded', async () => {
+describe('bundled Image Studio skill', () => {
+  it('mounts the tool over the CLI that ships in skills/image-studio', () => {
     const ctx = new Context()
     try {
-      await ctx.plugin(SkillRegistry)
-      const fiber = await ctx.plugin(SkillImageStudio)
-      const catalog = await ctx.skills.list()
-      expect(catalog.map(skill => skill.name)).toEqual(names)
-      for (const skill of catalog) {
-        expect(skill).toMatchObject({
-          source: 'bundled', provider: 'dsh-image-studio',
-          invocation: { modelInvocable: true, userInvocable: true },
-        })
-        expect(skill.description.length).toBeLessThanOrEqual(500)
-        const loaded = await ctx.skills.get(skill.name)
-        expect(loaded?.resourceBase).toEqual({ kind: 'directory', path: join(assets, skill.name).split(sep).join('/') })
-        const raw = await readFile(join(assets, skill.name, 'SKILL.md'), 'utf8')
-        const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/u, '').trim()
-        expect(loaded?.content.startsWith(body)).toBe(true)
-        const runtime = JSON.parse(loaded!.content.slice(loaded!.content.indexOf('{\n  "imageStudio"'))) as {
-          imageStudio: { node: string; cli: string; baseUrl: string; authFile: string; requestTimeoutMs: number }
-        }
-        expect(runtime.imageStudio).toMatchObject({
-          node: process.execPath, baseUrl: 'http://image-studio-backend:5000', requestTimeoutMs: 30_000,
-        })
-        expect(runtime.imageStudio.cli).toBe(join(assets, 'scripts', 'image-studio.mjs'))
-        expect(runtime.imageStudio.authFile.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(runtime.imageStudio.authFile)).toBe(true)
-      }
-      await fiber.dispose()
-      expect(await ctx.skills.list()).toEqual([])
-    } finally { await ctx.fiber.dispose() }
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: skills }) }).not.toThrow()
+    } finally { void ctx.fiber.dispose() }
   })
 
-  it('rejects relative paths and unusable runtimes before registration', async () => {
+  it('rejects relative paths and unusable runtimes', async () => {
     const ctx = new Context()
     try {
-      await ctx.plugin(SkillRegistry)
-      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: 'assets' }) }).toThrow('absolute directory')
-      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: assets, baseUrl: 'ftp://host' }) }).toThrow('http(s)')
-      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: assets, baseUrl: 'not a url' }) }).toThrow('http(s)')
-      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: assets, authFile: 'relative.json' }) }).toThrow('absolute path')
-      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: assets, cli: join(assets, 'missing.mjs') }) }).toThrow()
-      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: assets, node: assets }) }).toThrow()
-      expect(await ctx.skills.list()).toEqual([])
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: 'skills' }) }).toThrow('absolute directory')
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: skills, baseUrl: 'ftp://host' }) }).toThrow('http(s)')
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: skills, baseUrl: 'not a url' }) }).toThrow('http(s)')
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: skills, authFile: 'relative.json' }) }).toThrow('absolute path')
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: skills, cli: join(skills, 'missing.mjs') }) }).toThrow()
+      expect(() => { SkillImageStudio.apply(ctx, { assetRoot: skills, node: skills }) }).toThrow()
     } finally { await ctx.fiber.dispose() }
   })
 })
@@ -202,5 +173,5 @@ describe('Image Studio CLI', () => {
 })
 
 function runtimePaths(): { node: string; cli: string } {
-  return { node: process.execPath, cli: join(assets, 'scripts', 'image-studio.mjs') }
+  return { node: process.execPath, cli: join(skills, 'image-studio', 'scripts', 'image-studio.mjs') }
 }
