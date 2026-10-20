@@ -4,7 +4,8 @@ import type { InjectFace, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStor
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {
-  AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionItem, UserQuestionState,
+  AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionInput, AskUserQuestionItem,
+  UserQuestionState,
 } from '@deepseek-ai/dsh-user-questions/types'
 import type { createQuestionDraftStore } from '../draft-store.ts'
 
@@ -100,6 +101,57 @@ export function planReviewOf(questions: readonly QuestionItem[]): PlanReview | u
   }
 }
 
+
+/**
+ * One field of a `form` request: a question whose answer is a single control
+ * value. `options` renders a menu, `input` describes a free control, and a
+ * field with neither renders a plain text box.
+ */
+export interface QuestionFormField {
+  /** Question id, echoed in the answer. */
+  id: string
+  /** Field label, taken from the question text. */
+  label: string
+  /** Optional group heading, rendered once above the first field that carries it. */
+  header?: string
+  /** Optional supporting sentence under the label. */
+  detail?: string
+  /** Choices rendered as a menu; the answer carries the chosen label. */
+  options?: readonly QuestionOption[]
+  /** Control description for a free field. */
+  input?: AskUserQuestionInput
+}
+
+/** A request narrowed to the `form` presentation intent: one dialog over every field. */
+export interface QuestionForm {
+  /** Dialog heading; the first heading the fields declare, when any. */
+  title?: string
+  /** Fields in ask order. */
+  fields: readonly QuestionFormField[]
+}
+
+/**
+ * Narrow a request to a renderable parameter form, or return undefined to leave
+ * it to another presentation. Every question must declare the `form` intent:
+ * a mixed batch has no single layout, and the generic flow already walks one
+ * question at a time.
+ * @param questions - the request's whole question batch.
+ * @returns The narrowed form, or undefined when another presentation owns it.
+ */
+export function formOf(questions: readonly QuestionItem[]): QuestionForm | undefined {
+  if (questions.length === 0) return undefined
+  if (!questions.every(question => question.intent?.kind === 'form')) return undefined
+  const fields = questions.map((question): QuestionFormField => ({
+    id: question.id,
+    label: question.question,
+    ...(question.header === undefined ? {} : { header: question.header }),
+    ...(question.detail === undefined ? {} : { detail: question.detail }),
+    ...(question.options === undefined ? {} : { options: question.options }),
+    ...(question.input === undefined ? {} : { input: question.input }),
+  }))
+  const title = fields.find(field => field.header !== undefined)?.header
+  return { ...(title === undefined ? {} : { title }), fields }
+}
 
 /** Reload-unique prefix so an unnamed legacy card cannot reuse a persisted draft. */
 const unnamedQuestionPrefix = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)),
@@ -225,7 +277,7 @@ export interface QuestionCardSnapshot {
  */
 export class PendingQuestion {
   /** Presentation discriminator used by Session pending-interaction consumers. */
-  readonly kind: 'question' | 'plan-review'
+  readonly kind: 'question' | 'plan-review' | 'form'
   /** Render identity and request key for the Session-scoped draft store. */
   readonly key: string
   /** Agent/Session identity owning the request. */
@@ -281,7 +333,9 @@ export class PendingQuestion {
   ) {
     this.sessionId = sessionId
     this.questions = questions
-    this.kind = planReviewOf(questions) === undefined ? 'question' : 'plan-review'
+    this.kind = planReviewOf(questions) !== undefined
+      ? 'plan-review'
+      : formOf(questions) !== undefined ? 'form' : 'question'
     this.callId = callId
     this.review = review
     this.dismissal = callId === undefined ? 'cancel' : 'hide'
@@ -549,6 +603,19 @@ export class PendingQuestion {
     if (this.dismissal === 'hide') {
       return settlePendingComposer(() => { this.#seat?.hide() }, 'pending question hide failed')
     }
+    const waterfall = this.#waterfall
+    if (waterfall === undefined) return Promise.reject(new Error('no channel accepts a cancellation yet'))
+    return settlePendingComposer(() => { waterfall.reject('ASK_CANCELLED') }, 'pending question cancellation failed')
+  }
+
+  /**
+   * End the request from the Client instead of only withdrawing the panel.
+   * A form dialog reads its close button as "do not do this at all", which a
+   * tool-call-keyed card cannot express through {@link dismiss} because that
+   * only hides a card whose request still stands.
+   * @returns resolves once the Host waterfall was rejected; rejects when no live channel accepts it.
+   */
+  cancel(): Promise<void> {
     const waterfall = this.#waterfall
     if (waterfall === undefined) return Promise.reject(new Error('no channel accepts a cancellation yet'))
     return settlePendingComposer(() => { waterfall.reject('ASK_CANCELLED') }, 'pending question cancellation failed')

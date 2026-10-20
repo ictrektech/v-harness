@@ -1,0 +1,100 @@
+/*
+ * The parameter dialog, sized and shaped like the rest of the product: a 15px
+ * body, 12px control radii, and a tinted fill mixed from the label colour so it
+ * reads correctly in both themes.
+ */
+.dialog {
+  width: min(600px, 100%);
+}
+
+.grid {
+  --form-fill: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 18px;
+  max-height: min(56vh, 480px);
+  overflow-y: auto;
+  font-size: 15px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field:has(.longtext) {
+  grid-column: 1 / -1;
+}
+
+.label {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.control {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 12px;
+  background: var(--form-fill);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.control:focus-visible,
+.longtext:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent);
+}
+
+.longtext {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  resize: vertical;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 12px;
+  background: var(--form-fill);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.detail {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  gap: 12px;
+  min-width: 0;
+}
+
+.feedback {
+  min-height: 16px;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}

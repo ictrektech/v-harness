@@ -8,9 +8,10 @@ import {
   IconChevronRightOutlineRegular, IconChevronUpOutlineRegular, IconCloseOutlineRegular,
   IconEditOutlineRegular, MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { planReviewOf, type QuestionAnswer, type QuestionCardSnapshot, type QuestionComposerProps } from './contract/slots.ts'
+import { formOf, planReviewOf, type QuestionAnswer, type QuestionCardSnapshot, type QuestionComposerProps } from './contract/slots.ts'
 import type { PendingQuestion } from './contract/slots.ts'
 import type { QuestionDraftAnswer, QuestionDraftProgress } from './draft-store.ts'
+import { FormPanel } from './FormPanel.tsx'
 import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import css from './QuestionComposer.module.css'
 
@@ -139,18 +140,23 @@ function AnswerField(props: AnswerFieldProps) {
 export function QuestionComposer(props: QuestionComposerProps) {
   const question = props.matched
   const review = useMemo(() => planReviewOf(question.questions), [question])
-  return review === undefined
-    ? (
-      <QuestionFlow
-        key={question.key}
-        pending={question}
-        t={props.t}
-        useStore={props.useStore}
-        useQuestionCard={props.useQuestionCard}
-        actions={props.actions}
-      />
-    )
-    : <PlanReviewPanel key={question.key} pending={question} review={review} t={props.t} renderSlot={props.renderSlot} />
+  const form = useMemo(() => formOf(question.questions), [question])
+  if (review !== undefined) {
+    return <PlanReviewPanel key={question.key} pending={question} review={review} t={props.t} renderSlot={props.renderSlot} />
+  }
+  if (form !== undefined) {
+    return <FormPanel key={question.key} pending={question} form={form} t={props.t} />
+  }
+  return (
+    <QuestionFlow
+      key={question.key}
+      pending={question}
+      t={props.t}
+      useStore={props.useStore}
+      useQuestionCard={props.useQuestionCard}
+      actions={props.actions}
+    />
+  )
 }
 
 type QuestionFlowProps =

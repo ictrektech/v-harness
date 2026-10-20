@@ -33,6 +33,10 @@ export const zh = {
   'plan.approve': '同意执行',
   'plan.decline': '拒绝',
   'plan.discuss': '要求修改',
+  'form.title': '确认参数',
+  'form.close': '关闭参数面板',
+  'form.cancel': '取消',
+  'form.submit': '确认',
 } satisfies Record<string, string>
 
 /** The question namespace key union. */
@@ -71,4 +75,8 @@ export const en = {
   'plan.approve': 'Approve',
   'plan.decline': 'Refuse',
   'plan.discuss': 'Request changes',
+  'form.title': 'Confirm parameters',
+  'form.close': 'Close the parameter form',
+  'form.cancel': 'Cancel',
+  'form.submit': 'Confirm',
 } satisfies Record<QuestionKey, string>

@@ -41,6 +41,10 @@ A question that already settled opens as a read-only card: the same pager over t
 
 A `plan-review` intent — set by `dsh-plan-mode` on the `exit_plan_mode` review — renders a compact approval card: a `Plan review` strip with a `View full plan` link, the plan title and a two-line plain-text summary, and `Request changes` / `Approve` actions. The strip uses the shared warning dot and changes it to the ongoing loader while either action settles. The complete plan opens in the sidebar through the link or its permanent Chat card. Approve answers with the asker's approval label; `Request changes` rejects the wait as `ASK_CANCELLED`, returning the composer for the user's feedback without submitting an approval. The card has no separate refusal button.
 
+### The parameter form
+
+A `form` intent renders the whole request as one modal dialog instead of the pager. Each question becomes a labelled field: a question with `options` draws a menu, `input.kind` selects a text box, a number box, or a multi-line box, and `input.default` prefills it. The dialog answers with the generic batch encoding — a menu field answers its chosen label, a free field answers its text, and an empty field answers nothing so the asker can apply its own default. Submitting unchanged therefore means "use the defaults", not "invent a value". Closing the dialog rejects the wait as `ASK_CANCELLED` rather than hiding the panel: a request the projection does not track has no tool-call row to reopen it from, and its caller must not wait forever.
+
 ### Failure and recovery
 
 An answer field autofocuses only when its answer channel is ready and no countdown exists. Manual focus and blur during the claim handshake are retained: the countdown starts paused only if the answer surface still has focus when the remaining duration arrives.

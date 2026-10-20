@@ -7,7 +7,7 @@ import { allowAllAccess } from '@deepseek-ai/dsh-client-test-runtime'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { AskUserQuestionAnswerItem } from '@deepseek-ai/dsh-user-questions/types'
-import { createWaterfallRequest, PendingQuestion, type QuestionCardSnapshot, type QuestionComposerProps } from '../src/client/contract/slots.ts'
+import { createWaterfallRequest, formOf, PendingQuestion, type QuestionCardSnapshot, type QuestionComposerProps } from '../src/client/contract/slots.ts'
 import { createQuestionDraftStore } from '../src/client/draft-store.ts'
 import { QuestionComposer as Composer, parseRecommendedLabel } from '../src/client/QuestionComposer.tsx'
 import { en, zh } from '../src/client/locales.ts'
@@ -192,8 +192,9 @@ function wait(questions: PendingQuestion['questions'] = QUESTIONS, deadline?: nu
   carrier.attachWaterfall(request.channel)
   const answer = vi.spyOn(carrier, 'answer')
   const dismiss = vi.spyOn(carrier, 'dismiss')
+  const cancel = vi.spyOn(carrier, 'cancel')
   void request.result.catch(() => {})
-  return { carrier, answer, dismiss }
+  return { carrier, answer, dismiss, cancel }
 }
 
 const answerBatch = (answers: object[]) => ({ answers })
@@ -935,5 +936,77 @@ describe('review card', () => {
     fireEvent.click(screen.getByLabelText(en['nav.next']))
     fireEvent.click(screen.getByLabelText(en['nav.next']))
     expect(screen.getByText(en['review.skipped'])).toBeTruthy()
+  })
+})
+
+const FORM: PendingQuestion['questions'] = [
+  {
+    id: 'prompt', header: '确认参数', question: 'Prompt',
+    input: { kind: 'longtext', default: 'a quiet tea house' }, intent: { kind: 'form' },
+  },
+  {
+    id: 'model_key', question: 'Model',
+    options: [{ label: 'sdxl' }, { label: 'sd15' }],
+    input: { default: 'sd15' }, intent: { kind: 'form' },
+  },
+  { id: 'steps', question: 'Steps', input: { kind: 'number', placeholder: 'Service default' }, intent: { kind: 'form' } },
+]
+
+describe('form presentation', () => {
+  it('narrows a batch whose every question declares the form intent', () => {
+    expect(formOf(FORM)).toEqual({
+      title: '确认参数',
+      fields: [
+        {
+          id: 'prompt', header: '确认参数', label: 'Prompt',
+          input: { kind: 'longtext', default: 'a quiet tea house' },
+        },
+        { id: 'model_key', label: 'Model', options: [{ label: 'sdxl' }, { label: 'sd15' }], input: { default: 'sd15' } },
+        { id: 'steps', label: 'Steps', input: { kind: 'number', placeholder: 'Service default' } },
+      ],
+    })
+  })
+
+  it('leaves a mixed batch to the generic flow', () => {
+    const mixed = [...FORM, { id: 'extra', question: 'Anything else?' }] as PendingQuestion['questions']
+    expect(formOf(mixed)).toBeUndefined()
+    const { carrier } = wait(mixed)
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('1 / 4')).toBeTruthy()
+  })
+
+  it('renders every field in one dialog and answers the values it shows', async () => {
+    const { carrier, answer } = wait(FORM)
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    // One dialog over every field, not a pager: the defaults the asker declared
+    // are already filled in, and submitting unchanged sends them back verbatim.
+    expect(screen.queryByText('1 / 3')).toBeNull()
+    const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
+    expect(prompt.value).toBe('a quiet tea house')
+    expect(screen.getByLabelText('Model').value).toBe('sd15')
+    expect(screen.getByLabelText('Steps').value).toBe('')
+
+    fireEvent.change(prompt, { target: { value: 'a snowy tea house' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh['form.submit'] })) })
+
+    expect(answer).toHaveBeenCalledWith(answerBatch([
+      { id: 'prompt', selected: [], custom: 'a snowy tea house' },
+      { id: 'model_key', selected: ['sd15'] },
+      { id: 'steps', selected: [] },
+    ]))
+  })
+
+  it('ends the request instead of hiding it when the dialog is cancelled', async () => {
+    const { carrier, cancel, dismiss } = wait(FORM)
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh['form.cancel'] })) })
+
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(dismiss).not.toHaveBeenCalled()
   })
 })
