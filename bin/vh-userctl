@@ -54,18 +54,21 @@ ensure() {
 
 # claim <linuxName> <socketPath>
 #
-# The gateway creates a tenant's V-Office capability socket as root; the owner
-# of the account must be the only one able to connect to it. Only that one
-# socket name under a namespace home is accepted, so this cannot become a
+# The gateway creates a tenant's capability sockets as root; the owner of the
+# account must be the only one able to connect to them. Only the listed socket
+# names under a namespace home are accepted, so this cannot become a
 # general-purpose chown.
 claim() {
   local name="${1:-}" path="${2:-}"
 
   [[ "$name" =~ $NAME_RE ]] || die "invalid account name: ${name}"
-  [[ "$path" == "${DATA_ROOT}/users/"*"/.dsh/voffice.sock" ]] || die "unexpected claim path: ${path}"
+  case "$path" in
+    "${DATA_ROOT}/users/"*"/.dsh/voffice.sock"|"${DATA_ROOT}/users/"*"/.dsh/weknora.sock") ;;
+    *) die "unexpected claim path: ${path}" ;;
+  esac
   [[ -S "$path" ]] || die "not a socket: ${path}"
 
-  local home="${path%/.dsh/voffice.sock}"
+  local home="${path%/.dsh/*}"
   [[ "$(basename "$home")" =~ ^[0-9a-f]{40}$ ]] || die "home is not a namespace directory: ${home}"
   getent passwd "$name" >/dev/null 2>&1 || die "unknown account: ${name}"
 

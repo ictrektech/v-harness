@@ -23,6 +23,7 @@ node /opt/v-harness/skills/voffice/scripts/voffice.mjs <命令> [参数...]
 | `list` | 列出「我的文档」全部文件（name / size / modified） |
 | `download <name> [--out <路径>]` | 下载到 workspace（默认 `./<name>`） |
 | `view <name> [--out <路径>]` | 下载后立刻用 `present` 交付给用户查看 |
+| `open <name>` | 生成在线编辑链接（Collabora），改完自动写回云端 |
 | `upload <文件> [--name <云端文件名>]` | 新建或原子覆盖云端文档 |
 | `rename <name> <新名字>` | 重命名 |
 | `delete <name>` | 删除 |
@@ -41,7 +42,15 @@ node /opt/v-harness/skills/voffice/scripts/voffice.mjs <命令> [参数...]
 1. `view <name>`：脚本把文件下载到 workspace，返回 `path`。
 2. **紧接着调用 `present` 工具**，`files: [{ path: <返回的 path>, description: '<文档名>' }]`。
    用户在聊天里点卡片即可在右侧预览（docx/pptx 由客户端转 PDF 渲染，xlsx 用表格渲染）。
-3. 需要在线编辑时，提示用户到 VOS 门户 → V-Office → 「我的文档」里打开；本 skill 不能直接唤起编辑器。
+
+## 编辑流程（用户要"改一下 / 我要编辑 / 打开来改"）
+
+1. `open <name>`：返回 `url`（绝对地址，已带登录态）。
+2. 把 `url` 原样放进 markdown 链接给用户：`[在线编辑《文件名》](url)`。
+   点开即进入 Collabora 在线编辑，保存直接写回「我的文档」的原文件，**不需要下载再上传**。
+3. 用户说改完后，`download <name>` 拉回最新内容再继续处理。
+
+不要自己拼 `/editor` 或 `cool.html` 地址，也不要用 `present` 去开编辑器——`open` 返回的 `url` 是唯一入口。
 
 不要用 `download` 把二进制读进上下文，也不要 base64。
 

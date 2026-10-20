@@ -33,6 +33,8 @@ const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1_000;
 const TOKEN_EXPIRY_MARGIN_MS = 30 * 1_000;
 const UPSTREAM_TIMEOUT_MS = 300_000;
+/** Collabora cold starts answer slowly; a session request must not hang a tab. */
+const SESSION_TIMEOUT_MS = 30_000;
 // VOS accepts a public-client refresh grant (no secret) against this endpoint,
 // which is what keeps the capability alive past the access token's TTL without
 // asking the user to sign in again.
@@ -66,6 +68,33 @@ const RESPONSE_HEADERS = new Set([
 
 /** @type {Map<string, TokenSet>} */
 const tokens = new Map();
+
+/**
+ * The origin the browser used to reach the portal, learned from its own
+ * requests. A link handed to the user has to be absolute (the chat renderer
+ * refuses relative hrefs), and the agent has no other way to learn the host.
+ */
+let publicOrigin = '';
+
+/**
+ * @param {string | string[] | undefined} value
+ * @returns {string | undefined}
+ */
+function firstHeader(value) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const first = raw?.split(',')[0]?.trim();
+  return first === undefined || first === '' ? undefined : first;
+}
+
+/**
+ * Remember the origin of the last browser request.
+ * @param {import('node:http').IncomingHttpHeaders} headers
+ */
+export function rememberOrigin(headers) {
+  const host = firstHeader(headers['x-forwarded-host']) ?? firstHeader(headers.host);
+  if (host === undefined) return;
+  publicOrigin = `${firstHeader(headers['x-forwarded-proto']) ?? 'http'}://${host}`;
+}
 
 /** @type {Map<string, Promise<import('node:http').Server>>} */
 const capabilities = new Map();
@@ -160,6 +189,20 @@ async function refreshTokenSet(namespace, entry) {
     console.warn(`v-office token refresh failed for ${namespace}:`, error);
     return undefined;
   }
+}
+
+/**
+ * Whether one user still has a token the capability endpoints can use.
+ *
+ * The access token may have expired; a refresh token keeps the capability
+ * alive, so either counts as ready.
+ * @param {string} namespace
+ * @returns {boolean}
+ */
+export function hasUsableTokens(namespace) {
+  const entry = tokens.get(namespace);
+  if (!entry) return false;
+  return entry.expiresAt > Date.now() || Boolean(entry.refresh);
 }
 
 /**
@@ -311,6 +354,106 @@ async function forward(namespace, req, res) {
 }
 
 /**
+ * @param {number} status
+ * @param {string} code
+ * @param {string} message
+ * @returns {Error & { status: number, code: string }}
+ */
+function officeError(status, code, message) {
+  const error = /** @type {Error & { status: number, code: string }} */ (new Error(message));
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
+/**
+ * Exchange one document for a Collabora editor URL as the tenant's own user.
+ *
+ * This is the only piece the browser-side surfaces need: the storage service
+ * signs the WOPI token, Collabora loads the document straight from it, and no
+ * credential ever crosses into the page.
+ * @param {string} namespace
+ * @param {{ name: string, edit?: boolean, lang?: string, version?: number }} options
+ * @returns {Promise<{ editorUrl: string, name: string, canWrite: boolean }>}
+ */
+export async function editorUrlFor(namespace, options) {
+  const token = await accessTokenFor(namespace);
+  if (token === undefined) {
+    throw officeError(401, 'vos-token-unavailable', 'VOS 登录令牌缺失或已过期，请刷新 v-harness 页面后重试');
+  }
+
+  const query = new URLSearchParams({
+    name: options.name,
+    edit: options.edit === false ? '0' : '1',
+    version: String(options.version ?? 0),
+  });
+  if (options.lang) query.set('lang', options.lang);
+
+  // The storage service now signs an absolute Collabora URL at
+  // /documents/editor-link. Deployments that have not upgraded yet only have
+  // /wopi/session, so a 404 there falls through to the legacy call instead of
+  // failing the whole flow.
+  const link = await fetch(
+    `${OFFICE_BASE.origin}${OFFICE_PREFIX}/api/v1/documents/editor-link?${query.toString()}`,
+    {
+      method: 'GET',
+      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
+    },
+  ).catch(() => undefined);
+
+  if (link?.ok) {
+    const body = await link.json().catch(() => undefined);
+    if (typeof body?.url !== 'string' || body.url === '') {
+      throw officeError(502, 'editor-link-failed', 'V-Office 没有返回编辑器地址');
+    }
+    return {
+      editorUrl: body.url,
+      name: typeof body.name === 'string' ? body.name : options.name,
+      canWrite: body.canWrite !== false,
+    };
+  }
+  if (link !== undefined && link.status !== 404) {
+    const body = await link.json().catch(() => undefined);
+    const status = link.status === 401 ? 401 : 502;
+    const code = link.status === 401 ? 'vos-token-unavailable' : 'editor-link-failed';
+    const detail = typeof body?.detail === 'string' ? body.detail : `V-Office 返回 HTTP ${String(link.status)}`;
+    throw officeError(status, code, detail);
+  }
+
+  const response = await fetch(
+    `${OFFICE_BASE.origin}${OFFICE_PREFIX}/api/v1/wopi/session?${query.toString()}`,
+    {
+      method: 'POST',
+      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
+    },
+  ).catch(() => undefined);
+  if (response === undefined) {
+    throw officeError(502, 'v-office-unreachable', 'V-Office 服务不可达');
+  }
+
+  const body = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    const status = response.status === 404 ? 404 : response.status === 401 ? 401 : 502;
+    const code = response.status === 404 ? 'document-not-found'
+      : response.status === 401 ? 'vos-token-unavailable'
+        : 'wopi-session-failed';
+    const detail = typeof body?.detail === 'string' ? body.detail : `V-Office 返回 HTTP ${String(response.status)}`;
+    throw officeError(status, code, detail);
+  }
+  if (typeof body?.editorUrl !== 'string' || body.editorUrl === '') {
+    throw officeError(502, 'wopi-session-failed', 'V-Office 没有返回编辑器地址');
+  }
+
+  return {
+    editorUrl: body.editorUrl,
+    name: typeof body.name === 'string' ? body.name : options.name,
+    canWrite: body.canWrite !== false,
+  };
+}
+
+/**
  * Start (once) the listening socket for one tenant.
  * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
@@ -323,6 +466,12 @@ async function start(options) {
   });
 
   const server = createServer((req, res) => {
+    // Local-only route: the portal origin, so the agent can hand the user an
+    // absolute link. It never leaves this socket and carries no document data.
+    if (req.url === '/__vh/origin') {
+      json(res, 200, { origin: publicOrigin });
+      return;
+    }
     void forward(namespace, req, res).catch((error) => {
       console.error(`v-office capability failed (${namespace}):`, error);
       if (!res.headersSent) json(res, 500, { error: 'capability-failed' });

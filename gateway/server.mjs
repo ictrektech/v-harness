@@ -27,9 +27,13 @@ import {
 } from './files.mjs';
 import { ensureInstance, liveInstance, stopAll, userPaths } from './instances.mjs';
 import {
+  accessTokenFor,
   closeOfficeCapabilities,
+  editorUrlFor,
   ensureOfficeCapability,
   expiryFromToken,
+  hasUsableTokens,
+  rememberOrigin,
   rememberTokens,
 } from './office.mjs';
 import {
@@ -223,32 +227,57 @@ function fail(m){
   document.getElementById('m').textContent='无法进入 v-harness';
   document.getElementById('e').textContent=m;
 }
-try{
+async function authorize(cfg){
+  const oauth2=await bridge();
+  if(!oauth2)throw new Error('当前 VOS 未提供 OIDC Fastpath，无法验证用户身份');
+  const verifier=rand(),state=rand();
+  const digest=await sha256Bytes(new TextEncoder().encode(verifier));
+  const authorized=await oauth2.authorize({
+    client_id:cfg.clientId,response_type:'code',scope:cfg.scope,
+    state,nonce:rand(),code_challenge:b64(digest),code_challenge_method:'S256'});
+  if(authorized.state!==state)throw new Error('VOS OIDC state mismatch');
+  const tokens=await oauth2.token({
+    grant_type:'authorization_code',code:authorized.code,
+    code_verifier:verifier,client_id:cfg.clientId});
+  if(!tokens.access_token)throw new Error('VOS OIDC 未返回 access token');
+  const res=await fetch('/__vh/auth',{
+    method:'POST',credentials:'same-origin',
+    headers:{'content-type':'application/json','x-vh-csrf':cfg.csrf||''},
+    body:JSON.stringify({access_token:tokens.access_token,
+      refresh_token:tokens.refresh_token,expires_in:tokens.expires_in})});
+  const body=await res.json().catch(()=>({}));
+  if(!res.ok)throw new Error(body.error||'VOS 登录失败');
+}
+function showRenew(error){
+  document.getElementById('m').textContent='登录状态已恢复，但能力授权已失效';
+  const detail=document.getElementById('e');
+  detail.textContent=(error?.message||String(error))+'。';
+  const renew=document.createElement('button');
+  renew.textContent='重新登录';
+  renew.onclick=async()=>{await fetch('/__vh/logout',{method:'POST'});location.reload();};
+  const skip=document.createElement('button');
+  skip.textContent='仍然进入（知识库不可用）';
+  skip.onclick=()=>location.replace('./');
+  detail.append(document.createElement('br'),renew,skip);
+}
+async function boot(){
   const cfg=await(await fetch('/__vh/session',{credentials:'same-origin',cache:'no-store'})).json();
-  if(cfg.authenticated){location.replace('./');}
-  else{
-    const oauth2=await bridge();
-    if(!oauth2)throw new Error('当前 VOS 未提供 OIDC Fastpath，无法验证用户身份');
-    const verifier=rand(),state=rand();
-    const digest=await sha256Bytes(new TextEncoder().encode(verifier));
-    const authorized=await oauth2.authorize({
-      client_id:cfg.clientId,response_type:'code',scope:cfg.scope,
-      state,nonce:rand(),code_challenge:b64(digest),code_challenge_method:'S256'});
-    if(authorized.state!==state)throw new Error('VOS OIDC state mismatch');
-    const tokens=await oauth2.token({
-      grant_type:'authorization_code',code:authorized.code,
-      code_verifier:verifier,client_id:cfg.clientId});
-    if(!tokens.access_token)throw new Error('VOS OIDC 未返回 access token');
-    const res=await fetch('/__vh/auth',{
-      method:'POST',credentials:'same-origin',
-      headers:{'content-type':'application/json','x-vh-csrf':cfg.csrf||''},
-      body:JSON.stringify({access_token:tokens.access_token,
-        refresh_token:tokens.refresh_token,expires_in:tokens.expires_in})});
-    const body=await res.json().catch(()=>({}));
-    if(!res.ok)throw new Error(body.error||'VOS 登录失败');
+  if(cfg.authenticated){
+    // The session cookie outlives a gateway restart, but the VOS token lives
+    // only in gateway memory. Replay it so capability endpoints (V-Office,
+    // WeKnora) keep working; a failed replay offers an explicit way out
+    // instead of silently entering with dead capabilities.
+    if(cfg.tokenReady===false){
+      try{await authorize(cfg);}
+      catch(error){showRenew(error);return;}
+    }
     location.replace('./');
+    return;
   }
-}catch(error){fail(error?.message||String(error));}
+  await authorize(cfg);
+  location.replace('./');
+}
+boot().catch(error=>fail(error?.message||String(error)));
 </script></body></html>`;
 
 /**
@@ -408,6 +437,45 @@ async function handleControl(req, res, url) {
     return;
   }
 
+  // V-Office editor entry: `/session` answers the JSON a surface renders,
+  // `/open` is the same thing as a redirect so a plain link works.
+  if (url.pathname === '/__vh/office/session' || url.pathname === '/__vh/office/open') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    const name = (url.searchParams.get('name') ?? '').trim();
+    // The storage service owns its own path checks; this only keeps the shape
+    // honest so a nested path can never reach it by accident.
+    if (name === '' || name.includes('/') || name.includes('\\')) {
+      json(res, 400, { error: 'invalid-name', message: '文档名不能为空，也不能带路径分隔符' });
+      return;
+    }
+    let opened;
+    try {
+      opened = await editorUrlFor(record.namespace, {
+        name,
+        edit: url.searchParams.get('edit') !== '0',
+        lang: url.searchParams.get('lang') ?? '',
+        // `v` forces a fresh Collabora session (new docKey) after the file was
+        // replaced behind an open editor. Default 0 keeps collaborators in one
+        // session, which is what multi-user editing depends on.
+        version: Number(url.searchParams.get('v') ?? 0) || 0,
+      });
+    } catch (error) {
+      json(res, error?.status ?? 502, {
+        error: error?.code ?? 'office-failed',
+        message: error instanceof Error ? error.message : '打开文档失败',
+      });
+      return;
+    }
+    if (url.pathname === '/__vh/office/open') {
+      res.writeHead(302, { location: opened.editorUrl, 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
+    json(res, 200, { ok: true, ...opened });
+    return;
+  }
+
   if (url.pathname === '/__vh/health') {
     json(res, 200, { ok: true });
     return;
@@ -416,9 +484,19 @@ async function handleControl(req, res, url) {
   if (url.pathname === '/__vh/session' && req.method === 'GET') {
     const session = authenticate(req);
     if (session) {
-      json(res, 200, {
-        authenticated: true,
-        user: { username: session.username, namespace: session.namespace },
+      const user = { username: session.username, namespace: session.namespace };
+      console.log(`session ${session.username}: tokenReady=${String(hasUsableTokens(session.namespace))}`);
+      if (hasUsableTokens(session.namespace)) {
+        json(res, 200, { authenticated: true, user, tokenReady: true });
+        return;
+      }
+      // The cookie outlived the gateway's in-memory token: hand the page the
+      // CSRF token and the client identity it needs to replay the VOS login
+      // without asking the user. Omitting clientId/scope here fails the replay
+      // with "client_id 必须非空" after every restart.
+      const csrf = newCsrfToken();
+      json(res, 200, { authenticated: true, user, tokenReady: false, clientId: CLIENT_ID, scope: SCOPE, csrf }, {
+        'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
       });
       return;
     }
@@ -439,6 +517,7 @@ async function handleControl(req, res, url) {
       console.warn('VH_AUTH_DISABLED is set: signing in as the local dev user');
       json(res, 200, {
         authenticated: true,
+        tokenReady: true,
         user: { username: record.username, namespace: record.namespace },
       }, {
         'set-cookie': cookie(SESSION_COOKIE, value, {
@@ -472,6 +551,7 @@ async function handleControl(req, res, url) {
         console.log(`user created namespace=${record.namespace} port=${String(record.port)}`);
       }
       const accessToken = String(body.access_token);
+      console.log(`auth ${record.username}: refresh=${body.refresh_token ? 'yes' : 'no'}`);
       rememberTokens(record.namespace, {
         access: accessToken,
         ...typeof body.refresh_token === 'string' && body.refresh_token ? { refresh: body.refresh_token } : {},
@@ -611,6 +691,17 @@ async function proxyRequest(req, res) {
     return;
   }
 
+  // The cookie outlives the gateway's in-memory VOS token, so a reload after a
+  // restart would otherwise enter the app with every capability endpoint
+  // unauthorized and no way back. A navigation goes through the bootstrap page
+  // instead, which replays the VOS login and then returns here. Resolving the
+  // token here — not just checking for one — also covers a refresh token VOS no
+  // longer accepts: the page then re-authorizes instead of entering dead.
+  if (isDocumentRequest(req) && await accessTokenFor(session.namespace) === undefined) {
+    sendBootstrap(res);
+    return;
+  }
+
   const instance = await instanceFor(session);
   if (!instance?.cookie) {
     res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
@@ -703,6 +794,8 @@ async function proxyUpgrade(req, socket, head) {
 }
 
 const server = createServer((req, res) => {
+  // Every request refreshes the origin a handed-out link must be absolute on.
+  rememberOrigin(req.headers);
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname.startsWith('/__vh/')) {
     void handleControl(req, res, url).catch((error) => {

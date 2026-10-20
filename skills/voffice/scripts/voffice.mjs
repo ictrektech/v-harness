@@ -15,6 +15,7 @@
  *   list                            list the current user's documents
  *   download <name> [--out <path>]  fetch a document into the workspace
  *   view <name> [--out <path>]      download, ready for the `present` tool
+ *   open <name>                     print an absolute link to the online editor
  *   upload <file> [--name <name>]   create or atomically overwrite a document
  *   rename <name> <new-name>        rename a document
  *   delete <name>                   delete a document
@@ -308,7 +309,7 @@ async function run(argv) {
   const [command, ...rest] = argv
   if (!command || command === '--help' || command === '-h') {
     throw new UsageError(
-      'usage: voffice <me|list|download|view|upload|rename|delete|health> ...',
+      'usage: voffice <me|list|download|view|open|upload|rename|delete|health> ...',
     )
   }
   const transport = resolveTransport()
@@ -339,6 +340,24 @@ async function run(argv) {
       }
     }
     return { ok: true, ...result }
+  }
+
+  if (command === 'open') {
+    const name = assertName(parseOptions(rest).positionals[0])
+    // The gateway records the portal origin from the browser's own requests;
+    // the chat renderer refuses relative hrefs, so the link must be absolute.
+    const { origin } = await getJson(transport, '/__vh/origin')
+    if (typeof origin !== 'string' || origin === '') {
+      throw new UsageError(
+        '拿不到门户地址：请让用户先在 v-harness 页面刷新一次，再重试；或让用户到 VOS → V-Office「我的文档」里打开。',
+      )
+    }
+    return {
+      ok: true,
+      name,
+      url: `${origin}/__vh/office/open?name=${encodeURIComponent(name)}`,
+      hint: '把 url 原样放进 markdown 链接给用户（[在线编辑](url)）。点开即进入 Collabora 在线编辑，保存直接写回「我的文档」。',
+    }
   }
 
   if (command === 'upload') {
