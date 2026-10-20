@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Run one user's dsh inside a mount + pid namespace.
+# Run one user's dsh inside a mount + pid + uts + chroot jail.
 #
-# Without this, a tenant can still see that other tenants exist: /data/users is
-# traversable (0711) so `cd /data/users` and `ps` both reveal neighbours. Inside
-# the namespace every home is shadowed by a tmpfs and only the caller's own home
-# is bound back, so the path `/data/users/<someone-else>` simply does not exist.
+# The jail layout mirrors an ordinary Linux server:
+#
+#   /home/<namespace>   the tenant's own content (bound from /data/users/...)
+#   /usr /bin /lib ...  shared runtime, mounted read-only
+#   /data               not mounted at all
+#
+# The hostname is set per namespace so the prompt reads `vh-xxxx@dsh:~` instead
+# of exposing the container id, and `cd ..` from the tenant home stops at /home
+# because nothing above it exists.
 #
 # Requires CAP_SYS_ADMIN plus unconfined seccomp, declared in the app manifest.
 #
@@ -13,6 +18,9 @@ set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/data}"
 USERS_ROOT="${DATA_ROOT}/users"
+# Read-only: the tenant's own content is the only writable path besides /tmp.
+SKILLS_ROOT="${BUNDLED_SKILL_DIR:-/opt/v-harness/skills}"
+JAIL_HOSTNAME="${VH_JAIL_HOSTNAME:-dsh}"
 
 die() { printf 'vh-jail: %s\n' "$*" >&2; exit 1; }
 
@@ -30,29 +38,69 @@ namespace="$(basename "$home")"
 [[ "$namespace" =~ ^[0-9a-f]{40}$ ]] || die "invalid namespace: ${namespace}"
 
 export VH_JAIL_UID="$uid"
-export VH_JAIL_HOME="$home"
-export VH_JAIL_USERS="$USERS_ROOT"
 export VH_JAIL_NAMESPACE="$namespace"
+export VH_JAIL_HOST_HOME="$home"
+# The home path as the jailed process sees it; the gateway advertises the same
+# value in HOME/DSH_HOME so nothing inside dsh ever records /data/users/...
+export VH_JAIL_HOME="/home/$namespace"
+export VH_JAIL_SKILLS="$SKILLS_ROOT"
+export VH_JAIL_HOSTNAME="$JAIL_HOSTNAME"
 
 # --mount-proc gives the pid namespace its own /proc, so `ps` only lists this
-# user's processes. --fork is required for --pid to take effect.
-exec unshare --mount --pid --fork --mount-proc bash -c '
+# user's processes. --fork is required for --pid to take effect. --uts exists
+# only so the hostname below stays inside this session.
+exec unshare --mount --pid --uts --fork --mount-proc bash -c '
   set -euo pipefail
+  cd /
   # Keep these mounts inside this namespace; propagating them would corrupt the
   # container for every other user.
   mount --make-rprivate /
+  hostname "$VH_JAIL_HOSTNAME" 2>/dev/null || true
 
-  # Park the real home on a root-only path FIRST. Binding it after the tmpfs
-  # would bind the empty tmpfs directory instead, and the tenant would see a
-  # home that does not exist.
-  stash="/data/.jail/$VH_JAIL_NAMESPACE"
-  mkdir -p "$stash"
-  mount --bind "$VH_JAIL_HOME" "$stash"
+  # The jail root is a fresh tmpfs; only what is bound below is reachable.
+  root="/tmp/.vh-root-$VH_JAIL_NAMESPACE"
+  rm -rf "$root"
+  mkdir -p "$root"
+  mount -t tmpfs -o mode=0755 tmpfs "$root"
 
-  # Now hide every tenant, then put this tenant back where it belongs.
-  mount -t tmpfs -o mode=0711 tmpfs "$VH_JAIL_USERS"
-  mkdir -p "$VH_JAIL_USERS/$VH_JAIL_NAMESPACE"
-  mount --bind "$stash" "$VH_JAIL_USERS/$VH_JAIL_NAMESPACE"
-  chmod 0700 /data/.jail
-  exec setpriv --reuid="$VH_JAIL_UID" --regid="$VH_JAIL_UID" --init-groups "$@"
+  # Public read-only runtime, exactly like a shared server.
+  for dir in usr etc; do
+    mkdir -p "$root/$dir"
+    mount --rbind "/$dir" "$root/$dir"
+    mount -o remount,bind,ro "$root/$dir"
+  done
+
+  # Debian merged-/usr layout: /bin, /lib, /lib64 and /sbin are symlinks into
+  # /usr. The new root has to recreate them or the dynamic loader is missing.
+  for pair in bin:usr/bin lib:usr/lib lib64:usr/lib64 sbin:usr/sbin; do
+    name="${pair%%:*}"
+    target="${pair#*:}"
+    if [[ -e "/$name" ]]; then
+      ln -sfn "$target" "$root/$name"
+    fi
+  done
+
+  # Product skills, read-only, at the path DSH_BUNDLED_SKILL_DIR promises.
+  mkdir -p "$root$VH_JAIL_SKILLS"
+  mount --rbind "$VH_JAIL_SKILLS" "$root$VH_JAIL_SKILLS"
+  mount -o remount,bind,ro "$root$VH_JAIL_SKILLS"
+
+  # Devices and a private proc; /tmp is scratch.
+  mkdir -p "$root/dev" "$root/proc" "$root/tmp"
+  mount --rbind /dev "$root/dev"
+  mount --rbind /proc "$root/proc"
+  mount -t tmpfs -o mode=1777 tmpfs "$root/tmp"
+
+  # The tenant home, at the same path the gateway advertises as HOME.
+  mkdir -p "$root$VH_JAIL_HOME"
+  mount --bind "$VH_JAIL_HOST_HOME" "$root$VH_JAIL_HOME"
+  chmod 0700 "$root$VH_JAIL_HOME"
+
+  # Everything above is root-side setup. The command starts unprivileged and
+  # without CAP_SYS_CHROOT, so it cannot climb out of the jail root.
+  exec chroot "$root" /bin/sh -c "
+    export HOME=\"$VH_JAIL_HOME\"
+    cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
+    exec /usr/bin/setpriv --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \"\$@\"
+  " sh "$@"
 ' -- "$@"

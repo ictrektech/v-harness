@@ -186,8 +186,11 @@ async function launch(options) {
 
   const state = await readState(statePath);
 
-  // vh-jail drops to the user *after* entering a mount+pid namespace, so the
-  // instance cannot see other tenants' homes or processes.
+  // vh-jail drops to the user *after* entering a mount+pid+uts namespace. The
+  // jailed paths are what the process sees and what dsh records, so HOME and
+  // everything derived from it use /home/<namespace>; the /data/users spelling
+  // never leaks into a session or a saved workspace path.
+  const jailHome = `/home/${record.namespace}`;
   const child = spawn(JAIL_BIN, [
     record.linuxName, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
@@ -197,15 +200,22 @@ async function launch(options) {
   ], {
     cwd: paths.workspace,
     env: {
-      HOME: paths.home,
-      DSH_HOME: paths.dshHome,
-      DSH_AGENTS_HOME: paths.agentsHome,
+      HOME: jailHome,
+      DSH_HOME: `${jailHome}/.dsh`,
+      DSH_AGENTS_HOME: `${jailHome}/.agents`,
       DSH_PERMISSION_MODE: 'workspace-write',
       // Product skills shipped in the image (V-Office today). The provider
       // scans this root at rank 600, so a tenant cannot shadow them from
       // `$DSH_HOME/skills` or `.agents/skills`.
       DSH_BUNDLED_SKILL_DIR: BUNDLED_SKILL_DIR,
-      PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      // User-level installs first: npm -g, bun, pip --user and friends must
+      // land in the tenant home, never in the shared read-only runtime.
+      PATH: [
+        `${jailHome}/.local/bin`,
+        `${jailHome}/.bun/bin`,
+        `${jailHome}/.nvm/current/bin`,
+        process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      ].join(':'),
       NODE_ENV: 'production',
       // Without a UTF-8 locale bash escapes non-ASCII names: the default
       // workspace `日常` shows up as $'\346\227\245\345\270\270' in terminals
