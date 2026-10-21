@@ -176,9 +176,9 @@ async function exchangeCookie(launchUrl) {
  * in its storages. Inside the jail that prefix no longer exists, and dsh treats
  * the missing directory as one it must create: `mkdir('/data')` fails with
  * EACCES before the first request ever reaches the session. Rewriting the
- * prefix on every launch is cheap when there is nothing to do and makes the
- * migration idempotent, including for tenants that were created before the
- * layout changed.
+ * prefix makes the migration idempotent, including for tenants that were
+ * created before the layout changed; the marker file keeps the scan to the
+ * first start rather than reading every storage file on each one.
  *
  * The projected session cache is derived data: dropping it is both cheaper and
  * safer than rewriting it, and dsh rebuilds it from the storages.
@@ -191,6 +191,15 @@ async function rewriteJailPaths(dshHome, namespace) {
   const legacy = `/data/users/${namespace}`;
   const current = `/home/${namespace}`;
   const storages = join(dshHome, 'storages');
+  // The marker names the layout it migrated to, so a future layout change
+  // re-runs the rewrite by bumping the version instead of silently skipping.
+  const marker = join(dshHome, '.jail-paths-home-v1');
+  try {
+    await access(marker);
+    return;
+  } catch {
+    // Not migrated yet.
+  }
   await rm(join(storages, 'session_projcache'), { recursive: true, force: true });
   let entries;
   try {
@@ -205,6 +214,7 @@ async function rewriteJailPaths(dshHome, namespace) {
     if (text === undefined || !text.includes(legacy)) continue;
     await writeFile(file, text.split(legacy).join(current), 'utf8');
   }
+  await writeFile(marker, `${current}\n`, 'utf8');
 }
 
 /**
