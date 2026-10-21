@@ -16,8 +16,9 @@ ARG BASE_IMAGE=node:22-bookworm-slim
 # ============================================================
 # A user's dsh profile installs its web bundles from the npm registry, so a
 # panel built in this repository would be replaced by the published copy the
-# first time a user signs in. The image therefore carries its own build, and
-# gateway/plugins.mjs copies it over the profile's copy.
+# first time a user signs in. The image therefore carries its own build; the
+# profile copy gateway/plugins.mjs writes is a fallback, because dsh resolves a
+# bundle from its own installation tree before it looks at the profile.
 #
 # The build happens here so that every build host needs only Docker: the
 # toolchain, the dependency install, and the compilation all run inside the
@@ -122,9 +123,20 @@ RUN node --import tsx/esm scripts/release/pack.ts --family dsh --out /build/npm/
  && node --import tsx/esm scripts/release/pack.ts --family vendor --out /build/npm/vendor \
  && node --import tsx/esm scripts/packed-runtime-manifest.ts \
       --out /build/runtime \
-      --install-prefix /opt/v-harness/npm \
+      --install-prefix /build/npm \
       --from /build/npm/dsh \
       --from /build/npm/vendor
+
+# Install the runtime in this stage, not in the final image. The tarballs are
+# build inputs, and installing them in the runtime stage would leave a COPY
+# layer holding every `.tgz` behind the `rm` that deletes them: a later layer
+# only adds a whiteout, so the bytes stay in the image. Installing here keeps
+# the tarballs in a stage the image never carries, and the final stage copies
+# one directory that is already a working installation.
+RUN cd /build/runtime \
+ && npm install --omit=optional --no-audit --no-fund --package-lock=false \
+ && npm cache clean --force \
+ && rm -rf /build/npm
 
 # ============================================================
 # Stage: runtime image
@@ -162,29 +174,26 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       build-essential python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# The runtime is this checkout's build, installed from the tarballs the `dsh`
-# stage packed. Optional dependencies are omitted for the same reason the
-# release verification omits them: the Landlock platform packages behind them
-# need a per-architecture build, and the runtime must start without them.
-COPY --from=dsh /build/npm/ /opt/v-harness/npm/
+# One directory, already installed: the `dsh` stage resolved every dependency
+# from the tarballs it packed and deleted that pack output afterwards, so this
+# layer holds the runtime and nothing else. Optional dependencies are omitted
+# for the same reason the release verification omits them: the Landlock
+# platform packages behind them need a per-architecture build, and the runtime
+# must start without them.
 COPY --from=dsh /build/runtime/ /opt/dsh-runtime/
 
 # pnpm is needed the first time a user's profile installs its bundles.
 RUN corepack enable \
- && npm config set registry "${NPM_REGISTRY}" \
- && cd /opt/dsh-runtime \
- && npm install --omit=optional --no-audit --no-fund --package-lock=false \
- && npm cache clean --force \
- && rm -rf /opt/v-harness/npm
+ && npm config set registry "${NPM_REGISTRY}"
 
 COPY gateway/ /opt/v-harness/gateway/
 COPY bin/ /opt/v-harness/bin/
 # Product skills are discovered through DSH_BUNDLED_SKILL_DIR (see
 # gateway/instances.mjs) and stay root-owned, so a tenant cannot edit them.
 COPY skills/ /opt/v-harness/skills/
-# Browser plugins built from this repository. A user's dsh profile installs its
-# web bundles from the registry, so gateway/plugins.mjs copies each of these
-# over the published copy right after dsh finishes installing the profile.
+# Browser plugins built from this repository, read by gateway/plugins.mjs. dsh
+# resolves a bundle from its installation tree before a profile, so this is the
+# fallback copy for a profile whose own bundle would otherwise stay published.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
