@@ -3,23 +3,44 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-knowledge/README.md
 /:
-  en: 3675f0be5d88a2d0
-  zh: 13e5c174abc30e1f
+  en: 4c64c0be45ff4d32
+  zh: 0610c8a59991d7a8
 /deepseek-ai-dsh-client-ui-knowledge:
   en: ff67e69a64e78b91
   zh: 1d8372418c648d89
 /deepseek-ai-dsh-client-ui-knowledge/summary:
-  en: 1834a8a029592e07
-  zh: 43d0b472126910fe
+  en: a09a8f2f21c7fa47
+  zh: 14ce926d85484c4a
+/deepseek-ai-dsh-client-ui-knowledge/table-of-contents:
+  en: 802198ff6c463901
+  zh: 63367dad556a9d95
 /deepseek-ai-dsh-client-ui-knowledge/what-it-registers:
-  en: ed4b93320981c5fc
-  zh: a42bf9af38335398
+  en: 347ff9f9f04a63a3
+  zh: b0e6f109d942b119
 /deepseek-ai-dsh-client-ui-knowledge/how-citations-are-derived:
-  en: eeb71cb394a3a176
-  zh: a62dfe9cc931f48a
+  en: 5559f4c6d71529bf
+  zh: 44f0bb54b548f056
 /deepseek-ai-dsh-client-ui-knowledge/how-it-fails:
-  en: 43b4f4ca906c4c63
-  zh: c1b0f4f1c2ef78c2
-/deepseek-ai-dsh-client-ui-knowledge/known-limitations:
-  en: 58b90cc4e50e196c
-  zh: e5e7df4dca39bd00
+  en: e2d7742f2e16a602
+  zh: f25046fff3de8717
+/deepseek-ai-dsh-client-ui-knowledge/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-client-ui-knowledge/model-experience/a-scope-marker-in-the-user-s-own-message:
+  en: 32d93db25e202118
+  zh: 77d45def160868a1
+/deepseek-ai-dsh-client-ui-knowledge/model-experience/a-scope-marker-in-the-user-s-own-message/what-the-model-sees:
+  en: 2f11257790185f73
+  zh: ebf8666db20d02e5
+/deepseek-ai-dsh-client-ui-knowledge/model-experience/a-scope-marker-in-the-user-s-own-message/token-effect:
+  en: 4fe5994f89d632e8
+  zh: 77128562e090fecd
+/deepseek-ai-dsh-client-ui-knowledge/model-experience/a-scope-marker-in-the-user-s-own-message/kv-cache-effect:
+  en: 966f2922ba82bb9f
+  zh: 02969c66c250376d
+/deepseek-ai-dsh-client-ui-knowledge/known-limitations-and-deferred-work:
+  en: f3fe83eb0ad16143
+  zh: a0dbd0823c949a73
+/deepseek-ai-dsh-client-ui-knowledge/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 6df6019931844fb2

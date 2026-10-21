@@ -13,14 +13,15 @@
  *
  * @module @deepseek-ai/dsh-client-ui-knowledge/client
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from './locales.ts'
 import { evidenceParams } from './evidence-tab.ts'
+import { knowledgeMarker } from './reference.ts'
 import {
-  ask, documents, libraries, models, search,
-  type KnowledgeCitation, type KnowledgeDocument, type Library, type ModelOption,
+  ask, documents, libraries, models, readDocument, search,
+  type DocumentChunk, type KnowledgeCitation, type KnowledgeDocument, type Library, type ModelOption,
 } from './weknora.ts'
 import css from './EvidenceBody.module.css'
 
@@ -53,6 +54,8 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
   const [query, setQuery] = useState('')
   const [citations, setCitations] = useState<readonly KnowledgeCitation[]>(opened?.citations ?? [])
   const [focus, setFocus] = useState<string | undefined>(opened?.focus)
+  const [expandedChunk, setExpandedChunk] = useState<string>()
+  const [bodies, setBodies] = useState<Readonly<Record<string, readonly DocumentChunk[]>>>({})
   const [answer, setAnswer] = useState('')
   const [status, setStatus] = useState<string>()
   const [running, setRunning] = useState(false)
@@ -64,6 +67,13 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
     setFocus(opened?.focus)
     setStatus(undefined)
   }, [opened, revision])
+
+  // A citation chip lands on the passage it named; without this the user has
+  // to hunt for it in a list of sixty.
+  const focused = useRef<HTMLLIElement>(null)
+  useEffect(() => {
+    focused.current?.scrollIntoView({ block: 'center' })
+  }, [focus])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -91,6 +101,51 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
       else next.add(id)
       return next
     })
+  }
+
+  /**
+   * Put text where the caret is, leaving whatever the user already typed.
+   * @param text - text to append at the insertion point.
+   */
+  function insertAtCaret(text: string): void {
+    const at = inputActions.captureInsertion()
+    inputActions.insertText(text, { start: at.end, end: at.end, draftRev: at.draftRev })
+  }
+
+  /**
+   * Carry the checked libraries back to the composer as scope markers, so the
+   * next question is narrowed rather than the panel's search being repeated.
+   */
+  function scopeNextQuestion(): void {
+    const names = all.filter(library => selected.has(library.id)).map(library => knowledgeMarker(library.name))
+    insertAtCaret(`${names.join('')} `)
+  }
+
+  /**
+   * Expand one citation to its full chunk, fetching the document once.
+   * @param citation - the passage the user clicked.
+   */
+  async function toggleBody(citation: KnowledgeCitation): Promise<void> {
+    if (expandedChunk === citation.chunkId) {
+      setExpandedChunk(undefined)
+      return
+    }
+    setExpandedChunk(citation.chunkId)
+    const id = citation.knowledgeId
+    if (id === undefined || bodies[id] !== undefined) return
+    const chunks = await readDocument(id, new AbortController().signal)
+    setBodies(current => ({ ...current, [id]: chunks ?? [] }))
+  }
+
+  /**
+   * @param citation - the passage to show.
+   * @returns its full text when expanded, otherwise the search snippet.
+   */
+  function bodyOf(citation: KnowledgeCitation): string {
+    const id = citation.knowledgeId
+    if (expandedChunk !== citation.chunkId || id === undefined) return citation.snippet ?? ''
+    const chunk = bodies[id]?.find(item => item.chunkIndex === citation.chunkIndex)
+    return chunk?.content ?? citation.snippet ?? ''
   }
 
   /**
@@ -237,6 +292,11 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
             </li>
           ))}
         </ul>
+        {selected.size === 0 ? null : (
+          <button className={css.scopeAction} onClick={scopeNextQuestion} type="button">
+            {t('scope.action', { count: String(selected.size) })}
+          </button>
+        )}
       </section>
 
       {mode === 'ask' && modelOptions.length > 0 ? (
@@ -286,18 +346,24 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
             <li
               className={citation.chunkId === focus ? `${css.item} ${css.focused}` : css.item}
               key={citation.chunkId}
+              ref={citation.chunkId === focus ? focused : undefined}
             >
               <p className={css.title}>
                 {citation.title}
                 <span className={css.index}>{`#${String(citation.chunkIndex)}`}</span>
               </p>
-              <p className={css.snippet}>{citation.snippet ?? ''}</p>
+              <p
+                className={expandedChunk === citation.chunkId ? css.expanded : css.snippet}
+                onClick={() => { void toggleBody(citation) }}
+              >
+                {bodyOf(citation)}
+              </p>
               <button
                 className={css.apply}
-                onClick={() => { inputActions.setDraft(`${citation.title}\n${citation.snippet ?? ''}`) }}
+                onClick={() => { insertAtCaret(`《${citation.title}》第 ${String(citation.chunkIndex)} 段：`) }}
                 type="button"
               >
-                {t('apply.label')}
+                {t('ask.about')}
               </button>
             </li>
           ))}

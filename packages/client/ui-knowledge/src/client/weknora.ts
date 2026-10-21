@@ -126,6 +126,40 @@ export async function documents(
   return found
 }
 
+/** One chunk of a document, in reading order. */
+export interface DocumentChunk {
+  readonly chunkIndex: number
+  readonly content: string
+}
+
+/**
+ * Every chunk of one document, so a citation can expand to the real text
+ * instead of the truncated snippet a search returned.
+ * @param knowledgeId - the document to read.
+ * @param signal - cancellation of this attempt.
+ * @returns the chunks in order, or undefined when the gateway cannot read them.
+ */
+export async function readDocument(
+  knowledgeId: string,
+  signal: AbortSignal,
+): Promise<readonly DocumentChunk[] | undefined> {
+  const response = await fetch(
+    `${ENDPOINT}/chunks/${encodeURIComponent(knowledgeId)}?page=1&page_size=100`,
+    { credentials: 'same-origin', signal },
+  ).catch(() => undefined)
+  if (!response?.ok) return undefined
+  const body = (await response.json()) as { data?: unknown }
+  const rows: readonly unknown[] = Array.isArray(body.data) ? body.data : []
+  const chunks: DocumentChunk[] = []
+  for (const row of rows) {
+    if (!isRecord(row)) continue
+    const content = text(row.content)
+    if (content === undefined) continue
+    chunks.push({ chunkIndex: indexOf(row.chunk_index), content })
+  }
+  return chunks.sort((left, right) => left.chunkIndex - right.chunkIndex)
+}
+
 /** One chat model this workspace offers. */
 export interface ModelOption {
   readonly id: string

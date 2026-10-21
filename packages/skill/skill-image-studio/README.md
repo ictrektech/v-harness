@@ -39,9 +39,9 @@ Enabling happens either through `IMAGE_STUDIO_BASE_URL` or `IMAGE_STUDIO_AUTH_FI
 
 | Field | Default | Meaning |
 |---|---|---|
-| `assetRoot` | Packaged `assets/` | Absolute directory containing the three skill folders and `scripts/`. |
+| `assetRoot` | the repository's `skills/` | Absolute directory containing the skill folder and its `scripts/`. |
 | `node` | Host Node.js | Standalone Node executable for the CLI; packaged carriers supply it explicitly. |
-| `cli` | `assets/scripts/image-studio.mjs` | Absolute CLI entry. |
+| `cli` | `skills/image-studio/scripts/image-studio.mjs` | Absolute CLI entry. |
 | `baseUrl` | `IMAGE_STUDIO_BASE_URL` or the in-network backend | Backend origin or VOS gateway prefix. |
 | `authFile` | `IMAGE_STUDIO_AUTH_FILE` or `$XDG_CONFIG_HOME/dsh/image-studio.json` | JSON file holding `{ "baseUrl"?, "token"? }`. |
 | `requestTimeoutMs` | `30000` | Per-request HTTP timeout. |
@@ -67,8 +67,8 @@ The CLI is a zero-dependency ESM script. It resolves the endpoint from `--base-u
 | File | Responsibility |
 |---|---|
 | [`src/index.ts`](src/index.ts) | Resource registration, configuration validation, runtime injection. |
-| [`assets/scripts/image-studio.mjs`](assets/scripts/image-studio.mjs) | Generation, polling, downloads, model preparation, reference uploads. |
-| [`assets/`](assets/) | Router and two subskills. |
+| [`skills/image-studio/scripts/image-studio.mjs`](../../../skills/image-studio/scripts/image-studio.mjs) | Generation, polling, downloads, model preparation, reference uploads. |
+| [`skills/image-studio/`](../../../skills/image-studio/) | The skill document and the CLI it drives. |
 
 </details>
 

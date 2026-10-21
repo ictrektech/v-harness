@@ -297,6 +297,16 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 14px;
   line-height: 1.6;
+  cursor: pointer;
+}
+
+.expanded {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  cursor: pointer;
 }
 
 .answer {
@@ -328,4 +338,26 @@
 .apply:hover {
   background: var(--vh-fill-strong);
   color: var(--dsw-alias-label-primary);
+}
+.scopeAction {
+  width: 100%;
+  margin-top: 10px;
+  height: 32px;
+  border: 1px solid var(--dsw-specific-input-major);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.scopeAction:hover {
+  background: var(--vh-fill);
+}
+
+.scopeAction:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
 }

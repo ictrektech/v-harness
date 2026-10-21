@@ -39,9 +39,9 @@ kind: "package-reference"
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `assetRoot` | 打包的 `assets/` | 包含三个 skill 目录与 `scripts/` 的绝对目录。 |
+| `assetRoot` | 仓库的 `skills/` | 包含该 skill 目录与其 `scripts/` 的绝对目录。 |
 | `node` | 宿主 Node.js | CLI 使用的独立 Node 可执行文件；打包载体需显式提供。 |
-| `cli` | `assets/scripts/image-studio.mjs` | CLI 入口的绝对路径。 |
+| `cli` | `skills/image-studio/scripts/image-studio.mjs` | CLI 入口的绝对路径。 |
 | `baseUrl` | `IMAGE_STUDIO_BASE_URL` 或网络内后端 | 后端源地址或 VOS 网关前缀。 |
 | `authFile` | `IMAGE_STUDIO_AUTH_FILE` 或 `$XDG_CONFIG_HOME/dsh/image-studio.json` | 保存 `{ "baseUrl"?, "token"? }` 的 JSON 文件。 |
 | `requestTimeoutMs` | `30000` | 单次 HTTP 请求超时。 |
@@ -67,8 +67,8 @@ CLI 是零依赖 ESM 脚本。端点依次取自 `--base-url`、`IMAGE_STUDIO_BA
 | 文件 | 职责 |
 |---|---|
 | [`src/index.ts`](src/index.ts) | 资源注册、配置校验、运行环境注入。 |
-| [`assets/scripts/image-studio.mjs`](assets/scripts/image-studio.mjs) | 生成、轮询、下载、模型准备、参考图上传。 |
-| [`assets/`](assets/) | 路由与两个子 skill。 |
+| [`skills/image-studio/scripts/image-studio.mjs`](../../../skills/image-studio/scripts/image-studio.mjs) | 生成、轮询、下载、模型准备、参考图上传。 |
+| [`skills/image-studio/`](../../../skills/image-studio/) | 技能文档和它驱动的 CLI。 |
 
 </details>
 

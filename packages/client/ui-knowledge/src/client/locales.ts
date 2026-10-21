@@ -11,7 +11,8 @@ export const NS = 'knowledge'
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   'section': '知识库',
-  'hybrag.description': '打开知识库：看有哪些库，选一个再检索',
+  'panel.label': '浏览知识库…',
+  'panel.description': '打开面板，查看有哪些库和文档',
   'tab.label': '知识库',
   'tab.guide.title': '知识库',
   'tab.guide.description': '搜索公司知识库，查看回答背后的原文片段。',
@@ -36,6 +37,8 @@ export const zh = {
   'model.default': '默认',
   'answer.title': '回答',
   'apply.label': '填入输入框',
+  'ask.about': '据此追问',
+  'scope.action': '用这 {count} 个库提问',
 } satisfies Record<string, string>
 
 /** The knowledge namespace key union. */
@@ -51,7 +54,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'section': 'Knowledge bases',
-  'hybrag.description': 'Open the knowledge bases: see what you can search, then pick one',
+  'panel.label': 'Browse knowledge bases…',
+  'panel.description': 'Open the panel to see the libraries and documents',
   'tab.label': 'Knowledge bases',
   'tab.guide.title': 'Knowledge bases',
   'tab.guide.description': 'Search the company knowledge bases and read the passages behind an answer.',
@@ -76,4 +80,6 @@ export const en = {
   'model.default': 'Default',
   'answer.title': 'Answer',
   'apply.label': 'Use in composer',
+  'ask.about': 'Ask about this',
+  'scope.action': 'Ask in {count} libraries',
 } satisfies Record<KnowledgeKey, string>
