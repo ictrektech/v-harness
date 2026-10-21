@@ -36,6 +36,7 @@ import {
   rememberOrigin,
   rememberTokens,
 } from './office.mjs';
+import { closeAlbumCapabilities, ensureAlbumCapability } from './album.mjs';
 import {
   CSRF_COOKIE,
   SESSION_COOKIE,
@@ -645,6 +646,7 @@ async function startCapabilities(record) {
   const settled = await Promise.allSettled([
     ensureOfficeCapability(options),
     ensureWeknoraCapability(options),
+    ensureAlbumCapability(options),
   ]);
   for (const result of settled) {
     if (result.status === 'rejected') {
@@ -831,7 +833,7 @@ function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities()]).finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });
