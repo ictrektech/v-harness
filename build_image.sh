@@ -31,7 +31,6 @@ TARGET_SHEET_SPEC="${FEISHU_SHEET_TITLE:-}"
 PROFILE_TAG=""
 TARGET_SHEET_TITLES=()
 
-DSH_VERSION="${DSH_VERSION:-0.2.1-rc.2}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 # Debian package mirror for the build stage; an empty value keeps the base
 # image's own sources.
@@ -68,7 +67,6 @@ Environment:
                            `feishu_spreadsheet_token` in the config file
   V_HARNESS_BUILD_TARGET    Optional default for --target
   FEISHU_SHEET_TITLE       Optional default for --sheet, comma-separated
-  DSH_VERSION              dsh npm version baked into the image (default 0.2.1-rc.2)
   NPM_REGISTRY             npm registry used during the image build
   APT_MIRROR               Debian package mirror for apt (empty keeps upstream)
 EOF
@@ -433,7 +431,10 @@ fi
 log "TARGET=${TARGET} ARCH=${ARCH}"
 log "TARGET_SHEETS=${TARGET_SHEET_TITLES[*]}"
 log "IMAGE=${IMAGE}:${TAG}"
-log "DSH_VERSION=${DSH_VERSION}"
+# The image carries the checkout it was built from, so two builds that disagree
+# can be compared without guessing which source produced them.
+REVISION="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+log "REVISION=${REVISION}"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
@@ -466,9 +467,10 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
   ensure_base_image
   docker_build_image \
     --build-arg "BASE_IMAGE=${SWR_BASE_IMAGE}" \
-    --build-arg "DSH_VERSION=${DSH_VERSION}" \
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" \
     --build-arg "APT_MIRROR=${APT_MIRROR}" \
+    --build-arg "GIT_COMMIT=${REVISION}" \
+    --label "org.opencontainers.image.revision=${REVISION}" \
     -f Dockerfile \
     -t "${IMAGE}:${TAG}" \
     .

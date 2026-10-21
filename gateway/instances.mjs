@@ -15,7 +15,7 @@
 
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, access, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { syncClientPlugins } from './plugins.mjs';
 
@@ -169,6 +169,45 @@ async function exchangeCookie(launchUrl) {
 }
 
 /**
+ * Rewrite session and workspace records that still point at the physical host
+ * path.
+ *
+ * The jail used to mirror /data, so dsh stored `/data/users/<ns>/workspace/...`
+ * in its storages. Inside the jail that prefix no longer exists, and dsh treats
+ * the missing directory as one it must create: `mkdir('/data')` fails with
+ * EACCES before the first request ever reaches the session. Rewriting the
+ * prefix on every launch is cheap when there is nothing to do and makes the
+ * migration idempotent, including for tenants that were created before the
+ * layout changed.
+ *
+ * The projected session cache is derived data: dropping it is both cheaper and
+ * safer than rewriting it, and dsh rebuilds it from the storages.
+ *
+ * @param {string} dshHome absolute path of the tenant's `.dsh`
+ * @param {string} namespace tenant namespace (the directory name)
+ * @returns {Promise<void>}
+ */
+async function rewriteJailPaths(dshHome, namespace) {
+  const legacy = `/data/users/${namespace}`;
+  const current = `/home/${namespace}`;
+  const storages = join(dshHome, 'storages');
+  await rm(join(storages, 'session_projcache'), { recursive: true, force: true });
+  let entries;
+  try {
+    entries = await readdir(storages, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const file = join(storages, entry.name);
+    const text = await readFile(file, 'utf8').catch(() => undefined);
+    if (text === undefined || !text.includes(legacy)) continue;
+    await writeFile(file, text.split(legacy).join(current), 'utf8');
+  }
+}
+
+/**
  * Start one dsh process and capture its cookie.
  * @param {{
  *   record: import('./users.mjs').UserRecord,
@@ -185,12 +224,23 @@ async function launch(options) {
   await mkdir(join(dataRoot, LOG_DIR_NAME), { recursive: true, mode: 0o700 });
 
   const state = await readState(statePath);
+  await rewriteJailPaths(paths.dshHome, record.namespace);
 
   // vh-jail drops to the user *after* entering a mount+pid+uts namespace. The
   // jailed paths are what the process sees and what dsh records, so HOME and
   // everything derived from it use /home/<namespace>; the /data/users spelling
   // never leaks into a session or a saved workspace path.
   const jailHome = `/home/${record.namespace}`;
+
+  // The image's plugin build has to be in place before dsh reads it. dsh takes
+  // one snapshot per client bundle at boot: it hashes the file's
+  // mtime/ctime/size into the immutable `?rev=` URL and serves the bytes it
+  // read then, so a replacement that lands after start changes nothing until
+  // the next restart — not even a hard refresh bypasses it. A profile that does
+  // not exist yet has nothing to replace; the post-launch call below covers the
+  // first install, and that tenant picks the build up from the next start.
+  await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
+
   const child = spawn(JAIL_BIN, [
     record.linuxName, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
@@ -208,6 +258,13 @@ async function launch(options) {
       // scans this root at rank 600, so a tenant cannot shadow them from
       // `$DSH_HOME/skills` or `.agents/skills`.
       DSH_BUNDLED_SKILL_DIR: BUNDLED_SKILL_DIR,
+      // Same root under the name the Image Studio tool resolves its CLI by.
+      VH_SKILLS_DIR: BUNDLED_SKILL_DIR,
+      // The generation tool stays off until a deployment names an endpoint;
+      // the gateway forwards only what this environment actually sets.
+      ...(process.env.IMAGE_STUDIO_BASE_URL === undefined
+        ? {}
+        : { IMAGE_STUDIO_BASE_URL: process.env.IMAGE_STUDIO_BASE_URL }),
       // User-level installs first: npm -g, bun, pip --user and friends must
       // land in the tenant home, never in the shared read-only runtime.
       PATH: [
@@ -235,9 +292,10 @@ async function launch(options) {
     const { cookie, expiresAt } = await exchangeCookie(launchUrl);
     state[record.namespace] = { cookie, cookieExpiresAt: expiresAt };
     await writeState(statePath, state);
-    // The launch URL only appears after dsh finished installing the profile, so
-    // replacing the published plugin copy here cannot race pnpm and reaches
-    // every tenant, including one signing in for the first time.
+    // Fallback for a profile created by this very launch: there was no tree to
+    // replace before spawn, so the copy lands now — after dsh already took its
+    // snapshot. It cannot affect the running process; it is what the next start
+    // (which syncs before spawn) will read.
     await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
     return {
       namespace: record.namespace,

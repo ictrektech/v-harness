@@ -7,10 +7,13 @@
  * The image carries the built plugin under `/opt/v-harness/plugins`, and this
  * module copies it over the profile's copy once dsh has finished installing.
  *
- * The copy happens after the launch URL appears, which dsh prints only after
- * its profile install finishes, so it never races pnpm. A profile that has no
- * copy yet is left alone: writing the directory before pnpm links its own tree
- * would just be undone.
+ * The copy must happen before dsh starts, not after. One client bundle is read
+ * exactly once at boot — its mtime/ctime/size become the immutable `?rev=` URL
+ * and its bytes stay in memory — so a copy that lands after the process started
+ * is invisible until the next restart. {@link syncClientPlugins} is therefore
+ * called before spawn, and again afterwards only for a profile this launch
+ * created (no tree existed earlier); that tenant sees the build from the next
+ * start on.
  *
  * @module
  */
@@ -22,7 +25,7 @@ import { join } from 'node:path'
 const PLUGIN_ROOT = '/opt/v-harness/plugins'
 
 /** Plugins shipped from this repository, by package name. */
-const BUNDLED = ['dsh-client-ui-knowledge']
+const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions']
 
 /**
  * Copy the image's build of each bundled plugin over one profile's copy.

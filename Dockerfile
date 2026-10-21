@@ -63,23 +63,74 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # compilation instead of a full Host build.
 RUN node --import tsx/esm scripts/generate-typert.ts
 
-# Compile the plugin's project graph, then bundle it. The bundle is the
-# browser artifact gateway/plugins.mjs ships into each user's profile.
-RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
+# Compile each plugin's project graph, then bundle it. A bundle is the browser
+# artifact gateway/plugins.mjs ships into each user's profile.
+RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json packages/client/ui-user-questions/tsconfig.json \
  && pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle \
- && mkdir -p /build/plugins/dsh-client-ui-knowledge \
- && cp -R \
-      packages/client/ui-knowledge/package.json \
-      packages/client/ui-knowledge/lib \
-      packages/client/ui-knowledge/locale \
-      /build/plugins/dsh-client-ui-knowledge/
+ && pnpm --filter @deepseek-ai/dsh-client-ui-user-questions bundle \
+ && for plugin in ui-knowledge ui-user-questions; do \
+      mkdir -p "/build/plugins/dsh-client-$plugin" \
+      && cp -R \
+           "packages/client/$plugin/package.json" \
+           "packages/client/$plugin/lib" \
+           "packages/client/$plugin/locale" \
+           "/build/plugins/dsh-client-$plugin/"; \
+    done
+
+# ============================================================
+# Stage: the dsh runtime built from this repository
+# ============================================================
+# The image runs this checkout, not the published package: publishing a change
+# under `packages/` is a separate release sequence, so an image built from the
+# registry would keep shipping whatever that sequence last published.
+#
+# This stage reuses the plugins stage's workspace, so the dependency install,
+# the generated declarations and the toolchain are not repeated. `pack` writes
+# one tarball per publishable package, and the runtime installs those tarballs
+# rather than resolving versions: a version that already exists on the registry
+# must never stand in for the build.
+FROM plugins AS dsh
+
+# `build:artifacts` stamps the revision it compiled, so the stage needs git on
+# the image's own PATH. The mirror argument is the same one the runtime stage
+# takes, because this install has to work on hosts that cannot reach
+# deb.debian.org.
+ARG APT_MIRROR=mirrors.aliyun.com
+
+# The client build stamps the commit it compiled into every bundle, and it
+# reads that value from git only when the variable below is unset. The build
+# context excludes .git, so the value arrives as an argument: the checkout the
+# host built from is the authority, and a placeholder keeps a bare
+# `docker build` from failing on a repository it cannot see.
+ARG GIT_COMMIT=0000000
+ENV DSH_CLIENT_COMMIT_HASH=${GIT_COMMIT}
+
+RUN if [ -n "${APT_MIRROR}" ]; then \
+      for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$source" ]; then \
+          sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$source"; \
+        fi; \
+      done; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends git build-essential python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pnpm run build:artifacts
+
+RUN node --import tsx/esm scripts/release/pack.ts --family dsh --out /build/npm/dsh \
+ && node --import tsx/esm scripts/release/pack.ts --family vendor --out /build/npm/vendor \
+ && node --import tsx/esm scripts/packed-runtime-manifest.ts \
+      --out /build/runtime \
+      --install-prefix /opt/v-harness/npm \
+      --from /build/npm/dsh \
+      --from /build/npm/vendor
 
 # ============================================================
 # Stage: runtime image
 # ============================================================
 FROM ${BASE_IMAGE}
 
-ARG DSH_VERSION=0.2.1-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.
@@ -90,7 +141,7 @@ ENV NODE_ENV=production \
     PORT=8080 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    DSH_BIN=/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
+    DSH_BIN=/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
 
 # Build toolchain is a product requirement, not a convenience: plugins that ship
 # native modules (node-pty, ssh2, better-sqlite3) run `node-gyp` at install time
@@ -111,11 +162,20 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       build-essential python3 \
  && rm -rf /var/lib/apt/lists/*
 
+# The runtime is this checkout's build, installed from the tarballs the `dsh`
+# stage packed. Optional dependencies are omitted for the same reason the
+# release verification omits them: the Landlock platform packages behind them
+# need a per-architecture build, and the runtime must start without them.
+COPY --from=dsh /build/npm/ /opt/v-harness/npm/
+COPY --from=dsh /build/runtime/ /opt/dsh-runtime/
+
 # pnpm is needed the first time a user's profile installs its bundles.
 RUN corepack enable \
  && npm config set registry "${NPM_REGISTRY}" \
- && npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" \
- && npm cache clean --force
+ && cd /opt/dsh-runtime \
+ && npm install --omit=optional --no-audit --no-fund --package-lock=false \
+ && npm cache clean --force \
+ && rm -rf /opt/v-harness/npm
 
 COPY gateway/ /opt/v-harness/gateway/
 COPY bin/ /opt/v-harness/bin/
