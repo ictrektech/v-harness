@@ -1,15 +1,48 @@
-# The image only needs the gateway sources and the root helper. Everything
-# else in this repository is the dsh monorepo: sending it as build context
-# costs gigabytes for no benefit.
+# The runtime image only needs the gateway sources and the root helper; the
+# `plugins` stage additionally needs the client sources it bundles. Both sets
+# are listed below, and node_modules never comes along: the stage installs its
+# own inside the build, which is what keeps every build host identical.
 *
 !Dockerfile
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!tsconfig.*.json
 !gateway/
 !gateway/**
 !bin/
 !bin/**
 !skills/
 !skills/**
-# Browser plugins built from this repository (see build_image.sh, which stages
-# them here before the build; gateway/plugins.mjs ships them into each profile).
+# Bundled inside the `plugins` stage; gateway/plugins.mjs ships the result into
+# each user's profile.
 !plugins/
 !plugins/**
+!packages/
+!packages/**
+!vendor/
+!vendor/**
+!scripts/
+!scripts/**
+# The plugins stage compiles the client project graph, which references the
+# native addon package and the patched dependencies the lockfile names.
+!native/
+!native/**
+!patches/
+!patches/**
+# The workspace install covers every workspace member, so each member's
+# directory has to be in the context.
+!apps/
+!apps/**
+!benchmarks/
+!benchmarks/**
+!website/
+!website/**
+!python/
+!python/**
+# Install output and build artifacts are regenerated in the stage.
+**/node_modules
+**/dist
+**/.turbo
+**/.tsbuildinfo

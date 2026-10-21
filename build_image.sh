@@ -105,41 +105,6 @@ pull_base_image() {
   return 1
 }
 
-# Build the browser plugins this repository owns and stage them for the image.
-#
-# A user's dsh profile installs its web bundles from the registry, so a plugin
-# built here only reaches users when the image carries it (gateway/plugins.mjs
-# copies it over each profile after install). `plugins/` is build output, not
-# source: it is git-ignored and .dockerignore lets it through.
-stage_client_plugins() {
-  log "staging client plugins"
-  # The whole step runs inside the base image, the same way v-office builds:
-  # the host needs docker and nothing else. That is what makes an amd64 box
-  # with nvm and an arm64 box with no node installed behave identically.
-  #
-  # node_modules lives in a named volume instead of the checkout. The name
-  # carries the architecture because compiled native modules (rolldown,
-  # esbuild) cannot be shared between amd64 and arm64, and keeping the volume
-  # between runs avoids reinstalling the workspace on every build.
-  local repo modules_volume
-  repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  modules_volume="v-harness-bundle-modules-$(uname -m)"
-  docker run --rm \
-    -v "${repo}:/src" \
-    -v "${modules_volume}:/src/node_modules" \
-    -e CI=true \
-    -w /src \
-    "${SWR_BASE_IMAGE}" \
-    sh -c 'corepack enable >/dev/null 2>&1; pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle'
-  rm -rf plugins/dsh-client-ui-knowledge
-  mkdir -p plugins/dsh-client-ui-knowledge
-  cp -R \
-    packages/client/ui-knowledge/package.json \
-    packages/client/ui-knowledge/lib \
-    packages/client/ui-knowledge/locale \
-    plugins/dsh-client-ui-knowledge/
-}
-
 # Reuse the SWR copy when another host (or a previous build) already mirrored it.
 ensure_base_image() {
   if docker image inspect "$SWR_BASE_IMAGE" >/dev/null 2>&1; then
@@ -499,7 +464,6 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
   configure_build_engine
   log "BUILD_ENGINE=${BUILD_ENGINE}"
   ensure_base_image
-  stage_client_plugins
   docker_build_image \
     --build-arg "BASE_IMAGE=${SWR_BASE_IMAGE}" \
     --build-arg "DSH_VERSION=${DSH_VERSION}" \

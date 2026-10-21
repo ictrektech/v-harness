@@ -11,6 +11,72 @@
 # Base image is overridable so the build host can pull it from SWR instead of
 # Docker Hub; build_image.sh mirrors it once and reuses it afterwards.
 ARG BASE_IMAGE=node:22-bookworm-slim
+# ============================================================
+# Stage: browser plugins built from this repository
+# ============================================================
+# A user's dsh profile installs its web bundles from the npm registry, so a
+# panel built in this repository would be replaced by the published copy the
+# first time a user signs in. The image therefore carries its own build, and
+# gateway/plugins.mjs copies it over the profile's copy.
+#
+# The build happens here so that every build host needs only Docker: the
+# toolchain, the dependency install, and the compilation all run inside the
+# image, and the same source produces the same plugin on every host. The
+# alternative -- building the plugin on the host and copying the result in --
+# makes the image depend on the build host's Node toolchain and on whatever
+# happened to be in the build directory, so a second host builds a different
+# image.
+FROM ${BASE_IMAGE} AS plugins
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
+ENV npm_config_registry=${NPM_REGISTRY}
+WORKDIR /build
+
+# pnpm is pinned to the repository's own version (packageManager in
+# package.json) so the dependency tree resolves the same way on every host.
+RUN corepack enable
+
+# Manifests first: the dependency install is the slow layer, and it only
+# changes when the lockfile does.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ patches/
+COPY vendor/ vendor/
+COPY packages/ packages/
+COPY scripts/ scripts/
+COPY native/ native/
+COPY apps/ apps/
+COPY benchmarks/ benchmarks/
+COPY website/ website/
+COPY python/ python/
+COPY tsconfig*.json ./
+
+# The whole workspace is installed. The plugin is a package of this monorepo,
+# and its compilation reads declarations that other workspace packages
+# produce, so those packages are build-time dependencies of the plugin and the
+# install cannot be narrowed to a runtime closure.
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+# The client compilation reads generated declarations (the Typert /remote
+# artifacts), which the Host side produces from source. Generating them is a
+# separate pass that needs no Host bundle, so it runs before the client
+# compilation instead of a full Host build.
+RUN node --import tsx/esm scripts/generate-typert.ts
+
+# Compile the plugin's project graph, then bundle it. The bundle is the
+# browser artifact gateway/plugins.mjs ships into each user's profile.
+RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle \
+ && mkdir -p /build/plugins/dsh-client-ui-knowledge \
+ && cp -R \
+      packages/client/ui-knowledge/package.json \
+      packages/client/ui-knowledge/lib \
+      packages/client/ui-knowledge/locale \
+      /build/plugins/dsh-client-ui-knowledge/
+
+# ============================================================
+# Stage: runtime image
+# ============================================================
 FROM ${BASE_IMAGE}
 
 ARG DSH_VERSION=0.2.1-rc.2
@@ -59,7 +125,7 @@ COPY skills/ /opt/v-harness/skills/
 # Browser plugins built from this repository. A user's dsh profile installs its
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
-COPY plugins/ /opt/v-harness/plugins/
+COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
