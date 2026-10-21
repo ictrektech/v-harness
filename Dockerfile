@@ -16,9 +16,8 @@ ARG BASE_IMAGE=node:22-bookworm-slim
 # ============================================================
 # A user's dsh profile installs its web bundles from the npm registry, so a
 # panel built in this repository would be replaced by the published copy the
-# first time a user signs in. The image therefore carries its own build; the
-# profile copy gateway/plugins.mjs writes is a fallback, because dsh resolves a
-# bundle from its own installation tree before it looks at the profile.
+# first time a user signs in. The image therefore carries its own build, and
+# gateway/plugins.mjs copies it over the profile's copy.
 #
 # The build happens here so that every build host needs only Docker: the
 # toolchain, the dependency install, and the compilation all run inside the
@@ -64,85 +63,31 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # compilation instead of a full Host build.
 RUN node --import tsx/esm scripts/generate-typert.ts
 
-# Compile each plugin's project graph, then bundle it. A bundle is the browser
-# artifact gateway/plugins.mjs ships into each user's profile.
-RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json packages/client/ui-user-questions/tsconfig.json \
+# Compile the plugin's project graph, then bundle it. The bundle is the
+# browser artifact gateway/plugins.mjs ships into each user's profile.
+RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
  && pnpm --filter @deepseek-ai/dsh-client-ui-knowledge bundle \
- && pnpm --filter @deepseek-ai/dsh-client-ui-user-questions bundle \
- && for plugin in ui-knowledge ui-user-questions; do \
-      mkdir -p "/build/plugins/dsh-client-$plugin" \
-      && cp -R \
-           "packages/client/$plugin/package.json" \
-           "packages/client/$plugin/lib" \
-           "packages/client/$plugin/locale" \
-           "/build/plugins/dsh-client-$plugin/"; \
-    done
-
-# ============================================================
-# Stage: the dsh runtime built from this repository
-# ============================================================
-# The image runs this checkout, not the published package: publishing a change
-# under `packages/` is a separate release sequence, so an image built from the
-# registry would keep shipping whatever that sequence last published.
-#
-# This stage reuses the plugins stage's workspace, so the dependency install,
-# the generated declarations and the toolchain are not repeated. `pack` writes
-# one tarball per publishable package, and the runtime installs those tarballs
-# rather than resolving versions: a version that already exists on the registry
-# must never stand in for the build.
-FROM plugins AS dsh
-
-# `build:artifacts` stamps the revision it compiled, so the stage needs git on
-# the image's own PATH. The mirror argument is the same one the runtime stage
-# takes, because this install has to work on hosts that cannot reach
-# deb.debian.org.
-ARG APT_MIRROR=mirrors.aliyun.com
-
-# The client build stamps the commit it compiled into every bundle, and it
-# reads that value from git only when the variable below is unset. The build
-# context excludes .git, so the value arrives as an argument: the checkout the
-# host built from is the authority, and a placeholder keeps a bare
-# `docker build` from failing on a repository it cannot see.
-ARG GIT_COMMIT=0000000
-ENV DSH_CLIENT_COMMIT_HASH=${GIT_COMMIT}
-
-RUN if [ -n "${APT_MIRROR}" ]; then \
-      for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
-        if [ -f "$source" ]; then \
-          sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$source"; \
-        fi; \
-      done; \
-    fi \
- && apt-get update \
- && apt-get install -y --no-install-recommends git build-essential python3 \
- && rm -rf /var/lib/apt/lists/*
-
-RUN pnpm run build:artifacts
-
-RUN node --import tsx/esm scripts/release/pack.ts --family dsh --out /build/npm/dsh \
- && node --import tsx/esm scripts/release/pack.ts --family vendor --out /build/npm/vendor \
- && node --import tsx/esm scripts/packed-runtime-manifest.ts \
-      --out /build/runtime \
-      --install-prefix /build/npm \
-      --from /build/npm/dsh \
-      --from /build/npm/vendor
-
-# Install the runtime in this stage, not in the final image. The tarballs are
-# build inputs, and installing them in the runtime stage would leave a COPY
-# layer holding every `.tgz` behind the `rm` that deletes them: a later layer
-# only adds a whiteout, so the bytes stay in the image. Installing here keeps
-# the tarballs in a stage the image never carries, and the final stage copies
-# one directory that is already a working installation.
-RUN cd /build/runtime \
- && npm install --omit=optional --no-audit --no-fund --package-lock=false \
- && npm cache clean --force \
- && rm -rf /build/npm
+ && mkdir -p /build/plugins/dsh-client-ui-knowledge \
+ && cp -R \
+      packages/client/ui-knowledge/package.json \
+      packages/client/ui-knowledge/lib \
+      packages/client/ui-knowledge/locale \
+      /build/plugins/dsh-client-ui-knowledge/ \
+ && pnpm exec tsc -b packages/client/ui-tool-cards/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-tool-cards bundle \
+ && mkdir -p /build/plugins/dsh-client-ui-tool-cards \
+ && cp -R \
+      packages/client/ui-tool-cards/package.json \
+      packages/client/ui-tool-cards/lib \
+      packages/client/ui-tool-cards/locale \
+      /build/plugins/dsh-client-ui-tool-cards/
 
 # ============================================================
 # Stage: runtime image
 # ============================================================
 FROM ${BASE_IMAGE}
 
+ARG DSH_VERSION=0.2.1-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.
@@ -153,7 +98,7 @@ ENV NODE_ENV=production \
     PORT=8080 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    DSH_BIN=/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
+    DSH_BIN=/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
 
 # Build toolchain is a product requirement, not a convenience: plugins that ship
 # native modules (node-pty, ssh2, better-sqlite3) run `node-gyp` at install time
@@ -174,26 +119,20 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       build-essential python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# One directory, already installed: the `dsh` stage resolved every dependency
-# from the tarballs it packed and deleted that pack output afterwards, so this
-# layer holds the runtime and nothing else. Optional dependencies are omitted
-# for the same reason the release verification omits them: the Landlock
-# platform packages behind them need a per-architecture build, and the runtime
-# must start without them.
-COPY --from=dsh /build/runtime/ /opt/dsh-runtime/
-
 # pnpm is needed the first time a user's profile installs its bundles.
 RUN corepack enable \
- && npm config set registry "${NPM_REGISTRY}"
+ && npm config set registry "${NPM_REGISTRY}" \
+ && npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" \
+ && npm cache clean --force
 
 COPY gateway/ /opt/v-harness/gateway/
 COPY bin/ /opt/v-harness/bin/
 # Product skills are discovered through DSH_BUNDLED_SKILL_DIR (see
 # gateway/instances.mjs) and stay root-owned, so a tenant cannot edit them.
 COPY skills/ /opt/v-harness/skills/
-# Browser plugins built from this repository, read by gateway/plugins.mjs. dsh
-# resolves a bundle from its installation tree before a profile, so this is the
-# fallback copy for a profile whose own bundle would otherwise stay published.
+# Browser plugins built from this repository. A user's dsh profile installs its
+# web bundles from the registry, so gateway/plugins.mjs copies each of these
+# over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \

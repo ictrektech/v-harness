@@ -25,7 +25,7 @@ import { join } from 'node:path'
 const PLUGIN_ROOT = '/opt/v-harness/plugins'
 
 /** Plugins shipped from this repository, by package name. */
-const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions']
+const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards']
 
 /**
  * Copy the image's build of each bundled plugin over one profile's copy.
