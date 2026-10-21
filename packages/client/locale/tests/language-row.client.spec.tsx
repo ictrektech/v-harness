@@ -34,10 +34,10 @@ type AttentionSnapshot = Parameters<Parameters<LanguageRowComponentProps['useSes
 const noAttention: AttentionSnapshot = new Map()
 const useSessionStatus: LanguageRowComponentProps['useSessionStatus'] = selector => selector(noAttention)
 
-function mount(active = 'en') {
+function mount(active = 'en', following = false) {
   // Real store instance — the sanctioned zero-machinery path for tests.
   const store = createLanguageRowStore().create()
-  store.actions.sync(active, OPTIONS, 0)
+  store.actions.sync(active, OPTIONS, following, 0)
   const setLocale = vi.fn()
   const props: LanguageRowComponentProps = {
     useSessions: emptySessions(),
@@ -84,9 +84,18 @@ describe('LanguageRow', () => {
 
   it('follows store changes; an unknown active id falls back to the id itself', () => {
     const b = mount('en')
-    act(() => { b.store.actions.sync('zh', OPTIONS, 1) })
+    act(() => { b.store.actions.sync('zh', OPTIONS, false, 1) })
     expect(screen.getByRole('button', { name: /中文/ })).toBeDefined()
-    act(() => { b.store.actions.sync('fr', OPTIONS, 2) })
+    act(() => { b.store.actions.sync('fr', OPTIONS, false, 2) })
     expect(screen.getByRole('button', { name: /fr/ })).toBeDefined()
+  })
+
+  it('shows the follow entry while the host decides, and selects it by its id', () => {
+    const b = mount('en', true)
+    const trigger = screen.getByRole('button', { name: /language.follow/ })
+    fireEvent.click(trigger)
+    const follow = screen.getByRole('menuitem', { name: 'language.follow' })
+    fireEvent.click(follow)
+    expect(b.setLocale).toHaveBeenCalledWith('auto')
   })
 })

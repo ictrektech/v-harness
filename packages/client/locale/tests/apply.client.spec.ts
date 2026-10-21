@@ -103,7 +103,7 @@ describe('locale apply', () => {
       expect(onChange).toHaveBeenLastCalledWith('en')
       await fiber.dispose()
       const calls = onChange.mock.calls.length
-      b.ctx.emit('locale/change', { active: 'zh', locales: [], revision: 99 })
+      b.ctx.emit('locale/change', { active: 'zh', locales: [], following: false, revision: 99 })
       expect(onChange).toHaveBeenCalledTimes(calls)
     } finally {
       ready.resolve({ languages: ['en-US'], preference: 'zh' })

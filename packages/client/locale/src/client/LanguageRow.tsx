@@ -9,11 +9,12 @@ import type { PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-cli
 import { IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { createLanguageRowStore } from './settings-store.ts'
+import { FOLLOW_LOCALE_ID } from './vos-locale.ts'
 import css from './LanguageRow.module.css'
 
 /** Injected business face: the preference write (t rides the standard locale seat). */
 export interface LanguageRowInjected {
-  /** Switch the active locale (a registered locale id). */
+  /** Switch the active locale: a registered id, or the follow-host id. */
   setLocale: (id: string) => void
 }
 
@@ -30,8 +31,13 @@ export type LanguageRowComponentProps =
 export function LanguageRow({ t, setLocale, useStore }: LanguageRowComponentProps) {
   const active = useStore(s => s.active)
   const options = useStore(s => s.options)
+  const following = useStore(s => s.following)
   const [open, setOpen] = useState(false)
-  const activeLabel = options.find(o => o.id === active)?.label ?? active
+  const followLabel = t('language.follow')
+  // While following, the row shows the mode rather than the language it
+  // happens to resolve to: the host can switch it under the reader's feet.
+  const activeLabel = following ? followLabel : options.find(o => o.id === active)?.label ?? active
+  const items = [{ id: FOLLOW_LOCALE_ID, label: followLabel }, ...options.map(o => ({ id: o.id, label: o.label }))]
 
   return (
     <div className={css.row}>
@@ -41,8 +47,8 @@ export function LanguageRow({ t, setLocale, useStore }: LanguageRowComponentProp
       <Menu
         open={open}
         onClose={() => { setOpen(false) }}
-        items={options.map(o => ({ id: o.id, label: o.label }))}
-        selectedId={active}
+        items={items}
+        selectedId={following ? FOLLOW_LOCALE_ID : active}
         onSelect={(id) => {
           setLocale(id)
           setOpen(false)

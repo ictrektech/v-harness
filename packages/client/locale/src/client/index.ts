@@ -27,6 +27,9 @@ import {
 import type { LanguageRowInjected } from './LanguageRow.tsx'
 import { LanguageRow } from './LanguageRow.tsx'
 import { createLanguageRowStore } from './settings-store.ts'
+import {
+  FOLLOW_LOCALE_ID, isHostLocaleKey, listenForHostLocale, readStoredHostLocale, type HostLocale,
+} from './vos-locale.ts'
 
 export type { LanguageRowComponentProps, LanguageRowInjected } from './LanguageRow.tsx'
 export type { LanguageOptionRow, LanguageRowState } from './settings-store.ts'
@@ -76,6 +79,8 @@ export interface LocaleSnapshot {
   active: LocaleId
   /** Selectable locales in display order. */
   locales: readonly LocaleDefinition[]
+  /** Whether the host or the browser, not an explicit selection, decides the locale. */
+  following: boolean
   /** Monotonic change counter (registry or active changes). */
   revision: number
 }
@@ -175,6 +180,8 @@ export class LocaleRuntime {
   private provisional: LocaleId
   /** Last explicit selection, including one awaiting an external registration. */
   private preference: LocaleId | undefined
+  /** Host-published language, standing above the browser default while nothing is explicit. */
+  private hostLocale: LocaleId | undefined
 
   /**
    * @param ctx - owning context (change events are emitted on it; the scope
@@ -190,7 +197,9 @@ export class LocaleRuntime {
     const locales = this.localeList()
     this.provisional = resolveInitialLocale(locales, bootstrap?.languages)
     this.preference = bootstrap?.preference ?? undefined
-    this.snapshot = Object.freeze({ active: this.resolveActive(), locales, revision: 0 })
+    this.snapshot = Object.freeze({
+      active: this.resolveActive(), locales, following: this.preference === undefined, revision: 0,
+    })
     if (host !== undefined) {
       ctx.effect(() => host.subscribe(() => { this.adopt(host) }), 'locale: settings scope adoption')
       this.adopt(host)
@@ -253,11 +262,74 @@ export class LocaleRuntime {
    * @param id - a registered locale id; unknown ids throw.
    */
   setLocale(id: string): void {
+    if (id === FOLLOW_LOCALE_ID) {
+      this.followHost()
+      return
+    }
     const match = this.catalog.get(localeKey(id))
     if (match === undefined) throw new Error(`locale "${id}" is not registered`)
+    const changed = this.snapshot.active !== match.id
+    // An explicit pick ends following even when it names the language already
+    // on screen; otherwise the row would keep claiming "follow".
+    const wasFollowing = this.snapshot.following
     this.preference = match.id
-    if (this.snapshot.active !== match.id) this.publish(match.id, true)
+    if (changed || wasFollowing) this.publish(match.id, changed)
     void this.host?.set(LOCALE_PREFERENCE_FIELD, match.id)
+  }
+
+  /**
+   * Drop the explicit selection so the host decides again. The stored
+   * preference is cleared rather than overwritten with the resolved language:
+   * writing it would pin the current value and stop following.
+   */
+  followHost(): void {
+    if (this.preference === undefined) return
+    this.preference = undefined
+    void this.host?.unset(LOCALE_PREFERENCE_FIELD)
+    const target = this.resolveActive()
+    this.publish(target, target !== this.snapshot.active)
+  }
+
+  /**
+   * Follow the host's language: the VOS bridge when it is injected, the
+   * `preferences-locale` storage entry older releases write as the fallback.
+   * An explicit selection outranks both until {@link followHost} clears it.
+   */
+  attachHost(): void {
+    if (typeof window === 'undefined') return
+    const apply = (locale: HostLocale | null): void => {
+      if (locale !== null) this.adoptHostLocale(locale)
+    }
+    const read = (): void => {
+      try {
+        apply(readStoredHostLocale(window.localStorage))
+      } catch {
+        // Storage access can be denied in an embedded browser.
+      }
+    }
+    read()
+    const onStorage = (event: StorageEvent): void => {
+      if (event.key === null || isHostLocaleKey(event.key)) read()
+    }
+    window.addEventListener('storage', onStorage)
+    const stopBridge = listenForHostLocale(apply)
+    this.ctx.effect(() => () => {
+      window.removeEventListener('storage', onStorage)
+      stopBridge()
+    }, 'locale: host language synchronization')
+  }
+
+  /**
+   * Adopt one host announcement. A selection the reader made on purpose is
+   * left alone; only the automatic resolution follows.
+   * @param locale - host language narrowed to a shipped dictionary.
+   */
+  private adoptHostLocale(locale: HostLocale): void {
+    if (this.hostLocale === locale) return
+    this.hostLocale = locale
+    if (this.preference !== undefined) return
+    const target = this.resolveActive()
+    if (target !== this.snapshot.active) this.publish(target, true)
   }
 
   /**
@@ -306,8 +378,9 @@ export class LocaleRuntime {
     if (section === undefined) return
     this.preference = section.preference
     const target = this.resolveActive()
-    if (this.snapshot.active === target) return
-    this.publish(target, true)
+    const following = this.preference === undefined
+    if (this.snapshot.active === target && this.snapshot.following === following) return
+    this.publish(target, this.snapshot.active !== target)
   }
 
   /** Recompute browser fallback and publish the current catalog. */
@@ -321,8 +394,8 @@ export class LocaleRuntime {
 
   /** Resolve an explicit preference only while its definition is available. */
   private resolveActive(): LocaleId {
-    if (this.preference === undefined) return this.provisional
-    return this.catalog.get(localeKey(this.preference))?.id ?? this.provisional
+    if (this.preference === undefined) return this.hostLocale ?? this.provisional
+    return this.catalog.get(localeKey(this.preference))?.id ?? this.hostLocale ?? this.provisional
   }
 
   /** Snapshot the catalog in registration order. */
@@ -497,6 +570,7 @@ export class LocaleRuntime {
     this.snapshot = Object.freeze({
       active,
       locales,
+      following: this.preference === undefined,
       revision: this.snapshot.revision + 1,
     })
     if (localeChanged) this.ctx.emit('locale/change', this.snapshot)
@@ -579,6 +653,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   locale.register(COMMON_NS, { zh, en })
   locale.register(SETTINGS_NS, { zh: settingsZh, en: settingsEn })
   ctx.provide('locale', locale)
+  locale.attachHost()
   if (bridge !== undefined) {
     ctx.on('locale/change', (snapshot) => { bridge.onChange(snapshot.active) })
     bridge.onChange(locale.getSnapshot().active)
@@ -595,6 +670,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
     bound?.sync(
       snapshot.active,
       snapshot.locales.map(l => ({ id: l.id, label: l.label })),
+      snapshot.following,
       snapshot.revision,
     )
   }
