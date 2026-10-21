@@ -33,8 +33,11 @@ TARGET_SHEET_TITLES=()
 
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 # Debian package mirror for the build stage; an empty value keeps the base
-# image's own sources.
-APT_MIRROR="${APT_MIRROR:-mirrors.aliyun.com}"
+# image's own sources. USTC measured about four times faster than the Ali
+# mirror from the current build hosts, so it is the default; override it with
+# APT_MIRROR on a host where another mirror wins. The value participates in the
+# image cache key, so keep it stable rather than probing it per build.
+APT_MIRROR="${APT_MIRROR-mirrors.ustc.edu.cn}"
 
 PUSH_IMAGES=1
 UPDATE_FEISHU=1

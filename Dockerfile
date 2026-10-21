@@ -1,5 +1,11 @@
 # v-harness container: gateway + one dsh process per user.
 #
+# No `# syntax=` frontend directive on purpose: it makes the build pull
+# docker/dockerfile from Docker Hub before the first instruction runs, and a
+# build host that cannot reach Docker Hub dies with "frontend grpc server closed
+# unexpectedly". Everything below, including `RUN --mount=type=cache`, is
+# understood by the frontend built into the engine (Docker 23+ / BuildKit).
+#
 # Build context is the repository root (see .dockerignore, which keeps the dsh
 # monorepo out of the context):
 #   docker build -f Dockerfile -t v-harness .
@@ -11,6 +17,46 @@
 # Base image is overridable so the build host can pull it from SWR instead of
 # Docker Hub; build_image.sh mirrors it once and reuses it afterwards.
 ARG BASE_IMAGE=node:22-bookworm-slim
+# Build hosts behind a restricted network cannot reach deb.debian.org; the
+# mirror is overridable, and an empty value keeps the image's own sources.
+# USTC is the default because it measured about four times faster than the Ali
+# mirror from the build hosts in use. Keep the value stable: it is part of the
+# cache key for the toolchain stage below.
+ARG APT_MIRROR=mirrors.ustc.edu.cn
+
+# ============================================================
+# Stage: build toolchain shared by every later stage
+# ============================================================
+# Build toolchain is a product requirement, not a convenience: plugins that ship
+# native modules (node-pty, ssh2, better-sqlite3) run `node-gyp` at install time
+# inside the user's own profile. Without gcc/make/python3 every such plugin
+# fails, which removes a large part of why dsh is extensible at all.
+# Costs roughly 300 MB in the image; it does not slow down users who install
+# pure-JS plugins, because nothing is compiled for them.
+#
+# One stage installs it for both consumers: the dsh build compiles native
+# dependencies too, and the runtime ships the toolchain for user profiles.
+# This stage reads only the base image and the mirror argument, so its layers
+# stay cached across source changes; the apt lists live in a cache mount, which
+# keeps them between builds without leaving them in the image.
+FROM ${BASE_IMAGE} AS base-tools
+
+ARG APT_MIRROR
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    if [ -n "${APT_MIRROR}" ]; then \
+      for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$source" ]; then \
+          sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$source"; \
+        fi; \
+      done; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      sudo util-linux ca-certificates \
+      git build-essential python3
+
 # ============================================================
 # Stage: browser plugins built from this repository
 # ============================================================
@@ -27,7 +73,7 @@ ARG BASE_IMAGE=node:22-bookworm-slim
 # makes the image depend on the build host's Node toolchain and on whatever
 # happened to be in the build directory, so a second host builds a different
 # image.
-FROM ${BASE_IMAGE} AS plugins
+FROM base-tools AS plugins
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
@@ -92,30 +138,18 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json packages/client/
 # must never stand in for the build.
 FROM plugins AS dsh
 
-# `build:artifacts` stamps the revision it compiled, so the stage needs git on
-# the image's own PATH. The mirror argument is the same one the runtime stage
-# takes, because this install has to work on hosts that cannot reach
-# deb.debian.org.
-ARG APT_MIRROR=mirrors.aliyun.com
-
 # The client build stamps the commit it compiled into every bundle, and it
 # reads that value from git only when the variable below is unset. The build
 # context excludes .git, so the value arrives as an argument: the checkout the
 # host built from is the authority, and a placeholder keeps a bare
 # `docker build` from failing on a repository it cannot see.
+#
+# Declared here rather than above the toolchain on purpose: this value changes
+# with every commit, and a declaration invalidates the cache of every RUN that
+# follows it. With the toolchain moved to base-tools, a new commit reruns only
+# this build instead of the apt install as well.
 ARG GIT_COMMIT=0000000
 ENV DSH_CLIENT_COMMIT_HASH=${GIT_COMMIT}
-
-RUN if [ -n "${APT_MIRROR}" ]; then \
-      for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
-        if [ -f "$source" ]; then \
-          sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$source"; \
-        fi; \
-      done; \
-    fi \
- && apt-get update \
- && apt-get install -y --no-install-recommends git build-essential python3 \
- && rm -rf /var/lib/apt/lists/*
 
 RUN pnpm run build:artifacts
 
@@ -141,12 +175,12 @@ RUN cd /build/runtime \
 # ============================================================
 # Stage: runtime image
 # ============================================================
-FROM ${BASE_IMAGE}
+# The toolchain, certificates and `sudo` come from base-tools: the runtime
+# ships them for user profiles, and the build needs them too, so one stage
+# installs them once and both consumer stages inherit the same layer.
+FROM base-tools
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
-# Build hosts behind a restricted network cannot reach deb.debian.org; the
-# mirror is overridable, and an empty value keeps the image's own sources.
-ARG APT_MIRROR=mirrors.aliyun.com
 
 ENV NODE_ENV=production \
     DATA_ROOT=/data \
@@ -154,25 +188,6 @@ ENV NODE_ENV=production \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     DSH_BIN=/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
-
-# Build toolchain is a product requirement, not a convenience: plugins that ship
-# native modules (node-pty, ssh2, better-sqlite3) run `node-gyp` at install time
-# inside the user's own profile. Without gcc/make/python3 every such plugin
-# fails, which removes a large part of why dsh is extensible at all.
-# Costs roughly 300 MB in the image; it does not slow down users who install
-# pure-JS plugins, because nothing is compiled for them.
-RUN if [ -n "${APT_MIRROR}" ]; then \
-      for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
-        if [ -f "$source" ]; then \
-          sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$source"; \
-        fi; \
-      done; \
-    fi \
- && apt-get update \
- && apt-get install -y --no-install-recommends \
-      sudo util-linux ca-certificates \
-      build-essential python3 \
- && rm -rf /var/lib/apt/lists/*
 
 # One directory, already installed: the `dsh` stage resolved every dependency
 # from the tarballs it packed and deleted that pack output afterwards, so this
