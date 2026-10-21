@@ -158,12 +158,31 @@ function explain(status, body) {
   switch (status) {
     case 401:
       return 'VOS 登录令牌缺失或已过期：请在 v-harness 页面刷新（F5）后重试'
+    case 403:
+      return '共享目录不可写，或该操作未被授权'
     case 404:
       return '当前用户的「我的文档」中没有这个文件'
     case 409:
       return '目标文件名已存在，或该文档已被其他窗口修改（版本冲突）'
     case 413:
       return '文件超过 100 MB 上限'
+    case 423:
+      return '文档正被其他窗口在线编辑（锁定），稍后再试'
+    case 503: {
+      // Collabora 未就绪：detail 是 {"reason": "warming_up"|"unavailable"} 的
+      // JSON 字符串，解析出原因才能给出可行动的话术。
+      let reason = ''
+      if (body && typeof body === 'object' && typeof body.detail === 'string') {
+        try {
+          reason = JSON.parse(body.detail).reason ?? ''
+        } catch {
+          // detail 不是 JSON：按原样透出即可
+        }
+      }
+      if (reason === 'warming_up') return '在线编辑器正在启动，等几秒再试一次'
+      if (reason === 'unavailable') return '当前部署没有可用的在线编辑器，改用 download + present 预览'
+      return `V-Office 返回 HTTP 503${detail ? `：${detail}` : ''}`
+    }
     default:
       return `V-Office 返回 HTTP ${String(status)}${detail ? `：${detail}` : ''}`
   }
@@ -204,7 +223,9 @@ function responded(request) {
 async function ensureOk(response) {
   const status = response.statusCode ?? 0
   if (status >= 200 && status < 300) return
-  throw new UsageError(explain(status, await readBody(response)))
+  const error = new UsageError(explain(status, await readBody(response)))
+  error.status = status
+  throw error
 }
 
 /**
@@ -221,6 +242,60 @@ async function getJson(transport, path) {
   await ensureOk(resolved)
   const body = await readBody(resolved)
   return body && typeof body === 'object' ? body : {}
+}
+
+/**
+ * Ask the storage service for a direct Collabora editor URL (absolute,
+ * short-lived WOPI token embedded). Saves go straight back to private storage.
+ * @param {ReturnType<typeof resolveTransport>} transport
+ * @param {string} name
+ * @param {{ readonly?: boolean, lang?: string, fresh?: boolean }} [options]
+ * @returns {Promise<{ name: string, url: string, canWrite: boolean, expiresIn: number }>}
+ */
+async function editorLink(transport, name, options = {}) {
+  const params = new URLSearchParams({ name, edit: options.readonly ? '0' : '1' })
+  if (options.lang) params.set('lang', options.lang)
+  // 非 0 版本号换 docKey，逼 Collabora 丢弃内存副本重新读盘：
+  // 云端文件刚被覆盖、旧编辑会话还开着时用它。
+  if (options.fresh) params.set('version', String(Math.floor(Date.now() / 1000)))
+  const body = await getJson(transport, `/api/v1/documents/editor-link?${params.toString()}`)
+  if (typeof body.url !== 'string' || body.url === '') {
+    throw new UsageError('V-Office 没有返回编辑器地址')
+  }
+  return {
+    name: typeof body.name === 'string' ? body.name : name,
+    url: body.url,
+    canWrite: body.canWrite !== false,
+    expiresIn: typeof body.expiresIn === 'number' ? body.expiresIn : 3600,
+  }
+}
+
+/**
+ * Attach read-only preview links to the listed files. One editor-link call per
+ * file, so only the first `limit` entries get one; a single failure just means
+ * that entry has no link — the listing itself stays intact.
+ * @param {ReturnType<typeof resolveTransport>} transport
+ * @param {Record<string, unknown>[]} files
+ * @param {number} limit
+ * @returns {Promise<Record<string, unknown>[]>}
+ */
+async function withViewLinks(transport, files, limit) {
+  if (limit <= 0 || !Array.isArray(files)) return files
+  for (const file of files.slice(0, limit)) {
+    const name = typeof file?.name === 'string' ? file.name : ''
+    if (!name) continue
+    try {
+      const link = await editorLink(transport, name, { readonly: true })
+      file.viewUrl = link.url
+    } catch (error) {
+      // editor-link 不可用（旧版上游/该文件类型不支持）时列表照常返回，
+      // 只是没有可点的预览链接。
+      if (error instanceof UsageError && error.status === 404) continue
+      if (error instanceof UsageError && error.status === 400) continue
+      throw error
+    }
+  }
+  return files
 }
 
 /**
@@ -276,6 +351,7 @@ async function upload(transport, file, explicitName) {
 
 /**
  * Parse `--key value` / `--key=value` options around positional arguments.
+ * A flag without a value (`--readonly`, `--fresh`) parses as `''`.
  * @param {string[]} argv
  * @returns {{ positionals: string[], options: Record<string, string> }}
  */
@@ -292,10 +368,10 @@ function parseOptions(argv) {
     }
     const [key, inline] = token.slice(2).split('=', 2)
     if (!key) throw new UsageError('选项格式错误')
-    const value = inline ?? argv[index + 1]
-    if (value === undefined) throw new UsageError(`选项 --${key} 需要一个值`)
+    const next = argv[index + 1]
+    const value = inline ?? (next !== undefined && !next.startsWith('--') ? next : '')
     options[key] = value
-    if (inline === undefined) index += 1
+    if (inline === undefined && value !== '') index += 1
   }
   return { positionals, options }
 }
@@ -309,7 +385,8 @@ async function run(argv) {
   const [command, ...rest] = argv
   if (!command || command === '--help' || command === '-h') {
     throw new UsageError(
-      'usage: voffice <me|list|download|view|open|upload|rename|delete|health> ...',
+      'usage: voffice <me|list|download|view|open|upload|rename|delete|health> ...\n'
+      + '  open <name> [--readonly] [--lang zh-CN] [--fresh]',
     )
   }
   const transport = resolveTransport()
@@ -323,9 +400,14 @@ async function run(argv) {
   }
 
   if (command === 'list') {
+    const parsed = parseOptions(rest)
+    const links = parsed.options.links === '' || parsed.options.links === undefined
+      ? 10
+      : Math.max(0, Number(parsed.options.links) || 0)
     const body = await getJson(transport, '/api/v1/files')
     const files = Array.isArray(body.files) ? body.files : []
-    return { ok: true, total: files.length, files }
+    const enriched = await withViewLinks(transport, files, links)
+    return { ok: true, total: enriched.length, files: enriched }
   }
 
   if (command === 'download' || command === 'view') {
@@ -343,20 +425,39 @@ async function run(argv) {
   }
 
   if (command === 'open') {
-    const name = assertName(parseOptions(rest).positionals[0])
-    // The gateway records the portal origin from the browser's own requests;
-    // the chat renderer refuses relative hrefs, so the link must be absolute.
-    const { origin } = await getJson(transport, '/__vh/origin')
-    if (typeof origin !== 'string' || origin === '') {
-      throw new UsageError(
-        '拿不到门户地址：请让用户先在 v-harness 页面刷新一次，再重试；或让用户到 VOS → V-Office「我的文档」里打开。',
-      )
-    }
-    return {
-      ok: true,
-      name,
-      url: `${origin}/__vh/office/open?name=${encodeURIComponent(name)}`,
-      hint: '把 url 原样放进 markdown 链接给用户（[在线编辑](url)）。点开即进入 Collabora 在线编辑，保存直接写回「我的文档」。',
+    const parsed = parseOptions(rest)
+    const name = assertName(parsed.positionals[0])
+    const readonly = parsed.options.readonly !== undefined && parsed.options.readonly !== 'false'
+    try {
+      const link = await editorLink(transport, name, {
+        readonly,
+        lang: parsed.options.lang || undefined,
+        fresh: parsed.options.fresh !== undefined,
+      })
+      return {
+        ok: true,
+        ...link,
+        hint: link.canWrite
+          ? `把 url 原样放进 markdown 链接给用户（[在线编辑](url)），并交代：链接 ${link.expiresIn} 秒内有效、保存自动写回云端；过期或打不开就重新 open 一条，不要排查旧链接。改完请用户回来说一声，好 download 最新版。`
+          : '把 url 原样放进 markdown 链接给用户（[在线预览](url)），说明这是只读查看，想编辑再说一声。',
+      }
+    } catch (error) {
+      // 旧网关未放行 editor-link（403 route-not-allowed）时退回门户重定向链接。
+      if (error instanceof UsageError && error.status !== 403) throw error
+      const { origin } = await getJson(transport, '/__vh/origin')
+      if (typeof origin !== 'string' || origin === '') {
+        throw new UsageError(
+          '拿不到编辑链接，也拿不到门户地址：请让用户先在 v-harness 页面刷新一次再试。',
+        )
+      }
+      return {
+        ok: true,
+        name,
+        url: `${origin}/__vh/office/open?name=${encodeURIComponent(name)}`,
+        canWrite: !readonly,
+        expiresIn: 0,
+        hint: '把 url 原样放进 markdown 链接给用户（[在线编辑](url)）。点开即进入在线编辑，保存直接写回「我的文档」。',
+      }
     }
   }
 
@@ -380,7 +481,13 @@ async function run(argv) {
     request.end(payload)
     const resolved = await response
     await ensureOk(resolved)
-    return { ok: true, from: name, to: next, response: await readBody(resolved) }
+    return {
+      ok: true,
+      from: name,
+      to: next,
+      response: await readBody(resolved),
+      hint: '回复用户已改名（旧名 → 新名）。编辑链接跟文件名走：如果编辑器里还开着旧名字这份，需要重新 open，内容不会丢；把这点主动转告用户。',
+    }
   }
 
   if (command === 'delete') {

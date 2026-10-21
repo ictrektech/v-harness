@@ -51,6 +51,8 @@ const ROUTES = [
   { method: 'PUT', pattern: /^\/api\/v1\/files\/[^/]+$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/files\/[^/]+$/ },
   { method: 'DELETE', pattern: /^\/api\/v1\/files\/[^/]+$/ },
+  // Direct Collabora editor link for the agent's `open` command.
+  { method: 'GET', pattern: /^\/api\/v1\/documents\/editor-link$/ },
 ];
 
 /** Response headers worth replaying to the caller. */
@@ -301,6 +303,17 @@ async function forward(namespace, req, res) {
   if (req.headers['content-type']) headers['content-type'] = String(req.headers['content-type']);
   if (req.headers['content-length']) headers['content-length'] = String(req.headers['content-length']);
   if (token) headers.authorization = `Bearer ${token}`;
+  // editor-link builds its absolute URL from X-Forwarded-*; a capability-socket
+  // caller has no browser headers, so fill them in from the remembered origin.
+  if (publicOrigin) {
+    try {
+      const origin = new URL(publicOrigin);
+      if (!headers['x-forwarded-proto']) headers['x-forwarded-proto'] = origin.protocol.replace(/:$/, '');
+      if (!headers['x-forwarded-host']) headers['x-forwarded-host'] = origin.host;
+    } catch {
+      // Unusable remembered origin: upstream falls back to the request Host.
+    }
+  }
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
@@ -308,7 +321,9 @@ async function forward(namespace, req, res) {
       hostname: OFFICE_BASE.hostname,
       port: OFFICE_BASE.port || undefined,
       method,
-      path: `${OFFICE_PREFIX}${url.pathname}`,
+      // Query strings carry the sources/editor-link parameters (`?path=`,
+      // `?if-match-token=`, `?name=`); dropping them breaks those routes.
+      path: `${OFFICE_PREFIX}${url.pathname}${url.search}`,
       headers,
     }, (upstreamRes) => {
       /** @type {Record<string, string>} */
