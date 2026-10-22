@@ -6,6 +6,7 @@ x-v-harness-env: &v-harness-env
   VOS_OIDC_SCOPE: openid profile email
   VOS_OIDC_USERINFO_URL: ${VOS_OIDC_USERINFO_URL:-http://172.17.0.1:8105/v1000/oauth2/userinfo}
   IMAGE_STUDIO_BASE_URL: ${IMAGE_STUDIO_BASE_URL:-http://172.17.0.1:1182/api/com.ictrek.image-studio}
+  VH_OFFICE_BASE: ${VH_OFFICE_BASE:-http://172.17.0.1:5000}
   SESSION_TTL_MS: ${SESSION_TTL_MS:-43200000}
   DSH_PERMISSION_MODE: workspace-write
   NODE_ENV: production
