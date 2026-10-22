@@ -87,10 +87,12 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
 RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
  && pnpm exec tsc -b packages/client/ui-settings-models/tsconfig.json \
  && pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle \
+ && pnpm --filter @deepseek-ai/dsh-api-remotes bundle \
  && for spec in \
       client/ui-settings-models:dsh-client-ui-settings-models \
       llm/llm-pi-ai:dsh-llm-pi-ai \
-      api/session-controller:dsh-api-session-controller; do \
+      api/session-controller:dsh-api-session-controller \
+      api/remotes:dsh-api-remotes; do \
       source="${spec%:*}"; name="${spec#*:}"; \
       mkdir -p "/build/plugins/$name"; \
       cp -R "packages/$source/package.json" "packages/$source/lib" "/build/plugins/$name/"; \
@@ -150,7 +152,7 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller; do \
+RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes; do \
       source="/opt/v-harness/plugins/$name"; \
       target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$(basename "$source")"; \
       test -f "$target/package.json"; \

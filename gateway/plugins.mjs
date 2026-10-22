@@ -26,7 +26,8 @@ const PLUGIN_ROOT = '/opt/v-harness/plugins'
 const INSTALLATION_MODULES = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
 
 /** Plugins shipped from this repository, by package name. */
-const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller']
+const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
+const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', ...MANAGED]
 
 /**
  * Copy the image's build of each bundled plugin over one profile's copy.
@@ -44,13 +45,13 @@ export async function syncClientPlugins(user) {
     const source = join(PLUGIN_ROOT, name)
     const target = join(modules, name)
     if (!(await exists(source))) {
-      if (['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller'].includes(name)) throw new Error(`deployed plugin missing: ${name}`)
+      if (MANAGED.includes(name)) throw new Error(`deployed plugin missing: ${name}`)
       continue
     }
     // Default profiles resolve bundled packages from the shared installation.
     // Docker installs the matching artifacts there before any tenant starts.
     if (!(await exists(join(target, 'package.json')))) {
-      if (['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller'].includes(name)
+      if (MANAGED.includes(name)
           && !(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) throw new Error(`installed plugin missing: ${name}`)
       continue
     }
