@@ -42,15 +42,18 @@
 ## 构建与发布
 
 ```bash
-./build_image.sh --target amd          # 构建 + 推送 SWR + 写飞书
+V_HARNESS_SOURCE_REVISION=<本地提交完整 SHA> ./build_image.sh --target amd --sheet AMD_with_cuda
+V_HARNESS_SOURCE_REVISION=<本地提交完整 SHA> ./build_image.sh --target arm --sheet ARM_with_cuda
 ./build_image.sh --dry-run             # 只看计划
 ./build_image.sh --no-feishu           # 不写飞书
 ```
 
-镜像：`swr.cn-southwest-2.myhuaweicloud.com/ictrek/v-harness:<amd|arm>_YYYYMMDD`
+镜像：`swr.cn-southwest-2.myhuaweicloud.com/ictrek/v-harness:<amd|arm>_YYYYMMDD`。当天重复构建更新同一标签，不添加自定义后缀。远端只构建通过 rsync 同步的本地代码，不执行 Git。
+
+两种架构的镜像均推送并写入飞书后，在本地运行 `./ictrek.app/scripts/update_version.sh patch`。GitHub Actions 从最新已发布 Release 解析 V-Scheduler 依赖版本，生成安装包并发布至 GitHub Release 和 VOS 应用商店；应用商店发布失败会令工作流失败。
 
 ## 已知限制
 
-- **LLM Key 来源未定**：当前每个用户在 dsh 内自行配置 API Key。平台统一供 key 需要网关做 LLM 透传，尚未实现。
+- 模型统一在 V-Scheduler 中管理；设置页提供跳转、刷新及默认模型下拉框，推理沿用当前 VOS 用户身份。纯文本补全模型不支持工具调用。
 - 每用户一份 pnpm store 与 `node_modules`，磁盘按「用户数 × 插件体积」预算。
 - 容器内 `dsh` 首次启动要 `pnpm install` profile bundles，首登会慢若干秒。

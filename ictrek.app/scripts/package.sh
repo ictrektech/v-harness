@@ -379,6 +379,9 @@ done
 [[ -f "${SRC_DIR}/icon.png" ]] && cp "${SRC_DIR}/icon.png" "${STAGE_DIR}/icon.png"
 render_compose_file "${SRC_DIR}/docker-compose.yml" "${STAGE_DIR}/docker-compose.yml" "$ENV_FILE"
 
+"${PYTHON_BIN}" "${ROOT_DIR}/scripts/resolve_dependencies.py" "${STAGE_DIR}/manifest.yml" \
+  --repositories "${ROOT_DIR}/dependency-releases.json"
+
 validate_staged_files
 
 APP_TARBALL="${DIST_DIR}/app.tar.gz"

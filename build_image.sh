@@ -57,8 +57,6 @@ Options:
   --dry-run             Print the plan without building or writing Feishu
   --target TARGET       Build target tag prefix: amd or arm (default: detect host)
   --sheet SHEET         Override Feishu sheet title list; comma-separated
-  --tag TAG             Override the generated tag (used as-is)
-  --suffix SUFFIX       Append SUFFIX to the generated tag (e.g. v2)
   -h, --help            Show this help
 
 Environment:
@@ -68,6 +66,7 @@ Environment:
   V_HARNESS_BUILD_TARGET    Optional default for --target
   FEISHU_SHEET_TITLE       Optional default for --sheet, comma-separated
   NPM_REGISTRY             npm registry used during the image build
+  V_HARNESS_SOURCE_REVISION Full source commit supplied by the local checkout
   APT_MIRROR               Debian package mirror for apt (empty keeps upstream)
 EOF
 }
@@ -341,17 +340,12 @@ update_feishu() {
   done
 }
 
-TAG_OVERRIDE=""
-TAG_SUFFIX=""
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-push) PUSH_IMAGES=0; shift ;;
     --no-feishu) UPDATE_FEISHU=0; shift ;;
     --feishu-only) SKIP_BUILD=1; PUSH_IMAGES=0; UPDATE_FEISHU=1; shift ;;
     --dry-run) DRY_RUN=1; PUSH_IMAGES=0; UPDATE_FEISHU=0; shift ;;
-    --tag) TAG_OVERRIDE="$2"; shift 2 ;;
-    --suffix) TAG_SUFFIX="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --sheet) TARGET_SHEET_SPEC="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -397,43 +391,18 @@ fi
 DATE="$(date +%Y%m%d)"
 BASE_TAG="${PROFILE_TAG}_${DATE}"
 
-tag_taken() {
-  local tag="$1"
-  if docker image inspect "${IMAGE}:${tag}" >/dev/null 2>&1; then return 0; fi
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 20 docker manifest inspect "${IMAGE}:${tag}" >/dev/null 2>&1 && return 0
-  else
-    docker manifest inspect "${IMAGE}:${tag}" >/dev/null 2>&1 && return 0
-  fi
-  return 1
-}
-
-next_free_tag() {
-  local base="$1" candidate="$1" n=1
-  while tag_taken "$candidate"; do
-    n=$((n + 1))
-    candidate="${base}_${n}"
-  done
-  printf '%s\n' "$candidate"
-}
-
-if [[ -n "$TAG_OVERRIDE" ]]; then
-  TAG="$TAG_OVERRIDE"
-elif [[ "$SKIP_BUILD" == "1" ]]; then
-  TAG="$BASE_TAG"
-elif [[ -n "$TAG_SUFFIX" ]]; then
-  TAG="${BASE_TAG}${TAG_SUFFIX}"
-else
-  TAG="$(next_free_tag "$BASE_TAG")"
-  [[ "$TAG" == "$BASE_TAG" ]] || log "Tag ${BASE_TAG} already exists; using ${TAG}"
-fi
+TAG="$BASE_TAG"
 
 log "TARGET=${TARGET} ARCH=${ARCH}"
 log "TARGET_SHEETS=${TARGET_SHEET_TITLES[*]}"
 log "IMAGE=${IMAGE}:${TAG}"
 # The image carries the checkout it was built from, so two builds that disagree
 # can be compared without guessing which source produced them.
-REVISION="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+REVISION="${V_HARNESS_SOURCE_REVISION:-unknown}"
+if [[ "$DRY_RUN" != "1" && "$SKIP_BUILD" != "1" && ! "$REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+  err "Set V_HARNESS_SOURCE_REVISION to the full commit from the local checkout before building"
+  exit 1
+fi
 log "REVISION=${REVISION}"
 
 if [[ "$DRY_RUN" == "1" ]]; then

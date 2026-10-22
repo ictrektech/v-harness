@@ -113,9 +113,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${APPSTORE_IP:-}" || -z "${APPSTORE_TOKEN:-}" ]]; then
-            echo "App Store credentials are not configured; skipping the store upload."
+            echo "::error::App Store credentials are not configured."
             echo "Set APPSTORE_IP and APPSTORE_TOKEN to publish automatically."
-            exit 0
+            exit 1
           fi
 
           PACKAGE="ictrek.app/dist/v-harness_${VERSION}_pull.tar"
@@ -170,6 +170,7 @@ jobs:
           RESPONSE="$publish_response" python3 - <<'PY'
           import json
           import os
+          import sys
 
           payload = json.loads(os.environ["RESPONSE"])
           if payload.get("code") != 0:
