@@ -7,6 +7,8 @@ kind: "package-reference"
 
 [English](README.md) | 中文
 
+VOS 部署通过租户网关提供 `VH_SCHEDULER_URL` 和仅限推理的 `VH_SCHEDULER_KEY`。此模式按当前 VOS 用户可见目录发现模型，根据声明的接口选择 Chat Completions、Responses 或 Messages 传输，并在准备每次调用前刷新。纯文本补全通过网关适配聊天传输，不支持工具调用。已有独立提供商凭据予以保留，托管发现不使用这些凭据。
+
 ## 概述
 
 `@deepseek-ai/dsh-llm-pi-ai` 通过一份配置把模型请求路由到多个 pi-ai 提供方、OpenAI 兼容网关或自托管服务器。已安装的 pi-ai 提供方会提供端点、协议和模型目录默认值；自定义路由可以直接声明这些值，无需修改代码。profile 与凭据按请求解析，因此设置变更会在下一个请求生效，无需重启。受支持的提供方可以使用已存储的 OAuth 或交互式密钥登录，并通过跨进程锁刷新凭据。本包可以在没有路由时启动，并在用户设置添加路由后将其激活。

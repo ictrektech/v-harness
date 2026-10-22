@@ -18,6 +18,7 @@ import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, access, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { syncClientPlugins } from './plugins.mjs';
+import { schedulerEnvironment } from './scheduler.mjs';
 
 const LAUNCH_TIMEOUT_MS = 45_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -242,22 +243,15 @@ async function launch(options) {
   // never leaks into a session or a saved workspace path.
   const jailHome = `/home/${record.namespace}`;
 
-  // The image's plugin build has to be in place before dsh reads it. dsh takes
-  // one snapshot per client bundle at boot: it hashes the file's
-  // mtime/ctime/size into the immutable `?rev=` URL and serves the bytes it
-  // read then, so a replacement that lands after start changes nothing until
-  // the next restart — not even a hard refresh bypasses it. A profile that does
-  // not exist yet has nothing to replace; the post-launch call below covers the
-  // first install, and that tenant picks the build up from the next start.
-  await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
-
-  const child = spawn(JAIL_BIN, [
+  const launchArgs = [
     record.linuxName, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
+    '--patch', '/opt/v-harness/gateway/vos.patch.yml',
     '--host', '127.0.0.1',
     '--port', String(record.port),
     '--no-open',
-  ], {
+  ];
+  const launchOptions = {
     cwd: paths.workspace,
     env: {
       HOME: jailHome,
@@ -284,6 +278,7 @@ async function launch(options) {
         process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       ].join(':'),
       NODE_ENV: 'production',
+      ...schedulerEnvironment(record.namespace),
       // Without a UTF-8 locale bash escapes non-ASCII names: the default
       // workspace `日常` shows up as $'\346\227\245\345\270\270' in terminals
       // and in tool output.
@@ -291,7 +286,24 @@ async function launch(options) {
       LC_ALL: 'C.UTF-8',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  };
+  // Prepare an unseen profile without mounting its plugins, then replace the
+  // deployed packages before the first webserver snapshot is created.
+  try { await access(join(paths.dshHome, 'profiles/web/node_modules/@deepseek-ai/dsh-client-ui-settings-models/package.json')); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await new Promise((resolve, reject) => {
+      const preparation = spawn(JAIL_BIN, [
+        record.linuxName, String(record.uid), paths.home,
+        nodeBin, dshBin, '--profile', 'web', '--dump-config',
+      ], { ...launchOptions, stdio: ['ignore', 'ignore', 'pipe'], timeout: 300000 });
+      preparation.on('error', reject);
+      preparation.stderr.on('data', () => {});
+      preparation.on('exit', code => code === 0 ? resolve() : reject(new Error(`profile preparation failed (${code})`)));
+    });
+  }
+  await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
+  const child = spawn(JAIL_BIN, launchArgs, launchOptions);
 
   const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });
   child.stdout?.pipe(log, { end: false });
@@ -302,11 +314,6 @@ async function launch(options) {
     const { cookie, expiresAt } = await exchangeCookie(launchUrl);
     state[record.namespace] = { cookie, cookieExpiresAt: expiresAt };
     await writeState(statePath, state);
-    // Fallback for a profile created by this very launch: there was no tree to
-    // replace before spawn, so the copy lands now — after dsh already took its
-    // snapshot. It cannot affect the running process; it is what the next start
-    // (which syncs before spawn) will read.
-    await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
     return {
       namespace: record.namespace,
       linuxName: record.linuxName,

@@ -1,0 +1,8 @@
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: ui-settings-models
+  config:
+    credentialOnboarding: false
+    schedulerManaged: true

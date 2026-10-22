@@ -51,6 +51,7 @@ import {
 import { findUser, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
 import { closeWeknoraCapabilities, ensureWeknoraCapability, handleWeknoraControl } from './weknora.mjs';
+import { handleScheduler } from './scheduler.mjs';
 
 const DATA_ROOT = process.env.DATA_ROOT ?? '/data';
 const PORT = Number(process.env.PORT ?? 8080);
@@ -426,6 +427,10 @@ async function handleFiles(req, res, url) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
+  if (url.pathname.startsWith('/__vh/scheduler/')) {
+    await handleScheduler(req, res, url.pathname.slice('/__vh/scheduler'.length) + url.search);
+    return;
+  }
   if (url.pathname.startsWith('/__vh/files')) {
     await handleFiles(req, res, url);
     return;

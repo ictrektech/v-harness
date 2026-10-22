@@ -2107,6 +2107,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'provider-grouped models, the deployment default, and isolated provider failures.',
       },
       {
+        signature: '@Remote async selectDefaultModel(selection: ModelSelection): Promise<void>',
+        description: 'Save an available model as the default for future sessions.',
+        parameters: [{ name: 'selection', description: 'provider and model selected from the current catalog.' }],
+        returns: 'after the default has been persisted.',
+      },
+      {
         signature: '@Remote canOpenWorkspacePath(): boolean',
         description: 'Report whether this deployment can hand a Session workspace path to a native desktop.',
         parameters: [],

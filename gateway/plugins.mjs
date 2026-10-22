@@ -1,5 +1,5 @@
 /**
- * Keep the browser plugins this image builds ahead of the published ones.
+ * Install the Host and browser packages built for this VOS image.
  *
  * A dsh profile installs its web bundles from the npm registry, so a panel
  * built in this repository would otherwise be replaced by the published copy
@@ -10,10 +10,9 @@
  * The copy must happen before dsh starts, not after. One client bundle is read
  * exactly once at boot — its mtime/ctime/size become the immutable `?rev=` URL
  * and its bytes stay in memory — so a copy that lands after the process started
- * is invisible until the next restart. {@link syncClientPlugins} is therefore
- * called before spawn, and again afterwards only for a profile this launch
- * created (no tree existed earlier); that tenant sees the build from the next
- * start on.
+ * is invisible until the next restart. New profiles are prepared without
+ * mounting plugins, then every profile is synchronized before its web process
+ * starts.
  *
  * @module
  */
@@ -25,7 +24,7 @@ import { join } from 'node:path'
 const PLUGIN_ROOT = '/opt/v-harness/plugins'
 
 /** Plugins shipped from this repository, by package name. */
-const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards']
+const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller']
 
 /**
  * Copy the image's build of each bundled plugin over one profile's copy.
@@ -35,20 +34,23 @@ const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh
  *   uid: number,
  * }} user - the tenant whose profile to update.
  * @returns {Promise<void>} resolves once every present plugin was replaced;
- *   a failure is logged and never breaks the launch.
+ *   a managed-package failure prevents launching an inconsistent runtime.
  */
 export async function syncClientPlugins(user) {
   const modules = join(user.home, '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai')
   for (const name of BUNDLED) {
     const source = join(PLUGIN_ROOT, name)
     const target = join(modules, name)
-    if (!(await exists(source)) || !(await exists(join(target, 'package.json')))) continue
+    if (!(await exists(source)) || !(await exists(join(target, 'package.json')))) {
+      if (['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller'].includes(name)) throw new Error(`deployed plugin missing: ${name}`)
+      continue
+    }
     try {
       await rm(target, { recursive: true, force: true })
       await cp(source, target, { recursive: true })
       await chownTo(target, user.uid, user.linuxName)
     } catch (error) {
-      console.error(`plugin sync failed for ${name} in ${user.linuxName}:`, error.message)
+      throw new Error(`plugin sync failed: ${name}`, { cause: error })
     }
   }
 }

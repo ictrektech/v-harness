@@ -17,4 +17,4 @@ workspace, and private deliverables.
   read another user's sessions, files, or credentials.
 - The file drawer only shows your own `workspace/`; hidden files are not
   downloadable.
-- A model API key must be configured on first use.
+- Add models in V-Scheduler, then open Settings → Models to refresh the list and select a default. Chat, Responses, Messages and text completion models visible to your VOS account are available in the conversation dropdown. No separate DeepSeek login or API key is required. Text-only completion models cannot call tools.

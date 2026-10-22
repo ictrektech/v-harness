@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // (settings/credentials invalidations ride the allowlist) into this program.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { ModelsSection } from './ModelsSection.tsx'
+import { SchedulerSection, SchedulerController } from './SchedulerSection.tsx'
 import type { ModelsSectionInjected } from './ModelsSection.tsx'
 import { DeepSeekOnboardingDialog } from './DeepSeekOnboardingDialog.tsx'
 import type { DeepSeekOnboardingInjected } from './DeepSeekOnboardingDialog.tsx'
@@ -79,6 +80,7 @@ export function apply(ctx: ClientContext): void {
   const page = globalThis as Partial<Record<typeof ONBOARDING_CONFIG_GLOBAL, unknown>>
   const payload = page[ONBOARDING_CONFIG_GLOBAL]
   const configured = Config(payload === undefined ? {} : payload)
+  const managed = configured.schedulerManaged
   const credentialOnboarding = configured.credentialOnboarding && !('dshDesktop' in globalThis)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-settings-models: copy dictionaries')
 
@@ -90,6 +92,24 @@ export function apply(ctx: ClientContext): void {
   // Registration-time text (the nav label thunk) and the inject faces share
   // one bound translate; copy freshness rides the locale revision.
   const t = ctx.locale.bind(NS) as ModelsSectionInjected['t']
+  if (managed) {
+    const scheduler = new SchedulerController({
+      load: async () => {
+        const response = await ctx.remote.session.modelCatalog()
+        if (!response.ok) throw new Error(response.error.message)
+        return response.value
+      },
+      select: async (provider, model) => {
+        const response = await ctx.remote.session.selectDefaultModel({ provider, model })
+        if (!response.ok) throw new Error(response.error.message)
+      },
+    })
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section', id: 'models', order: 10, label: () => t('nav'),
+      inject: () => ({ t, controller: scheduler, hooks: { snapshot: scheduler.store } }),
+    }, SchedulerSection))
+    return
+  }
   const injected = (): ModelsSectionInjected => ({
     controller,
     hooks: { snapshot: controller.store },

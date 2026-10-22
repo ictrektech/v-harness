@@ -405,6 +405,26 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
+  it('saves an available default without changing an existing session and rejects a removed model', async () => {
+    const { configurationFixture } = await import('../../../settings/settings/tests/configuration-fixture.ts')
+    const configured = await configurationFixture({ hmr: false })
+    const { ctx } = await harness(undefined, configured.ctx)
+    ctx.effect(() => ctx.llm.registerAdapter(['v-scheduler'], new CatalogAdapter('V-Scheduler', [
+      { provider: 'v-scheduler', id: 'private/visible', name: 'Visible' },
+    ])))
+    const controller = createSessionTestController(ctx, {
+      defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(), cwd: '/tmp',
+    })
+    try {
+      await controller.selectDefaultModel({ provider: 'v-scheduler', model: 'private/visible' })
+      expect(ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'v-scheduler', model: 'private/visible' })
+      await expect(controller.selectDefaultModel({ provider: 'v-scheduler', model: 'removed' })).rejects.toMatchObject({
+        code: 'session/model-unavailable',
+      })
+      expect(ctx.agentDefaultModel.currentSelection().model).toBe('private/visible')
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it('groups successful providers and leaves an unlisted current selection out of the catalog', async () => {
     const { ctx, sessionId } = await harness({
       provider: 'deepseek-official',

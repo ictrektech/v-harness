@@ -82,6 +82,20 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
       packages/client/ui-tool-cards/locale \
       /build/plugins/dsh-client-ui-tool-cards/
 
+# Managed VOS model discovery and settings use local Host and Client builds.
+RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
+ && pnpm exec tsc -b packages/client/ui-settings-models/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle \
+ && for spec in \
+      client/ui-settings-models:dsh-client-ui-settings-models \
+      llm/llm-pi-ai:dsh-llm-pi-ai \
+      api/session-controller:dsh-api-session-controller; do \
+      source="${spec%:*}"; name="${spec#*:}"; \
+      mkdir -p "/build/plugins/$name"; \
+      cp -R "packages/$source/package.json" "packages/$source/lib" "/build/plugins/$name/"; \
+      if [ -d "packages/$source/locale" ]; then cp -R "packages/$source/locale" "/build/plugins/$name/"; fi; \
+    done
+
 # ============================================================
 # Stage: runtime image
 # ============================================================

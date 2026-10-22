@@ -7,6 +7,8 @@ kind: "package-reference"
 
 English | [中文](README.zh.md)
 
+VOS deployments supply `VH_SCHEDULER_URL` and an inference-only `VH_SCHEDULER_KEY` from the tenant gateway. In that mode the adapter discovers the current VOS user-visible catalog, selects Chat Completions, Responses or Messages transport from declared endpoints, and refreshes before each prepared call. Text-only completions use the gateway chat adapter and cannot execute tools. Saved standalone provider credentials are retained but managed discovery does not use them.
+
 ## Summary
 
 `@deepseek-ai/dsh-llm-pi-ai` routes model requests to multiple pi-ai providers, OpenAI-compatible gateways, or self-hosted servers from one configuration. Installed pi-ai providers supply endpoint, protocol, and model-catalog defaults; custom routes can declare those values without code changes. Profiles and credentials are resolved for each request, so settings changes take effect on the next request without a restart. Supported providers can use stored OAuth or interactive-key sign-in with cross-process refresh locking. The package may start with no routes and activate when user settings add them.

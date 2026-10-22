@@ -75,7 +75,7 @@ describe('ui-settings-models apply', () => {
       await host.await()
       const rows: IndexInjection[] = []
       ctx.emit('webserver/index-inject', rows)
-      expect(rows).toEqual([{ kind: 'global', name: ONBOARDING_CONFIG_GLOBAL, value: { credentialOnboarding: false } }])
+      expect(rows).toEqual([{ kind: 'global', name: ONBOARDING_CONFIG_GLOBAL, value: { credentialOnboarding: false, schedulerManaged: false } }])
       for (const row of rows) if (row.kind === 'global') vi.stubGlobal(row.name, row.value)
       const plugin = ctx.plugin({ inject: [...inject], apply })
       await plugin.await()
@@ -95,7 +95,7 @@ describe('ui-settings-models apply', () => {
   })
 
   it('defaults to browser onboarding and rejects malformed bootstrap options', async () => {
-    expect(hostPlugin.Config({})).toEqual({ credentialOnboarding: true })
+    expect(hostPlugin.Config({})).toEqual({ credentialOnboarding: true, schedulerManaged: false })
     expect(hostPlugin.Config['~standard'].validate({ credentialOnboarding: 'false' })).toHaveProperty('issues')
     const { ctx } = await bench()
     try {
@@ -104,6 +104,20 @@ describe('ui-settings-models apply', () => {
     } finally {
       await ctx.fiber.dispose()
     }
+  })
+
+  it('replaces credential forms with managed settings and registers no onboarding dialogs in VOS', async () => {
+    const { ctx, slots } = await bench()
+    declare(slots)
+    vi.stubGlobal(ONBOARDING_CONFIG_GLOBAL, { schedulerManaged: true })
+    try {
+      const plugin = ctx.plugin({ inject: [...inject], apply })
+      await plugin.await()
+      expect(slots.entries('settings.onboarding')).toEqual([])
+      expect(slots.entries('settings.section').map(entry => entry.options.id)).toEqual(['models'])
+      await plugin.dispose()
+      expect(slots.entries('settings.section')).toEqual([])
+    } finally { await ctx.fiber.dispose() }
   })
 
   it('declares the services it uses', () => {

@@ -27,13 +27,14 @@ import { SessionControlController } from './control.ts'
 import { SessionHistoryController } from './history.ts'
 import { SessionFileReferences } from './file-references.ts'
 import { ApiSessionList } from './list.ts'
-import { buildModelCatalog, hasProviderApiKey } from './catalog.ts'
+import { buildModelCatalog, hasProviderApiKey, modelAvailable } from './catalog.ts'
 import { installModelSelectionProjection } from './model-selection-projection.ts'
 import { SessionSkillCatalog } from './skill-catalog.ts'
 import { SessionMediaReferences } from './media-references.ts'
 import { ArchivedSessionGate } from './archived-session-gate.ts'
 import type {
   ModelCatalog,
+  ModelSelection,
   SessionWorkspacePathApplication,
   SessionAddress,
   SessionAttachmentRequest,
@@ -337,6 +338,26 @@ export class SessionController extends TypertRemoteService {
   @Remote('modelCatalog')
   modelCatalog(): Promise<ModelCatalog> {
     return buildModelCatalog(this.ctx)
+  }
+
+  /**
+   * Save an available model as the default for future sessions.
+   * @param selection - provider and model selected from the current catalog.
+   * @returns after the default has been persisted.
+   */
+  @Remote
+  async selectDefaultModel(selection: ModelSelection): Promise<void> {
+    if (!await modelAvailable(this.ctx, selection)) {
+      throw new RemoteError('session/model-unavailable', 'The selected model is no longer available', { provider: selection.provider, model: selection.model })
+    }
+    const resolved = await this.ctx.llm.resolveCallConfig({
+      provider: selection.provider, model: selection.model,
+      ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(selection.reasoningEffort) },
+    })
+    await this.ctx.agentDefaultModel.saveSelection({
+      provider: resolved.provider, model: resolved.model,
+      ...resolved.reasoningEffort === undefined ? {} : { reasoningEffort: resolved.reasoningEffort },
+    })
   }
 
   /**

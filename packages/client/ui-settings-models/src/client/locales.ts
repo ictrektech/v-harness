@@ -3,6 +3,15 @@
 /** English strings (the key-set source of truth for this pair). */
 export const en = {
   nav: 'Models',
+  schedulerIntro: 'Add and manage models in V-Scheduler. Models visible to your VOS account with chat or text completion capabilities appear here automatically.',
+  schedulerOpen: 'Open V-Scheduler to add models',
+  schedulerLoading: 'Loading models…',
+  schedulerDefault: 'Default model for new conversations',
+  schedulerChoose: 'Choose a model',
+  schedulerRefresh: 'Refresh models',
+  schedulerEmpty: 'No compatible models are available. Add a model in V-Scheduler, then refresh this list.',
+  schedulerSelectionHint: 'You can also switch models from the dropdown in each conversation. Existing conversations keep their selected model. Text-only completion models provide text replies without tool calls.',
+
   deepSeekAccount: 'DeepSeek Account',
   title: 'Models',
   intro: 'Enter your API keys to use models from the following providers.',
@@ -144,6 +153,15 @@ export type ModelsKey = keyof typeof en
 /** Chinese strings (same keys as {@link en}). */
 export const zh: { [Key in keyof typeof en]: string } = {
   nav: '模型',
+  schedulerIntro: '请在 V-Scheduler 中添加和管理模型。当前 VOS 账号可见、具备聊天或文本补全能力的模型会自动出现在列表中。',
+  schedulerOpen: '前往 V-Scheduler 添加模型',
+  schedulerLoading: '正在加载模型…',
+  schedulerDefault: '新对话默认模型',
+  schedulerChoose: '请选择模型',
+  schedulerRefresh: '刷新模型列表',
+  schedulerEmpty: '暂无可用模型。请前往 V-Scheduler 添加模型，然后刷新列表。',
+  schedulerSelectionHint: '也可以在每个对话中通过下拉列表切换模型。已有对话保留原来的模型选择。纯文本补全模型仅支持文本回复，不支持工具调用。',
+
   deepSeekAccount: 'DeepSeek 账号',
   title: '模型',
   intro: '填入各提供商的 API 密钥即可使用其模型。',
