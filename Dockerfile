@@ -141,6 +141,7 @@ RUN corepack enable \
  && npm cache clean --force
 
 COPY gateway/ /opt/v-harness/gateway/
+COPY gateway/vos.patch.yml /usr/local/share/v-harness/vos.patch.yml
 COPY bin/ /opt/v-harness/bin/
 # Product skills are discovered through DSH_BUNDLED_SKILL_DIR (see
 # gateway/instances.mjs) and stay root-owned, so a tenant cannot edit them.

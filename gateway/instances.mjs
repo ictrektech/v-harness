@@ -246,7 +246,7 @@ async function launch(options) {
   const launchArgs = [
     record.linuxName, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
-    '--patch', '/opt/v-harness/gateway/vos.patch.yml',
+    '--patch', '/usr/local/share/v-harness/vos.patch.yml',
     '--host', '127.0.0.1',
     '--port', String(record.port),
     '--no-open',
