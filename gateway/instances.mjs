@@ -287,21 +287,7 @@ async function launch(options) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   };
-  // Prepare an unseen profile without mounting its plugins, then replace the
-  // deployed packages before the first webserver snapshot is created.
-  try { await access(join(paths.dshHome, 'profiles/web/node_modules/@deepseek-ai/dsh-client-ui-settings-models/package.json')); }
-  catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    await new Promise((resolve, reject) => {
-      const preparation = spawn(JAIL_BIN, [
-        record.linuxName, String(record.uid), paths.home,
-        nodeBin, dshBin, '--profile', 'web', '--dump-config',
-      ], { ...launchOptions, stdio: ['ignore', 'ignore', 'pipe'], timeout: 300000 });
-      preparation.on('error', reject);
-      preparation.stderr.on('data', () => {});
-      preparation.on('exit', code => code === 0 ? resolve() : reject(new Error(`profile preparation failed (${code})`)));
-    });
-  }
+  // Update profile-local overrides before dsh snapshots its browser bundles.
   await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
   const child = spawn(JAIL_BIN, launchArgs, launchOptions);
 

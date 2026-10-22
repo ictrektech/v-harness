@@ -10,9 +10,10 @@
  * The copy must happen before dsh starts, not after. One client bundle is read
  * exactly once at boot — its mtime/ctime/size become the immutable `?rev=` URL
  * and its bytes stay in memory — so a copy that lands after the process started
- * is invisible until the next restart. New profiles are prepared without
- * mounting plugins, then every profile is synchronized before its web process
- * starts.
+ * is invisible until the next restart. The image also installs these artifacts
+ * into the shared dsh installation, which default profiles use without a local
+ * node_modules tree. Existing profile-local overrides are synchronized before
+ * their web process starts.
  *
  * @module
  */
@@ -22,6 +23,7 @@ import { join } from 'node:path'
 
 /** Where the image puts built client plugins. */
 const PLUGIN_ROOT = '/opt/v-harness/plugins'
+const INSTALLATION_MODULES = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
 
 /** Plugins shipped from this repository, by package name. */
 const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller']
@@ -41,8 +43,14 @@ export async function syncClientPlugins(user) {
   for (const name of BUNDLED) {
     const source = join(PLUGIN_ROOT, name)
     const target = join(modules, name)
-    if (!(await exists(source)) || !(await exists(join(target, 'package.json')))) {
+    if (!(await exists(source))) {
       if (['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller'].includes(name)) throw new Error(`deployed plugin missing: ${name}`)
+      continue
+    }
+    // Default profiles resolve bundled packages from the shared installation.
+    // Docker installs the matching artifacts there before any tenant starts.
+    if (!(await exists(join(target, 'package.json')))) {
+      if (!(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) throw new Error(`installed plugin missing: ${name}`)
       continue
     }
     try {
