@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, access, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { syncClientPlugins } from './plugins.mjs';
+import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 
 const LAUNCH_TIMEOUT_MS = 45_000;
@@ -287,8 +287,10 @@ async function launch(options) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   };
-  // Update profile-local overrides before dsh snapshots its browser bundles.
-  await syncClientPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
+  // Update profile-local overrides before dsh snapshots its browser bundles,
+  // then stage the agent-side tool plugins and their carrier: the loader reads
+  // the carrier row list at this same boot.
+  await syncPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
   const child = spawn(JAIL_BIN, launchArgs, launchOptions);
 
   const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });

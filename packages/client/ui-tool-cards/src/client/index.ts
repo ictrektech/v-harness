@@ -28,10 +28,7 @@ export const inject = ['slots', 'locale', 'remote', 'remote.workspaceFiles']
 
 /** The tool names this plugin claims; every other name keeps the generic row. */
 const TOOL_KEYS = [
-  'voffice_list',
-  'voffice_open',
-  'voffice_rename',
-  'voffice_upload',
+  'image_studio_generate',
   'album_search',
   'album_photos',
   'album_person',

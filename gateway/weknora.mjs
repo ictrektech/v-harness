@@ -17,7 +17,7 @@
  */
 
 import { createServer, request as httpRequest } from 'node:http';
-import { chmodSync } from 'node:fs';
+import { chmodSync, readFileSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -28,17 +28,43 @@ const SOCKET_NAME = 'weknora.sock';
 const UPSTREAM_TIMEOUT_MS = 300_000;
 
 /**
- * Where WeKnora listens. Explicit configuration wins; otherwise the two
- * addresses that are reachable from this deployment: the host port mapping and
- * the container address on the shared docker network.
+ * Where a deployment can name the knowledge-base address without its env.
+ *
+ * The container is created by a scheduler that owns its environment, so an
+ * address added later cannot reach it without recreating the container. A file
+ * on the data volume survives restarts and lets an operator point the gateway
+ * at a service that moved.
  */
-const CANDIDATES = [
-  process.env.WEKNORA_URL,
-  'http://127.0.0.1:29081',
-  'http://192.168.64.27:8080',
-]
-  .filter((value) => typeof value === 'string' && value.length > 0)
-  .map((value) => value.replace(/\/+$/, ''));
+const ADDRESS_FILE = join(process.env.DATA_ROOT ?? '/data', 'weknora-url');
+
+/** Addresses tried when nothing is configured; kept for older deployments. */
+const FALLBACKS = ['http://127.0.0.1:29081', 'http://192.168.64.27:8080'];
+
+/**
+ * The configured upstream, if any.
+ * @returns {string} the address, or an empty string when nothing configured one.
+ */
+function configuredAddress() {
+  const fromEnv = process.env.WEKNORA_URL;
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
+  try {
+    return readFileSync(ADDRESS_FILE, 'utf8').trim();
+  } catch (error) {
+    // No address file is the normal case; anything else is worth reporting once.
+    if (error?.code !== 'ENOENT') console.warn(`weknora address file unreadable: ${error.message}`);
+    return '';
+  }
+}
+
+/**
+ * Every address worth probing, in order: the configured one, then the built-in
+ * fallbacks that older deployments relied on.
+ * @returns {string[]} base URLs without a trailing slash.
+ */
+function candidates() {
+  const configured = configuredAddress().replace(/\/+$/, '');
+  return [...(configured === '' ? [] : [configured]), ...FALLBACKS];
+}
 
 /** Routes the capability serves; everything else is refused locally. */
 const ROUTES = [
@@ -69,7 +95,7 @@ let probing;
  * @returns {Promise<string | undefined>}
  */
 async function probe() {
-  for (const candidate of CANDIDATES) {
+  for (const candidate of candidates()) {
     const reachable = await fetch(`${candidate}/health`, { signal: AbortSignal.timeout(2_000) })
       .then((response) => response.ok)
       .catch(() => false);
@@ -127,9 +153,11 @@ async function forward(namespace, req, res, path = new URL(req.url ?? '/', 'http
 
   const target = await upstream();
   if (!target) {
+    // Name what was probed: without it the admin cannot tell a wrong address
+    // from a service that is simply down.
     json(res, 503, {
       error: 'weknora-unreachable',
-      message: '没有可用的知识库服务，请联系管理员',
+      message: `没有可用的知识库服务（已尝试 ${candidates().join('、')}）；请设置 WEKNORA_URL 或写入 ${ADDRESS_FILE}`,
     });
     return;
   }

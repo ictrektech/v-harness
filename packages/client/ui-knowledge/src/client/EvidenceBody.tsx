@@ -20,7 +20,7 @@ import type {} from './locales.ts'
 import { evidenceParams } from './evidence-tab.ts'
 import { knowledgeMarker } from './reference.ts'
 import {
-  ask, documents, libraries, models, readDocument, search,
+  ask, documents, forgetLibraries, libraries, librariesFailure, models, readDocument, search,
   type DocumentChunk, type KnowledgeCitation, type KnowledgeDocument, type Library, type ModelOption,
 } from './weknora.ts'
 import css from './EvidenceBody.module.css'
@@ -59,6 +59,9 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
   const [answer, setAnswer] = useState('')
   const [status, setStatus] = useState<string>()
   const [running, setRunning] = useState(false)
+  /** Set when the library listing failed; the panel then offers a retry instead of an empty list. */
+  const [listingFailure, setListingFailure] = useState<string>()
+  const [retryKey, setRetryKey] = useState(0)
 
   // Navigating the page again replaces what it shows, including when it is
   // already on screen and the second answer cites a different passage.
@@ -79,9 +82,13 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
     const controller = new AbortController()
     void libraries(controller.signal).then((rows) => {
       if (rows === undefined) {
+        // The cause is what the user needs; an empty list reads as "you have no
+        // libraries", which is a different, actionable fact.
+        setListingFailure(librariesFailure() ?? '')
         setStatus(t('search.scopeFailed'))
         return
       }
+      setListingFailure(undefined)
       setAll(rows)
       setSelected(new Set(rows.map(library => library.id)))
     })
@@ -89,7 +96,7 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
       if (rows !== undefined) setModelOptions(rows)
     })
     return () => { controller.abort() }
-  }, [t])
+  }, [t, retryKey])
 
   /**
    * @param id - the library to include or drop from the next request.
@@ -324,7 +331,26 @@ export function EvidenceBody({ useTabInfo, t, inputActions }: EvidenceBodyProps)
         />
         <button className={css.button} disabled={running} type="submit">{t('search.action')}</button>
       </form>
-      {status === undefined ? null : <p className={css.status}>{status}</p>}
+      {status === undefined ? null : (
+        <p className={css.status}>
+          {status}
+          {listingFailure === undefined || listingFailure === '' ? null : `（${listingFailure}）`}
+          {listingFailure === undefined ? null : (
+            <button
+              className={css.apply}
+              onClick={() => {
+                forgetLibraries()
+                setListingFailure(undefined)
+                setStatus(undefined)
+                setRetryKey(key => key + 1)
+              }}
+              type="button"
+            >
+              {t('search.retry')}
+            </button>
+          )}
+        </p>
+      )}
       {answer === '' ? null : (
         <section className={css.section}>
           <p className={css.sectionTitle}>

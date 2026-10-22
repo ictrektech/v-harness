@@ -1,0 +1,2 @@
+packages/skill/skill-album
+packages/skill/skill-image-studio

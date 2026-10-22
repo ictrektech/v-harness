@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  albumAlbums, albumPerson, albumPhotos, albumUpload,
-  vofficeList, vofficeOpen, vofficeRename, vofficeUpload,
+  albumAlbums, albumPerson, albumPhotos, albumUpload, imageStudio,
 } from '../src/client/meta.ts'
 
 const photoMeta = {
@@ -13,40 +12,6 @@ const photoMeta = {
     { id: 'a2', filename: 'b.jpg', takenAt: '', city: '', type: 'video', favorite: true, thumbPath: '/w/album-thumbs/a2-preview.jpg' },
   ],
 }
-
-describe('voffice card metadata', () => {
-  it('narrows a list result and rejects foreign kinds', () => {
-    const value = {
-      kind: 'voffice.list', total: 2,
-      files: [
-        { name: 'a.docx', size: 12, modified: 100, viewUrl: 'https://host/open' },
-        { name: 'b.xlsx', size: 3, modified: 200 },
-      ],
-    }
-    expect(vofficeList(value)).toEqual({
-      total: 2,
-      files: [
-        { name: 'a.docx', size: 12, modified: 100, viewUrl: 'https://host/open' },
-        { name: 'b.xlsx', size: 3, modified: 200 },
-      ],
-    })
-    expect(vofficeList({ kind: 'album.search' })).toBeNull()
-    expect(vofficeList({ kind: 'voffice.list', files: 'nope' })).toBeNull()
-    expect(vofficeList(null)).toBeNull()
-  })
-
-  it('narrowss open, rename, and upload results and rejects malformed rows', () => {
-    expect(vofficeOpen({ kind: 'voffice.open', name: 'a', url: 'https://e', canWrite: true, expiresIn: 600 }))
-      .toEqual({ name: 'a', url: 'https://e', canWrite: true, expiresIn: 600 })
-    expect(vofficeOpen({ kind: 'voffice.open', name: 'a', url: '', canWrite: false, expiresIn: 600 })).toBeNull()
-
-    expect(vofficeRename({ kind: 'voffice.rename', from: 'a', to: 'b' })).toEqual({ from: 'a', to: 'b' })
-    expect(vofficeRename({ kind: 'voffice.rename', from: '', to: 'b' })).toBeNull()
-
-    expect(vofficeUpload({ kind: 'voffice.upload', name: 'a', size: 5 })).toEqual({ name: 'a', size: 5 })
-    expect(vofficeUpload({ kind: 'voffice.upload', name: '', size: 5 })).toBeNull()
-  })
-})
 
 describe('album card metadata', () => {
   it('narrows a photo grid result with its query and totals', () => {
@@ -61,7 +26,6 @@ describe('album card metadata', () => {
   it('declines malformed photo rows instead of rendering a partial grid', () => {
     expect(albumPhotos({ kind: 'album.search', photos: [{ id: 'a1' }] })).toBeNull()
     expect(albumPhotos({ kind: 'album.search', photos: 'nope' })).toBeNull()
-    expect(albumPhotos({ kind: 'voffice.list' })).toBeNull()
     expect(albumPhotos(undefined)).toBeNull()
   })
 
@@ -77,5 +41,21 @@ describe('album card metadata', () => {
     expect(albumUpload({ kind: 'album.upload', id: 'x', name: 'a.png', duplicate: true }))
       .toEqual({ id: 'x', name: 'a.png', duplicate: true })
     expect(albumUpload({ kind: 'album.upload', id: '', name: 'a.png' })).toBeNull()
+  })
+})
+
+describe('image studio card metadata', () => {
+  it('narrows a generated job and rejects rows without a file path', () => {
+    const value = {
+      kind: 'image.studio', job_id: 'job_1', status: 'succeeded', seed: 42, directory: '/w/out',
+      files: [{ path: '/w/out/00001.png', filename: '00001.png', bytes: 1024 }],
+    }
+    expect(imageStudio(value)).toEqual({
+      jobId: 'job_1', status: 'succeeded', seed: 42,
+      files: [{ path: '/w/out/00001.png', filename: '00001.png', bytes: 1024 }],
+    })
+    expect(imageStudio({ kind: 'image.studio', files: [{ filename: 'a.png' }] })).toBeNull()
+    expect(imageStudio({ kind: 'image.studio', files: 'nope' })).toBeNull()
+    expect(imageStudio(undefined)).toBeNull()
   })
 })

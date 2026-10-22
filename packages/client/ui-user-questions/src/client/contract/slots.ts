@@ -132,15 +132,21 @@ export interface QuestionForm {
 
 /**
  * Narrow a request to a renderable parameter form, or return undefined to leave
- * it to another presentation. Every question must declare the `form` intent:
- * a mixed batch has no single layout, and the generic flow already walks one
- * question at a time.
+ * it to another presentation. Every question must declare the `form` intent, or
+ * every question must carry the control it renders: a mixed batch has no single
+ * layout, and the generic flow already walks one question at a time.
+ *
+ * The control-only batch is what an asker falls back to on a runtime that
+ * rejects the intent before a surface can show anything, so the dialog survives
+ * an older runtime without a second presentation existing for it.
  * @param questions - the request's whole question batch.
  * @returns The narrowed form, or undefined when another presentation owns it.
  */
 export function formOf(questions: readonly QuestionItem[]): QuestionForm | undefined {
   if (questions.length === 0) return undefined
-  if (!questions.every(question => question.intent?.kind === 'form')) return undefined
+  const declared = questions.every(question => question.intent?.kind === 'form')
+  const controlled = questions.every(question => question.input !== undefined)
+  if (!declared && !controlled) return undefined
   const fields = questions.map((question): QuestionFormField => ({
     id: question.id,
     label: question.question,

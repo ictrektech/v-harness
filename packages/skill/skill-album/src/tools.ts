@@ -16,10 +16,24 @@ interface PhotoRow {
   thumbPath: string
 }
 
+/**
+ * Quote one argv entry for the mounted shell.
+ *
+ * A description or album name is user text: one with a space would otherwise
+ * split into extra arguments and reach the CLI as a different query.
+ * @param value - raw path or name.
+ * @returns The entry as a single shell word.
+ */
+function quote(value: string): string {
+  if (process.platform === 'win32') return `'${value.replaceAll("'", "''")}'`
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
 /** Shared runner: spawn the bundled CLI and parse its JSON answer. */
 function cliRunner(ctx: Context, runtime: { node: string; cli: string }) {
   return async function run(args: readonly string[], signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const spec = ctx.shell.resolve({ command: [runtime.node, runtime.cli, ...args].join(' '), ...(signal === undefined ? {} : { signal }) })
+    const command = [runtime.node, runtime.cli, ...args].map(quote).join(' ')
+    const spec = ctx.shell.resolve({ command, ...(signal === undefined ? {} : { signal }) })
     const execution = await ctx.shell.execute(spec)
     const result = await execution.result()
     if (result.timedOut) throw new Error('album did not finish within the time limit')
@@ -88,6 +102,17 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
         photos: { type: 'array', required: true, items: photoSchema },
       },
     },
+    // The grid card owns the thumbnails and the open action; the model gets the
+    // ids and descriptions it needs for a follow-up and nothing to restate.
+    render: (_args: unknown, value: { total: number; photos: readonly PhotoRow[] }) => [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        total: value.total,
+        photos: value.photos.map(photo => ({
+          id: photo.id, filename: photo.filename, takenAt: photo.takenAt, city: photo.city,
+        })),
+      }),
+    }],
   } as const
 
   ctx.tools.register(defineTool({
@@ -100,7 +125,6 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
     output: {
       ...searchOutput,
       presentationMeta: (_args, value) => ({ kind: 'album.search', ...value }),
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
       const argv = ['search', args.query, '--thumbs', '6', ...(args.size === undefined ? [] : ['--size', String(args.size)])]
@@ -126,7 +150,6 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
     output: {
       ...searchOutput,
       presentationMeta: (_args, value) => ({ kind: 'album.photos', ...value }),
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
       const argv = ['photos']

@@ -318,12 +318,9 @@
       name: '@deepseek-ai/dsh-skill-image-studio'
       disabled: !!js "!process.env.IMAGE_STUDIO_BASE_URL && !process.env.IMAGE_STUDIO_AUTH_FILE"
 
-    # The interactive V-Office and AI-album tools: available wherever the
+    # The interactive AI-album tools: available wherever the
     # harness ships its bundled skills (the tenant gateway always provides
     # the per-tenant capability sockets they resolve).
-    - id: skill-voffice
-      name: '@deepseek-ai/dsh-skill-voffice'
-      disabled: !!js "!process.env.VH_SKILLS_DIR"
 
     - id: skill-album
       name: '@deepseek-ai/dsh-skill-album'

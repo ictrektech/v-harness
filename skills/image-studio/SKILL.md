@@ -9,6 +9,8 @@ Image Studio is a self-hosted generation service on the local network. It runs j
 
 When the `image_studio_generate` tool is available, prefer it for a single image: it opens a parameter form the user confirms, then runs the CLI with the accepted values. Use this skill directly for reference images, videos, batching, or model preparation.
 
+When the tool answers `the user cancelled ask_user_question`, the dialog was dismissed before an answer arrived. Say so in one sentence and ask which parameter to change, or offer to reopen the form — **do not** switch to the CLI and generate anyway: the user closed the form, and bypassing it spends their GPU time on parameters they never approved.
+
 ## Runtime
 
 The CLI ships with this skill. These are the defaults; the environment may override them:
@@ -33,8 +35,8 @@ Authentication lives in the auth file; never print or pass its token to the mode
 
 1. Check the model is ready with `models --ready`; if its weights are missing, see [Prepare models](#prepare-models).
 2. Submit the job with `--wait`, which polls until it finishes and downloads the outputs.
-3. Inspect downloaded images with the image-reading tool before describing them; never guess what was rendered.
-4. Report the prompt, model, seed, and absolute output paths.
+3. Inspect downloaded images with the image-reading tool before describing them; never guess what was rendered. When the running model declares no image input, `read_image` refuses — then skip the inspection and deliver the file instead of retrying.
+4. When `image_studio_generate` ran, the result card already shows the image and the seed: reply in one or two sentences and do not restate paths, sizes, or re-present the same file. Without the tool, report the prompt, model, seed, and absolute output paths.
 
 ## Generate images and videos
 
@@ -52,7 +54,7 @@ The result is JSON with `job_id`, `status`, `seed`, `outputs`, `directory`, and 
 
 ### Model choice
 
-`sd15` and `sdxl` are safe defaults for text-to-image. Choose by requirement, then verify availability with `models --ready`:
+Never assume a model exists: this deployment may serve only one, and its name differs from any memory of "sd15/sdxl". Read the catalog first (`models --ready`) and choose from what it returns. Then pick by requirement:
 
 - Reference image or instruction editing: a model whose capabilities include `img2img` or `edit`, for example `qwen-image-edit`, `flux-kontext`, `longcat-image-edit`, `boogu-image-edit`, or `mage-flow-edit`.
 - Video: `wan21`, `wan21-t2v-14b`, `wan22`, `ltx-video`, `hunyuan-video`, `hunyuan-t2v-480p`, or a family that accepts a first frame.

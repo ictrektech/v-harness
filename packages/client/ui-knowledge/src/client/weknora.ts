@@ -43,6 +43,9 @@ export interface KnowledgeCitation {
 /** Successful listings only; a failed attempt retries on the next call. */
 let cached: readonly Library[] | undefined
 
+/** Why the last listing failed, so a surface can name the cause instead of an empty list. */
+let listingFailure: string | undefined
+
 /**
  * The libraries this caller can read, fetched once per page.
  * @param signal - cancellation of this attempt.
@@ -53,6 +56,32 @@ export async function libraries(signal: AbortSignal): Promise<readonly Library[]
   // picked up without a reload.
   cached ??= await fetchLibraries(signal)
   return cached
+}
+
+/**
+ * Why the last listing failed.
+ * @returns the status and the gateway's own words, or undefined when it worked.
+ */
+export function librariesFailure(): string | undefined {
+  return listingFailure
+}
+
+/** Drop the cached listing and its failure, so the next call retries the gateway. */
+export function forgetLibraries(): void {
+  cached = undefined
+  listingFailure = undefined
+}
+
+/**
+ * Spell a refused request the way the user has to read it.
+ * @param response - the gateway's answer, or undefined when the request never left.
+ * @returns status plus the gateway's error code and message when it sent one.
+ */
+async function describeFailure(response: Response | undefined): Promise<string> {
+  if (response === undefined) return '网关不可达'
+  const body = (await response.json().catch(() => undefined)) as unknown
+  const fields = isRecord(body) ? [text(body.error), text(body.message)] : []
+  return [`HTTP ${String(response.status)}`, ...fields].filter(part => part !== undefined && part !== '').join(' ')
 }
 
 /**
@@ -272,7 +301,11 @@ export async function ask(
 async function fetchLibraries(signal: AbortSignal): Promise<readonly Library[] | undefined> {
   const response = await fetch(`${ENDPOINT}/knowledge-bases`, { credentials: 'same-origin', signal })
     .catch(() => undefined)
-  if (!response?.ok) return undefined
+  if (!response?.ok) {
+    listingFailure = await describeFailure(response)
+    return undefined
+  }
+  listingFailure = undefined
   const body = (await response.json()) as { data?: unknown }
   const rows: readonly unknown[] = Array.isArray(body.data) ? body.data : []
   const found: Library[] = []

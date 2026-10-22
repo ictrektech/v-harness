@@ -967,6 +967,18 @@ describe('form presentation', () => {
     })
   })
 
+  it('narrows a batch whose every question carries a control, even without an intent', () => {
+    // What an asker sends after a runtime rejects the intent: the fields alone
+    // still open the same dialog.
+    const controlled = FORM.map((question) => {
+      const copy = { ...question }
+      delete copy.intent
+      return copy
+    }) as PendingQuestion['questions']
+
+    expect(formOf(controlled)?.fields.map(field => field.id)).toEqual(['prompt', 'model_key', 'steps'])
+  })
+
   it('leaves a mixed batch to the generic flow', () => {
     const mixed = [...FORM, { id: 'extra', question: 'Anything else?' }] as PendingQuestion['questions']
     expect(formOf(mixed)).toBeUndefined()

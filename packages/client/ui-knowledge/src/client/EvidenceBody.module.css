@@ -234,7 +234,8 @@
   border: 0;
   border-radius: 14px;
   background: var(--dsw-alias-brand-primary);
-  color: #fff;
+  /* The paired foreground, not white: in the dark theme the brand fill is near-white. */
+  color: var(--dsw-alias-label-primary-foreground);
   font: inherit;
   font-size: 15px;
   font-weight: 600;
@@ -248,6 +249,9 @@
 }
 
 .status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   color: var(--dsw-alias-label-tertiary);
   font-size: 13px;

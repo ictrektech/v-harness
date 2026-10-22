@@ -46,6 +46,7 @@ dsh 实例 × N　（runuser -u vh-xxxxxxxx）
 | `gateway/session.mjs` | `vh_session` HMAC cookie、CSRF |
 | `gateway/users.mjs` | `users.json`，uid/端口一次性分配 |
 | `gateway/instances.mjs` | 启动 dsh、抓 launch token、换 cookie、注入 bundled skill 目录 |
+| `gateway/plugins.mjs` | 把镜像内置插件（浏览器 bundle + agent 侧工具插件）同步进租户 profile |
 | `gateway/office.mjs` | 按租户的 V-Office 能力端点（Unix socket），保管 VOS 令牌 |
 | `gateway/files.mjs` | 文件抽屉后端（list/read/upload） |
 | `skills/voffice/` | V-Office 云端文档 skill（`SKILL.md` + 零依赖 CLI） |
@@ -81,6 +82,15 @@ skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access t
 - 浏览器侧的「查看文档」不另做页面：下载到 workspace 后调 `present`，dsh 客户端自带交付卡片和右侧预览（docx/pptx 本地转 PDF、xlsx 表格渲染）。
 
 `VH_OFFICE_BASE` 可覆盖上游地址（默认 `http://10.144.144.232:1182/api/com.ictrek.v-office`）。
+
+## 镜像内置插件
+
+镜像在构建时编译两类本仓库新增、未发布到 npm 的插件，租户 profile 从 registry 装不到，由网关补齐：
+
+- **浏览器 bundle**（V-Office 卡片等）：构建产物在 `/opt/v-harness/plugins`。
+- **agent 侧工具插件**（`dsh-skill-album` / `dsh-skill-image-studio`）：`scripts/stage-agent-plugins.ts` 按发布流程同款构建（tsdown 出 `lib/index.js` 入口，`tsc -b` 按引用自动构建依赖闭包），payload 在 `/opt/v-harness/agent-plugins`。
+
+`gateway/plugins.mjs` 在每次 dsh 启动前同步：浏览器 bundle 覆盖发布版（fork 独有的包缺失即创建）；agent 侧插件包覆盖、依赖包缺了才补（peer 依赖由 dsh 安装解析层供给，不打包），并把 carrier bundle（`gateway/agent-plugins/vh-agent-plugins`，声明挂载行）写进 profile 的 `dsh.profile.bundles`。profile 由网关在 dsh 首次启动前预创建，**新租户第一次登录即有全部工具**。完整开发教程（skill / 工具插件 / 交互卡片怎么做、怎么上线）见 [PLUGINS.md](PLUGINS.md)。
 
 ## 数据布局
 

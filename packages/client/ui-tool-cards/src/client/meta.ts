@@ -5,14 +5,6 @@
  * the generic summary row — a partial grid must never render.
  */
 
-/** One V-Office document row. */
-export interface VofficeFileMeta {
-  readonly name: string
-  readonly size: number
-  readonly modified: number
-  readonly viewUrl?: string
-}
-
 /** One album photo row. */
 export interface AlbumPhotoMeta {
   readonly id: string
@@ -48,56 +40,30 @@ function rowsOf(meta: Record<string, unknown>, key: string): readonly Record<str
   return meta[key].filter(isRecord).length === meta[key].length ? meta[key] as Record<string, unknown>[] : null
 }
 
-/** Narrow `voffice.list` metadata. */
-export function vofficeList(meta: unknown): { total: number; files: readonly VofficeFileMeta[] } | null {
-  if (kindOf(meta) !== 'voffice.list' || !isRecord(meta)) return null
+/** One file an Image Studio job produced. */
+export interface ImageStudioFileMeta {
+  readonly path: string
+  readonly filename: string
+  readonly bytes: number
+}
+
+/** Narrow `image.studio` metadata. */
+export function imageStudio(meta: unknown): {
+  jobId: string
+  status: string
+  seed: number
+  files: readonly ImageStudioFileMeta[]
+} | null {
+  if (kindOf(meta) !== 'image.studio' || !isRecord(meta)) return null
   const rows = rowsOf(meta, 'files')
   if (rows === null) return null
-  const files: VofficeFileMeta[] = []
+  const files: ImageStudioFileMeta[] = []
   for (const row of rows) {
-    const viewUrl = typeof row.viewUrl === 'string' && row.viewUrl !== '' ? row.viewUrl : undefined
-    if (typeof row.name !== 'string' || row.name === '') return null
-    files.push({
-      name: row.name,
-      size: num(row.size),
-      modified: num(row.modified),
-      ...viewUrl === undefined ? {} : { viewUrl },
-    })
+    const path = str(row.path)
+    if (path === '') return null
+    files.push({ path, filename: str(row.filename), bytes: num(row.bytes) })
   }
-  return { total: num(meta.total) || files.length, files }
-}
-
-/** Narrow `voffice.open` metadata. */
-export function vofficeOpen(meta: unknown): {
-  name: string
-  url: string
-  canWrite: boolean
-  expiresIn: number
-} | null {
-  if (kindOf(meta) !== 'voffice.open' || !isRecord(meta)) return null
-  const url = str(meta.url)
-  if (url === '') return null
-  return {
-    name: str(meta.name),
-    url,
-    canWrite: meta.canWrite !== false,
-    expiresIn: num(meta.expiresIn) || 3600,
-  }
-}
-
-/** Narrow `voffice.rename` metadata. */
-export function vofficeRename(meta: unknown): { from: string; to: string } | null {
-  if (kindOf(meta) !== 'voffice.rename' || !isRecord(meta)) return null
-  const from = str(meta.from)
-  const to = str(meta.to)
-  return from === '' || to === '' ? null : { from, to }
-}
-
-/** Narrow `voffice.upload` metadata. */
-export function vofficeUpload(meta: unknown): { name: string; size: number } | null {
-  if (kindOf(meta) !== 'voffice.upload' || !isRecord(meta)) return null
-  const name = str(meta.name)
-  return name === '' ? null : { name, size: num(meta.size) }
+  return { jobId: str(meta.job_id), status: str(meta.status), seed: num(meta.seed), files }
 }
 
 /** Narrow `album.search` / `album.photos` metadata. */

@@ -1,0 +1,36 @@
+# v-harness carrier bundle: mounts the image's unpublished agent-side tool
+# plugins as the last profile bundle layer. The gateway copies the plugin
+# packages into the profile's node_modules and appends this bundle to
+# dsh.profile.bundles before dsh starts (gateway/plugins.mjs); the packages
+# this bundle depends on are what make dsh's profile-scope resolution carry
+# the row plugins at all.
+#
+# Row ids mirror the rows in packages/bundle/base/cordis.patch.yml. If a
+# future dsh release publishes these rows in dsh-base itself, delete the
+# duplicates here so the plugins are not mounted twice.
+
+- insert:
+    # Local generation service; off until a deployment names an endpoint
+    # (the gateway forwards IMAGE_STUDIO_BASE_URL only when it is set).
+    - id: skill-image-studio
+      name: '@deepseek-ai/dsh-skill-image-studio'
+      disabled: !!js "!process.env.IMAGE_STUDIO_BASE_URL && !process.env.IMAGE_STUDIO_AUTH_FILE"
+
+    # The interactive AI-album tools: available wherever the
+    # harness ships its bundled skills (the tenant gateway always provides
+    # the per-tenant capability sockets they resolve, via VH_SKILLS_DIR).
+
+    - id: skill-album
+      name: '@deepseek-ai/dsh-skill-album'
+      disabled: !!js "!process.env.VH_SKILLS_DIR"
+
+    # Fork-only browser plugins: the upstream dsh-web-app neither depends on
+    # these packages nor mounts their rows, and gateway/plugins.mjs copies the
+    # image's builds into the profile's node_modules (creating absent targets).
+    # The packages are declared in this bundle's dependencies so the
+    # profile-scope resolution carries them for the modules node half.
+    - id: ui-tool-cards
+      name: '@deepseek-ai/dsh-client-ui-tool-cards'
+
+    - id: ui-user-questions
+      name: '@deepseek-ai/dsh-client-ui-user-questions'

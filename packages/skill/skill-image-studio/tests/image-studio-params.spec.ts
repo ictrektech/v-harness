@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
-import { buildFormFields, generateArguments, readConfirmed, type CatalogEntry } from '../src/params.ts'
+import {
+  buildFormFields, generateArguments, readConfirmed, withoutFormIntent, type CatalogEntry,
+} from '../src/params.ts'
 
 const MODELS: CatalogEntry[] = [
   { key: 'sdxl', capabilities: ['txt2img'] },
@@ -18,6 +20,19 @@ const answered = (values: Record<string, string>, selected: Record<string, strin
       ...(custom === '' ? {} : { custom }),
     }
   }),
+})
+
+describe('withoutFormIntent', () => {
+  it('keeps every field control and drops only the intent', () => {
+    const fields = buildFormFields({ prompt: 'a tea house' }, MODELS)
+    const stripped = withoutFormIntent(fields)
+
+    expect(stripped).toHaveLength(fields.length)
+    expect(stripped.every(field => field.intent === undefined)).toBe(true)
+    expect(stripped.map(field => field.input)).toEqual(fields.map(field => field.input))
+    expect(stripped.find(field => field.id === 'model_key')?.options?.map(option => option.label))
+      .toEqual(['SDXL', 'SD15'])
+  })
 })
 
 describe('buildFormFields', () => {

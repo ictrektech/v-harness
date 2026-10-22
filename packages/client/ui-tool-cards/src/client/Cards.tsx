@@ -9,8 +9,7 @@ import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import type { ToolResultNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  albumAlbums, albumPerson, albumPhotos, albumUpload,
-  vofficeList, vofficeOpen, vofficeRename, vofficeUpload,
+  albumAlbums, albumPerson, albumPhotos, albumUpload, imageStudio,
 } from './meta.ts'
 import type { NS } from './locales.ts'
 import css from './Cards.module.css'
@@ -73,13 +72,6 @@ function formatBytes(size: number): string {
   return `${size} B`
 }
 
-function formatTime(epochSeconds: number): string {
-  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return ''
-  const date = new Date(epochSeconds * 1000)
-  const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
 /** The row every card shows while its call runs. */
 function RunningCard(props: CardProps) {
   return <div className={css.card} data-tool-card={props.toolName} data-state="running">
@@ -98,7 +90,7 @@ function UnavailableCard(props: ResultProps) {
 
 function CardShell(props: {
   title: string
-  meta?: string
+  meta?: string | undefined
   children: ReactNode
   footer?: ReactNode
   toolName: string
@@ -113,63 +105,36 @@ function CardShell(props: {
   </div>
 }
 
-/** `voffice_list`: document rows with per-document preview links. */
-function VofficeListCard(props: ResultProps) {
-  const model = vofficeList(props.block.meta)
+/** Image extensions the result card renders inline; anything else stays a file row. */
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif)$/iu
+
+/** `image_studio_generate`: the rendered image itself, plus the seed to reproduce it. */
+function ImageStudioCard(props: ResultProps) {
+  const model = imageStudio(props.block.meta)
   if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={props.t('voffice.listTitle')} meta={props.t('voffice.listTotal', { total: model.total })}>
-    <div className={css.rows}>
-      {model.files.map(file => <div key={file.name} className={css.docRow}>
-        <span className={css.docIcon}>{file.name.split('.').pop()?.toUpperCase() ?? '?'}</span>
+  const images = model.files.filter(file => IMAGE_FILE.test(file.filename))
+  const others = model.files.filter(file => !IMAGE_FILE.test(file.filename))
+  return <CardShell
+    toolName={props.toolName}
+    title={props.t('image.studioTitle')}
+    meta={model.seed < 0 ? undefined : props.t('image.studioSeed', { seed: model.seed })}
+  >
+    {images.length === 0 ? null : <div className={css.grid}>
+      {images.map(file => <WorkspaceImage key={file.path}
+        sessionId={props.sessionId} cwd={props.cwd} path={file.path}
+        workspaceFiles={props.workspaceFiles} alt={file.filename}
+        onOpen={() => { props.openFile(file.path) }} />)}
+    </div>}
+    {others.length === 0 ? null : <div className={css.rows}>
+      {others.map(file => <div key={file.path} className={css.docRow}>
+        <span className={css.docIcon}>{file.filename.split('.').pop()?.toUpperCase() ?? '?'}</span>
         <span className={css.docBody}>
-          {file.viewUrl === undefined
-            ? <span className={css.docName}>{file.name}</span>
-            : <a className={css.docLink} href={file.viewUrl} target="_blank" rel="noreferrer">{file.name}</a>}
-          <span className={css.docMeta}>{formatTime(file.modified)} · {formatBytes(file.size)}</span>
+          <span className={css.docName}>{file.filename}</span>
+          <span className={css.docMeta}>{formatBytes(file.bytes)}</span>
         </span>
-        {file.viewUrl === undefined ? null : <a className={css.action} href={file.viewUrl} target="_blank" rel="noreferrer">{props.t('voffice.open')}</a>}
       </div>)}
-    </div>
-    <div className={css.footer}>{props.t('voffice.listHint')}</div>
-  </CardShell>
-}
-
-/** `voffice_open`: the online-editor link card. */
-function VofficeOpenCard(props: ResultProps) {
-  const model = vofficeOpen(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={model.canWrite ? props.t('voffice.openTitle') : props.t('voffice.openReadonly')} meta={model.name}>
-    <div className={css.body}>
-      {model.canWrite ? <div className={css.line}>{props.t('voffice.openSaveNote')}</div> : null}
-    </div>
-    <a className={css.button} href={model.url} target="_blank" rel="noreferrer">
-      {model.canWrite ? props.t('voffice.openWrite') : props.t('voffice.openReadonly')}
-    </a>
-    <div className={css.footer}>{props.t('voffice.openExpiry', { minutes: Math.round(model.expiresIn / 60) })}</div>
-  </CardShell>
-}
-
-/** `voffice_rename`: old name struck through, new name beside it. */
-function VofficeRenameCard(props: ResultProps) {
-  const model = vofficeRename(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={props.t('voffice.renameTitle')}>
-    <div className={css.body}>
-      <div className={css.rename}>
-        <span className={css.oldName}>{model.from}</span>
-        <span className={css.newName}>{model.to}</span>
-      </div>
-    </div>
-    <div className={css.warn}>{props.t('voffice.renameWarn')}</div>
-  </CardShell>
-}
-
-/** `voffice_upload`: saved receipt. */
-function VofficeUploadCard(props: ResultProps) {
-  const model = vofficeUpload(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={props.t('voffice.uploadTitle')} meta={model.name}>
-    <div className={css.footer}>{props.t('voffice.uploadHint', { name: model.name })}</div>
+    </div>}
+    <div className={css.footer}>{props.t('image.studioHint')}</div>
   </CardShell>
 }
 
@@ -240,10 +205,7 @@ function AlbumUploadCard(props: ResultProps) {
 
 /** The tool name each card claims; unknown names never reach this component. */
 const CARDS: Readonly<Record<string, (props: ResultProps) => ReactNode>> = {
-  voffice_list: VofficeListCard,
-  voffice_open: VofficeOpenCard,
-  voffice_rename: VofficeRenameCard,
-  voffice_upload: VofficeUploadCard,
+  image_studio_generate: ImageStudioCard,
   album_search: AlbumPhotosCard,
   album_photos: AlbumPhotosCard,
   album_person: AlbumPersonCard,

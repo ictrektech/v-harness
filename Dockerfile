@@ -64,6 +64,11 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # compilation instead of a full Host build.
 RUN node --import tsx/esm scripts/generate-typert.ts
 
+# The agent-plugins stage inherits this one and its staging script reads the
+# carrier bundle from gateway/agent-plugins/. Copied after the install so
+# gateway edits never invalidate the dependency layers.
+COPY gateway/ gateway/
+
 # Compile the plugin's project graph, then bundle it. The bundle is the
 # browser artifact gateway/plugins.mjs ships into each user's profile.
 RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
@@ -81,7 +86,35 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
       packages/client/ui-tool-cards/package.json \
       packages/client/ui-tool-cards/lib \
       packages/client/ui-tool-cards/locale \
-      /build/plugins/dsh-client-ui-tool-cards/
+      /build/plugins/dsh-client-ui-tool-cards/ \
+ && pnpm exec tsc -b packages/client/ui-user-questions/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-user-questions bundle \
+ && mkdir -p /build/plugins/dsh-client-ui-user-questions \
+ && cp -R \
+      packages/client/ui-user-questions/package.json \
+      packages/client/ui-user-questions/lib \
+      packages/client/ui-user-questions/locale \
+      /build/plugins/dsh-client-ui-user-questions/
+
+# ============================================================
+# Stage: agent-side tool plugins built from this repository
+# ============================================================
+# The fork's agent-side tool plugins (V-Office, AI-album, Image Studio) are
+# unpublished, so a tenant profile assembled from the npm registry neither
+# carries their packages nor mounts their rows. This stage builds them the
+# way the publish flow does — `tsc -b` walks the project references so the
+# dependency closure compiles without manual ordering, and the scoped tsdown
+# pass emits the `lib/index.js` entry a hand-copied tsc output lacks — then
+# scripts/stage-agent-plugins.ts stages the packages plus their computed
+# dependency closure. It inherits the plugins stage to reuse the workspace
+# install; a second full install would cost more than the serialized build.
+FROM plugins AS agent-plugins
+
+RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.txt) \
+ && pnpm exec tsdown --config-loader native --config scripts/agent-plugins.tsdown.config.ts \
+ && node --import tsx/esm scripts/stage-agent-plugins.ts \
+      --out /build/agent-plugins \
+      --plugin $(cat gateway/agent-plugins/plugins.txt)
 
 # Managed VOS model discovery and settings use local Host and Client builds.
 RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
@@ -159,6 +192,11 @@ RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-ses
       cp -R "$source/lib/." "$target/lib/"; \
       if [ -d "$source/locale" ]; then cp -R "$source/locale/." "$target/locale/"; fi; \
     done
+
+# Agent-side tool plugins plus their carrier bundle (manifest.json lists the
+# plugins); gateway/plugins.mjs copies them into each tenant profile and
+# mounts the carrier before dsh starts.
+COPY --from=agent-plugins /build/agent-plugins/ /opt/v-harness/agent-plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \

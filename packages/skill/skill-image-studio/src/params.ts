@@ -153,13 +153,16 @@ export function buildFormFields(
     {
       id: 'width',
       question: '宽度',
-      input: { kind: 'number', default: '512', min: 256, max: 2048, step: 32 },
+      // No default: the service calibrates a ceiling per model and GPU, and a
+      // prefilled 512 is over it on some models — the first confirmation would
+      // then fail with a 422 the user never asked for.
+      input: { kind: 'number', min: 256, max: 2048, step: 32, placeholder: '服务默认' },
       intent,
     },
     {
       id: 'height',
       question: '高度',
-      input: { kind: 'number', default: '512', min: 256, max: 2048, step: 32 },
+      input: { kind: 'number', min: 256, max: 2048, step: 32, placeholder: '服务默认' },
       intent,
     },
     {
@@ -183,10 +186,28 @@ export function buildFormFields(
     {
       id: 'seed',
       question: '随机种子',
-      input: { kind: 'number', default: '-1', min: -1 },
+      input: { kind: 'number', min: -1, placeholder: '随机' },
       intent,
     },
   ]
+}
+
+/**
+ * The same fields with every presentation intent removed.
+ *
+ * A runtime older than the form intent's own validation reads any intent as a
+ * plan review, so `ask()` rejects the batch before a UI can show it. Dropping
+ * the intent keeps the dialog: a batch whose every field declares a control is
+ * a form either way.
+ * @param items - fields carrying the form intent.
+ * @returns the fields, unchanged except for the intent.
+ */
+export function withoutFormIntent(items: readonly AskUserQuestionItem[]): AskUserQuestionItem[] {
+  return items.map((item) => {
+    const { intent: dropped, ...rest } = item
+    void dropped
+    return rest
+  })
 }
 
 /**

@@ -5,8 +5,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-shell'
-import { buildFormFields, generateArguments, readConfirmed, type CatalogEntry } from './params.ts'
+import {
+  buildFormFields, generateArguments, readConfirmed, withoutFormIntent, type CatalogEntry,
+} from './params.ts'
 
 /** Resolved Image Studio endpoints and executables the CLI needs on every call. */
 export interface ImageStudioToolRuntime {
@@ -20,6 +23,19 @@ export interface ImageStudioToolRuntime {
 /** How long the tool waits for a queued job, matching the skill's documented ceiling. */
 const GENERATE_TIMEOUT_MS = 2_000_000
 const CATALOG_TIMEOUT_MS = 30_000
+
+/**
+ * Whether a questions-service rejection is the intent validation refusing the batch.
+ *
+ * Runtimes released before the form intent existed validate every intent as a
+ * plan review, which rejects a form before any surface can open it. The wire
+ * preserves `code`, so the failure is recognisable without matching prose.
+ * @param error - the rejection from `ctx.userQuestions.ask`.
+ * @returns true when the request carried an intent this runtime cannot honour.
+ */
+function isBadIntent(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'BAD_INTENT'
+}
 
 /**
  * Quote one argv entry for the mounted shell.
@@ -62,6 +78,12 @@ async function runJson(
   if (result.aborted) throw new Error('image-studio was cancelled')
   if (result.exitCode !== 0) {
     const detail = result.stderr.text.trim()
+    // The service calibrates a ceiling per model and GPU; say which field was
+    // over it instead of handing the user a raw 422.
+    const overLimit = /exceeds calibrated model limit: (\w+)/u.exec(detail)
+    if (overLimit !== null) {
+      throw new Error(`该模型的校准上限低于这次提交的 ${overLimit[1]}：把该字段留空用服务默认，或调小后重试`)
+    }
     throw new Error(`image-studio exited ${String(result.exitCode)}${detail === '' ? '' : `: ${detail.slice(-500)}`}`)
   }
   const text = result.stdout.text.trim()
@@ -121,6 +143,7 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
           },
         },
       },
+      presentationMeta: (_args, value) => ({ kind: 'image.studio', ...value }),
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
@@ -128,15 +151,35 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
       const catalog = await runJson(ctx, runtime, ['models', '--ready'], CATALOG_TIMEOUT_MS, exec.signal) as { models?: CatalogEntry[] }
       const models = (catalog.models ?? []).filter(model => (model.capabilities ?? []).includes('txt2img'))
       if (models.length === 0) {
-        throw new Error('no ready text-to-image model: load the image-studio-models skill and pull one first')
+        throw new Error('no ready text-to-image model: run `models --ready`, then `pull <key>` for a text-to-image one')
       }
-      const answers = await ctx.userQuestions.ask({
-        questions: buildFormFields(args, models),
-        agent: exec.agent,
-        signal: exec.signal,
-      })
+      const fields = buildFormFields(args, models)
+      let answers: AskUserQuestionAnswer
+      try {
+        answers = await ctx.userQuestions.ask({ questions: fields, agent: exec.agent, signal: exec.signal })
+      } catch (error) {
+        if (!isBadIntent(error)) throw error
+        // The dialog stays available on a runtime that predates the form intent:
+        // the fields alone are what the form presentation reads.
+        answers = await ctx.userQuestions.ask({
+          questions: withoutFormIntent(fields),
+          agent: exec.agent,
+          signal: exec.signal,
+        })
+      }
       const flags = ['generate', ...generateArguments(readConfirmed(answers, models))]
-      const job = await runJson(ctx, runtime, flags, GENERATE_TIMEOUT_MS, exec.signal) as {
+      // A model whose calibrated ceiling sits below the service's own defaults
+      // rejects a parameterless job; step down to the smallest legal size once
+      // instead of handing the user a 422 on the confirmation they just made.
+      const fallback = ['--width', '256', '--height', '256', '--steps', '1']
+      let job: unknown
+      try {
+        job = await runJson(ctx, runtime, flags, GENERATE_TIMEOUT_MS, exec.signal)
+      } catch (error) {
+        if (!/calibrated model limit|校准上限/u.test(String(error))) throw error
+        job = await runJson(ctx, runtime, [...flags, ...fallback], GENERATE_TIMEOUT_MS, exec.signal)
+      }
+      const jobValue = job as {
         job_id?: string
         status?: string
         seed?: number
@@ -144,11 +187,11 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
         files?: { path: string; filename: string; bytes: number }[]
       }
       return {
-        job_id: job.job_id ?? '',
-        status: job.status ?? 'unknown',
-        seed: job.seed ?? -1,
-        directory: job.directory ?? '',
-        files: (job.files ?? []).map(file => ({ path: file.path, filename: file.filename, bytes: file.bytes })),
+        job_id: jobValue.job_id ?? '',
+        status: jobValue.status ?? 'unknown',
+        seed: jobValue.seed ?? -1,
+        directory: jobValue.directory ?? '',
+        files: (jobValue.files ?? []).map(file => ({ path: file.path, filename: file.filename, bytes: file.bytes })),
       } satisfies GenerateOutput
     },
   }))
