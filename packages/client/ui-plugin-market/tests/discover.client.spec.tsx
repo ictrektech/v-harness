@@ -81,7 +81,7 @@ const READY: DiscoverState = {
 function renderTab(state: Partial<DiscoverState> = {}, dictionary: Record<PluginMarketLocaleKey, string> = en) {
   const store = createSnapshotStore<DiscoverState>({ ...READY, ...state })
   const language = dictionary === en ? 'en' : 'zh'
-  const locale = createSnapshotStore<LocaleSnapshot>({ active: language, locales: [], revision: 0 })
+  const locale = createSnapshotStore<LocaleSnapshot>({ active: language, locales: [], following: false, revision: 0 })
   const actions = {
     ensure: vi.fn(), reload: vi.fn(), select: vi.fn(), search: vi.fn(), more: vi.fn(), refresh: vi.fn(), retry: vi.fn(),
     toggleSources: vi.fn(),

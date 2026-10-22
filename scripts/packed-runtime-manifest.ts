@@ -48,12 +48,13 @@ function main(): void {
     },
     allowPositionals: false,
   })
-  if (values.out === undefined || values['install-prefix'] === undefined || values.from === undefined) {
+  const installPrefix = values['install-prefix']
+  if (values.out === undefined || installPrefix === undefined || values.from === undefined) {
     throw new Error('usage: packed-runtime-manifest.ts --out <dir> --install-prefix <path> --from <packed dir> [--from ...]')
   }
   const dependencies = Object.assign(
     {},
-    ...values.from.map(directory => directoryDependencies(resolve(directory), values['install-prefix'])),
+    ...values.from.map(directory => directoryDependencies(resolve(directory), installPrefix)),
   )
   const out = resolve(values.out)
   mkdirSync(out, { recursive: true })

@@ -999,8 +999,8 @@ describe('form presentation', () => {
     expect(screen.queryByText('1 / 3')).toBeNull()
     const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
     expect(prompt.value).toBe('a quiet tea house')
-    expect(screen.getByLabelText('Model').value).toBe('sd15')
-    expect(screen.getByLabelText('Steps').value).toBe('')
+    expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('sd15')
+    expect((screen.getByLabelText('Steps') as HTMLInputElement).value).toBe('')
 
     fireEvent.change(prompt, { target: { value: 'a snowy tea house' } })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh['form.submit'] })) })

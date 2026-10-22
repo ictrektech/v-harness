@@ -15,7 +15,7 @@ afterEach(cleanup)
 
 function fixture() {
   const preferences = createSnapshotStore<CotTranslationPreferences>({ provider: 'google', targetLanguage: 'auto' })
-  const locale = createSnapshotStore<LocaleSnapshot>({ active: 'zh', locales: [], revision: 0 })
+  const locale = createSnapshotStore<LocaleSnapshot>({ active: 'zh', locales: [], following: false, revision: 0 })
   const translationLimit = createSnapshotStore(4000)
   const translate = vi.fn<TranslateText>(async request => `${request.provider}:${request.targetLanguage}:${request.text}`)
   const props = { text: 'Original paragraph', running: false, translate, renderFactorySlot, t: makeTranslate(en),
@@ -50,7 +50,7 @@ it('cancels stale provider or locale requests and honors an explicit language af
   first.resolve('outdated translation')
   await act(async () => { await first.promise })
   expect(view.queryByText('outdated translation')).toBeNull()
-  act(() => { b.locale.set({ active: 'en', locales: [], revision: 1 }) })
+  act(() => { b.locale.set({ active: 'en', locales: [], following: false, revision: 1 }) })
   expect(b.translate).toHaveBeenCalledTimes(2)
   act(() => { b.preferences.set({ provider: 'bing', targetLanguage: 'auto' }) })
   await view.findByText('bing:en:Original paragraph')
