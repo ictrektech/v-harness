@@ -127,7 +127,7 @@ export async function syncPlugins(user) {
  * @returns {Promise<void>} resolves once every present plugin was replaced;
  *   a managed-package failure prevents launching an inconsistent runtime.
  */
-async function syncClientPlugins(user) {
+export async function syncClientPlugins(user) {
   const modules = join(user.home, '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai')
   for (const name of BUNDLED) {
     const source = join(PLUGIN_ROOT, name)
