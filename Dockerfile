@@ -50,6 +50,7 @@ COPY benchmarks/ benchmarks/
 COPY website/ website/
 COPY python/ python/
 COPY tsconfig*.json ./
+COPY tsdown.config.ts ./
 
 # The whole workspace is installed. The plugin is a package of this monorepo,
 # and its compilation reads declarations that other workspace packages

@@ -9,6 +9,7 @@
 !pnpm-workspace.yaml
 !tsconfig.json
 !tsconfig.*.json
+!tsdown.config.ts
 !gateway/
 !gateway/**
 !bin/
