@@ -54,8 +54,9 @@ V_HARNESS_SOURCE_REVISION=<本地提交完整 SHA> ./build_image.sh --target arm
 
 两种架构的镜像均推送并写入飞书后，在本地运行 `./ictrek.app/scripts/update_version.sh patch`。GitHub Actions 从最新已发布 Release 解析 V-Scheduler 依赖版本，生成安装包并发布至 GitHub Release 和 VOS 应用商店；应用商店发布失败会令工作流失败。
 
+发布前在构建机用独立容器运行 `scripts/verify_runtime.mjs`：将该文件只读挂载到容器并以 `node` 为入口，沿用 Compose 的 `SYS_ADMIN`、`SYS_PTRACE` 和 security_opt，不挂载真实 `/data`。它验证浏览器远程接口、真实租户实例启动、模拟 VOS 登录及首页反代；模型设置仍需在 VOS 页面选择并重新打开核验。
+
 ## 已知限制
 
-- 模型统一在 V-Scheduler 中管理；设置页提供跳转、刷新及默认模型下拉框，推理沿用当前 VOS 用户身份。纯文本补全模型不支持工具调用。
-- 每用户一份 pnpm store 与 `node_modules`，磁盘按「用户数 × 插件体积」预算。
-- 容器内 `dsh` 首次启动要 `pnpm install` profile bundles，首登会慢若干秒。
+- 模型统一在 V-Scheduler 中管理；设置页通过 VOS 应用抽屉跳转，保留平台身份上下文，并提供刷新及默认模型下拉框。推理沿用当前 VOS 用户身份。纯文本补全模型不支持工具调用。
+- 默认 profile 使用共享安装的内置插件；用户另行安装的插件才写入用户级 pnpm store 与 `node_modules`。

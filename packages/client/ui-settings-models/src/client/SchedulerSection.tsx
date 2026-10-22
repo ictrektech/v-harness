@@ -63,7 +63,7 @@ export function SchedulerSection(props: InjectFace<Injected>) {
   return <section className={styles['section']}>
     <h2 className={styles['title']}>{t('title')}</h2>
     <p className={styles['intro']}>{t('schedulerIntro')}</p>
-    <a href="/app/com.ictrek.v-scheduler/" target="_top">{t('schedulerOpen')}</a>
+    <a href="/#/app/app-drawer/com.ictrek.v-scheduler/v-scheduler" target="_top">{t('schedulerOpen')}</a>
     <label className={styles['schedulerLabel']}>
       {t('schedulerDefault')}
       <select value={selected} disabled={state.busy || rows.length === 0} onChange={event => {
