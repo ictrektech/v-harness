@@ -96,7 +96,7 @@ function resolveRuntime(config: Config, assetRoot: string): StudioRuntime {
  *
  * The three `SKILL.md` entries live under the repository's `skills/` directory
  * (and `/opt/v-harness/skills` in the image), so the ordinary skill scanner
- * publishes them exactly like `weknora` and `voffice`; this plugin only needs
+ * publishes them exactly like `voffice` and `album`; this plugin only needs
  * the CLI runtime for the tool.
  * @param ctx - Context carrying the tool, question, and shell seams.
  * @param config - Optional asset root and service endpoint overrides.

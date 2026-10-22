@@ -228,6 +228,10 @@ function summarizeModel(model) {
     downloaded_bytes: model.downloaded_bytes,
     total_bytes: model.total_bytes,
     error: model.error,
+    // The service's own per-model defaults (size, steps, sampler). The form
+    // pre-fills them so the dialog opens on real values instead of blanks the
+    // user has to guess at.
+    runtime: model.runtime,
     variants: variants.map(variant => ({
       id: variant.id, name: variant.name, status: variant.status,
       size: variant.size, progress: variant.progress,

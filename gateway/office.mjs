@@ -76,7 +76,8 @@ const tokens = new Map();
  * requests. A link handed to the user has to be absolute (the chat renderer
  * refuses relative hrefs), and the agent has no other way to learn the host.
  */
-let publicOrigin = '';
+/** Per-tenant portal origin: the exact scheme and host that tenant's browser is on. */
+const publicOrigins = new Map();
 
 /**
  * @param {string | string[] | undefined} value
@@ -92,10 +93,41 @@ function firstHeader(value) {
  * Remember the origin of the last browser request.
  * @param {import('node:http').IncomingHttpHeaders} headers
  */
-export function rememberOrigin(headers) {
+/**
+ * @param {string} value - a candidate origin.
+ * @returns whether a user's browser could actually be sent to it. Loopback is
+ *   the instance talking to itself, which is exactly the address that ends up
+ *   in a link nobody else can open.
+ */
+function isUsableOrigin(value) {
+  return /^https?:\/\//iu.test(value)
+    && !/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/iu.test(value);
+}
+
+export function rememberOrigin(headers, namespace) {
+  if (namespace === undefined) return;
+  // The browser's own Origin header names the page the user is on. The
+  // instance behind it calls the gateway too, with 127.0.0.1:3101 in every
+  // header — accepting that would overwrite the real domain with the one
+  // address no other machine can reach.
+  const origin = firstHeader(headers.origin);
+  if (origin !== undefined && origin !== 'null' && isUsableOrigin(origin)) {
+    publicOrigins.set(namespace, origin.replace(/\/+$/u, ''));
+    return;
+  }
+  const referer = firstHeader(headers.referer);
+  if (referer !== undefined && isUsableOrigin(referer)) {
+    try {
+      publicOrigins.set(namespace, new URL(referer).origin);
+      return;
+    } catch {
+      // Fall through to the forwarded host.
+    }
+  }
   const host = firstHeader(headers['x-forwarded-host']) ?? firstHeader(headers.host);
   if (host === undefined) return;
-  publicOrigin = `${firstHeader(headers['x-forwarded-proto']) ?? 'http'}://${host}`;
+  if (!isUsableOrigin(`${firstHeader(headers['x-forwarded-proto']) ?? 'http'}://${host}`)) return;
+  publicOrigins.set(namespace, `${firstHeader(headers['x-forwarded-proto']) ?? 'http'}://${host}`);
 }
 
 /** @type {Map<string, Promise<import('node:http').Server>>} */
@@ -211,7 +243,7 @@ export function hasUsableTokens(namespace) {
  * Current usable access token, refreshing it first when it is near expiry.
  *
  * Exported because every capability endpoint authenticates upstream calls with
- * the same VOS token; `weknora.mjs` forwards it unchanged.
+ * the same VOS token.
  * @param {string} namespace
  * @returns {Promise<string | undefined>}
  */
@@ -304,7 +336,8 @@ async function forward(namespace, req, res) {
   if (req.headers['content-length']) headers['content-length'] = String(req.headers['content-length']);
   if (token) headers.authorization = `Bearer ${token}`;
   // editor-link builds its absolute URL from X-Forwarded-*; a capability-socket
-  // caller has no browser headers, so fill them in from the remembered origin.
+  // caller has no browser headers, so fill them in from this tenant's origin.
+  const publicOrigin = publicOrigins.get(namespace);
   if (publicOrigin) {
     try {
       const origin = new URL(publicOrigin);
@@ -397,6 +430,22 @@ export async function editorUrlFor(namespace, options) {
     throw officeError(401, 'vos-token-unavailable', 'VOS 登录令牌缺失或已过期，请刷新 v-harness 页面后重试');
   }
 
+  // The storage service builds an absolute address from X-Forwarded-*. Without
+  // them it names its own container, and with another tenant's they would open
+  // the wrong machine: fill them from this tenant's remembered origin.
+  /** @type {Record<string, string>} */
+  const forwarded = {};
+  const remembered = publicOrigins.get(namespace);
+  if (remembered !== undefined) {
+    try {
+      const parsed = new URL(remembered);
+      forwarded['x-forwarded-proto'] = parsed.protocol.replace(/:$/, '');
+      forwarded['x-forwarded-host'] = parsed.host;
+    } catch {
+      // Leave them off; upstream falls back to the request Host.
+    }
+  }
+
   const query = new URLSearchParams({
     name: options.name,
     edit: options.edit === false ? '0' : '1',
@@ -412,7 +461,7 @@ export async function editorUrlFor(namespace, options) {
     `${OFFICE_BASE.origin}${OFFICE_PREFIX}/api/v1/documents/editor-link?${query.toString()}`,
     {
       method: 'GET',
-      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+      headers: { accept: 'application/json', authorization: `Bearer ${token}`, ...forwarded },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
     },
   ).catch(() => undefined);
@@ -440,7 +489,7 @@ export async function editorUrlFor(namespace, options) {
     `${OFFICE_BASE.origin}${OFFICE_PREFIX}/api/v1/wopi/session?${query.toString()}`,
     {
       method: 'POST',
-      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+      headers: { accept: 'application/json', authorization: `Bearer ${token}`, ...forwarded },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
     },
   ).catch(() => undefined);
@@ -484,7 +533,7 @@ async function start(options) {
     // Local-only route: the portal origin, so the agent can hand the user an
     // absolute link. It never leaves this socket and carries no document data.
     if (req.url === '/__vh/origin') {
-      json(res, 200, { origin: publicOrigin });
+      json(res, 200, { origin: publicOrigins.get(namespace) ?? '' });
       return;
     }
     void forward(namespace, req, res).catch((error) => {

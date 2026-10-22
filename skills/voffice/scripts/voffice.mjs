@@ -254,6 +254,7 @@ async function getJson(transport, path) {
  */
 async function editorLink(transport, name, options = {}) {
   const params = new URLSearchParams({ name, edit: options.readonly ? '0' : '1' })
+  // 下面 body.url 会被归一化成门户相对路径，原因见 browserLink。
   if (options.lang) params.set('lang', options.lang)
   // 非 0 版本号换 docKey，逼 Collabora 丢弃内存副本重新读盘：
   // 云端文件刚被覆盖、旧编辑会话还开着时用它。
@@ -264,9 +265,54 @@ async function editorLink(transport, name, options = {}) {
   }
   return {
     name: typeof body.name === 'string' ? body.name : name,
-    url: body.url,
+    url: absoluteLink(body.url, await portalOrigin(transport)),
     canWrite: body.canWrite !== false,
     expiresIn: typeof body.expiresIn === 'number' ? body.expiresIn : 3600,
+  }
+}
+
+/**
+ * A link the browser can follow, rather than a link this process believes in.
+ *
+ * Collabora is mounted under the portal's own path, so the path alone is
+ * enough: the browser resolves it against whatever domain the user is on. An
+ * absolute URL carries whatever origin this process last saw — another
+ * tenant's browser, a container hostname, or localhost — and that is exactly
+ * the link that opens the wrong machine. A link on its own host keeps its
+ * origin, because a relative path cannot point there.
+ * @param {string} url - what the storage service returned.
+ * @returns the portal-relative path, or the original URL when it is not ours.
+ */
+async function sharedLink(transport, name, readonly) {
+  const query = new URLSearchParams({ name })
+  if (readonly) query.set('readonly', '1')
+  const path = `/__vh/office/open?${query.toString()}`
+  const origin = await portalOrigin(transport)
+  // A loopback origin is the instance talking to itself, never a place the
+  // user can be sent; hand back the bare path instead of a dead host.
+  if (origin === '' || /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/iu.test(origin)) {
+    return path
+  }
+  return `${origin.replace(/\/+$/u, '')}${path}`
+}
+
+/**
+ * This tenant's portal origin, as recorded by the gateway for this account.
+ *
+ * The editor link comes back absolute, but the origin inside it is whatever
+ * the storage service saw: a container name, an internal address, or another
+ * tenant's domain. Rebuilding it on this tenant's own origin is what makes the
+ * link open the machine the user is actually on.
+ * @param {ReturnType<typeof resolveTransport>} transport
+ * @returns the origin, or an empty string when the gateway has not seen a
+ *   browser request from this account yet.
+ */
+async function portalOrigin(transport) {
+  try {
+    const body = await getJson(transport, '/__vh/origin')
+    return typeof body.origin === 'string' ? body.origin : ''
+  } catch {
+    return ''
   }
 }
 
@@ -285,8 +331,10 @@ async function withViewLinks(transport, files, limit) {
     const name = typeof file?.name === 'string' ? file.name : ''
     if (!name) continue
     try {
-      const link = await editorLink(transport, name, { readonly: true })
-      file.viewUrl = link.url
+      // Probe once so an unsupported type is simply left without a link, then
+      // hand out the portal's short path instead of the long signed URL.
+      await editorLink(transport, name, { readonly: true })
+      file.viewUrl = await sharedLink(transport, name, true)
     } catch (error) {
       // editor-link 不可用（旧版上游/该文件类型不支持）时列表照常返回，
       // 只是没有可点的预览链接。
@@ -436,24 +484,24 @@ async function run(argv) {
       })
       return {
         ok: true,
-        ...link,
+        name: link.name,
+        url: await sharedLink(transport, name, readonly),
+        canWrite: link.canWrite,
+        // The short link re-signs on every click, so it does not expire.
+        expiresIn: 0,
         hint: link.canWrite
-          ? `把 url 原样放进 markdown 链接给用户（[在线编辑](url)），并交代：链接 ${link.expiresIn} 秒内有效、保存自动写回云端；过期或打不开就重新 open 一条，不要排查旧链接。改完请用户回来说一声，好 download 最新版。`
-          : '把 url 原样放进 markdown 链接给用户（[在线预览](url)），说明这是只读查看，想编辑再说一声。',
+          ? '把 url 原样放进 markdown 链接给用户（[在线编辑](url)）。它是门户短链接，点开时服务端会重新签发编辑令牌，所以不会过期，也不需要补域名。点开后保存自动写回云端；改完请用户回来说一声，好 download 最新版。'
+          : '把 url 原样放进 markdown 链接给用户（[在线预览](url)）。说明这是只读查看，想编辑再说一声。',
       }
     } catch (error) {
       // 旧网关未放行 editor-link（403 route-not-allowed）时退回门户重定向链接。
+      // 这条链接本来就是门户自己的路径，直接给相对地址即可，不必再问网关
+      // 要 origin —— 问到的那个 origin 同样可能是别人的机器。
       if (error instanceof UsageError && error.status !== 403) throw error
-      const { origin } = await getJson(transport, '/__vh/origin')
-      if (typeof origin !== 'string' || origin === '') {
-        throw new UsageError(
-          '拿不到编辑链接，也拿不到门户地址：请让用户先在 v-harness 页面刷新一次再试。',
-        )
-      }
       return {
         ok: true,
         name,
-        url: `${origin}/__vh/office/open?name=${encodeURIComponent(name)}`,
+        url: await sharedLink(transport, name, readonly),
         canWrite: !readonly,
         expiresIn: 0,
         hint: '把 url 原样放进 markdown 链接给用户（[在线编辑](url)）。点开即进入在线编辑，保存直接写回「我的文档」。',

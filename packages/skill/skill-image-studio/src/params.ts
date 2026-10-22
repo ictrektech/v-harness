@@ -9,6 +9,11 @@ import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/ds
 export interface CatalogEntry {
   readonly key: string
   readonly capabilities?: readonly string[]
+  /** What the service will apply when a field is left empty; the form shows these. */
+  readonly runtime?: {
+    readonly mode?: string
+    readonly defaults?: Readonly<Record<string, string | number>>
+  }
 }
 
 /** Starting values the model supplied before the human confirmed them. */
@@ -126,6 +131,14 @@ export function buildFormFields(
     : models[0]?.key ?? ''
   const labels = modelMenu(models)
   const intent = { kind: 'form' } as const
+  // What generation will use when the user changes nothing. The service owns
+  // these numbers (they follow each model's calibrated ceiling), so showing
+  // them is honest in a way a hardcoded 512 never was.
+  const defaults = models.find(model => model.key === defaultModel)?.runtime?.defaults ?? {}
+  const preset = (key: string): Record<string, string> => {
+    const value = defaults[key]
+    return value === undefined ? {} : { default: String(value) }
+  }
   return [
     {
       id: 'model_key',
@@ -153,40 +166,38 @@ export function buildFormFields(
     {
       id: 'width',
       question: '宽度',
-      // No default: the service calibrates a ceiling per model and GPU, and a
-      // prefilled 512 is over it on some models — the first confirmation would
-      // then fail with a 422 the user never asked for.
-      input: { kind: 'number', min: 256, max: 2048, step: 32, placeholder: '服务默认' },
+      input: { kind: 'number', min: 256, max: 2048, step: 32, placeholder: '服务默认', ...preset('width') },
       intent,
     },
     {
       id: 'height',
       question: '高度',
-      input: { kind: 'number', min: 256, max: 2048, step: 32, placeholder: '服务默认' },
+      input: { kind: 'number', min: 256, max: 2048, step: 32, placeholder: '服务默认', ...preset('height') },
       intent,
     },
     {
       id: 'steps',
       question: '步数',
-      input: { kind: 'number', min: 1, max: 150, placeholder: '服务默认' },
+      input: { kind: 'number', min: 1, max: 150, placeholder: '服务默认', ...preset('steps') },
       intent,
     },
     {
       id: 'cfg_scale',
       question: '提示词强度',
-      input: { kind: 'number', min: 0, max: 30, step: 0.5, placeholder: '服务默认' },
+      input: { kind: 'number', min: 0, max: 30, step: 0.5, placeholder: '服务默认', ...preset('cfg_scale') },
       intent,
     },
     {
       id: 'sampler',
       question: '采样器',
-      input: { placeholder: '服务默认' },
+      input: { placeholder: '服务默认', ...preset('sampler') },
       intent,
     },
     {
       id: 'seed',
       question: '随机种子',
-      input: { kind: 'number', min: -1, placeholder: '随机' },
+      // -1 is the service's "pick one for me"; showing it matches the app.
+      input: { kind: 'number', min: -1, default: '-1', placeholder: '随机' },
       intent,
     },
   ]

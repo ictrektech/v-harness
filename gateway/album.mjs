@@ -172,7 +172,8 @@ async function forward(namespace, req, res) {
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
-      protocol: ALBUM_URL.startsWith('https') ? 'https' : 'http',
+      // Node requires the colon form ('http:' / 'https:') or request() throws ERR_INVALID_PROTOCOL.
+      protocol: ALBUM_URL.startsWith('https') ? 'https:' : 'http:',
       hostname: new URL(ALBUM_URL).hostname,
       port: new URL(ALBUM_URL).port || undefined,
       method,
@@ -199,7 +200,7 @@ async function forward(namespace, req, res) {
             return;
           }
           const retry = httpRequest({
-            protocol: ALBUM_URL.startsWith('https') ? 'https' : 'http',
+            protocol: ALBUM_URL.startsWith('https') ? 'https:' : 'http:',
             hostname: new URL(ALBUM_URL).hostname,
             port: new URL(ALBUM_URL).port || undefined,
             method,

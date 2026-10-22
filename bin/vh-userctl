@@ -63,7 +63,7 @@ claim() {
 
   [[ "$name" =~ $NAME_RE ]] || die "invalid account name: ${name}"
   case "$path" in
-    "${DATA_ROOT}/users/"*"/.dsh/voffice.sock"|"${DATA_ROOT}/users/"*"/.dsh/weknora.sock"|"${DATA_ROOT}/users/"*"/.dsh/album.sock") ;;
+    "${DATA_ROOT}/users/"*"/.dsh/voffice.sock"|"${DATA_ROOT}/users/"*"/.dsh/album.sock"|"${DATA_ROOT}/users/"*"/.dsh/weknora.sock") ;;
     *) die "unexpected claim path: ${path}" ;;
   esac
   [[ -S "$path" ]] || die "not a socket: ${path}"

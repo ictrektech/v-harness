@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Knowledge base references",
-    "description": "Choose a knowledge base with @ to scope retrieval to it, read the sources under an answer, and search the knowledge bases in the evidence page."
+    "title": "Knowledge bases",
+    "description": "Pick a library, or one document inside it, as the retrieval scope with @; read the passages behind an answer; search the company knowledge bases in the evidence panel."
   }
 }

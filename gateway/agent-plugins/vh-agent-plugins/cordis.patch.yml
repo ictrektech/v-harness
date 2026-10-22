@@ -34,3 +34,9 @@
 
     - id: ui-user-questions
       name: '@deepseek-ai/dsh-client-ui-user-questions'
+
+    # The knowledge-base surface: the `@` scope picker, the source cards under
+    # an answer, and the evidence panel. Same channel as the two rows above —
+    # the upstream web-app bundle neither depends on nor mounts it.
+    - id: ui-knowledge
+      name: '@deepseek-ai/dsh-client-ui-knowledge'

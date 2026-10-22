@@ -8,29 +8,14 @@
     "src"
   ],
   "references": [
-    {
-      "path": "../../../vendor/cordis"
-    },
-    {
-      "path": "../locale/tsconfig.client.json"
-    },
-    {
-      "path": "../ui-chat/tsconfig.client.json"
-    },
-    {
-      "path": "../ui-conversation/tsconfig.client.json"
-    },
-    {
-      "path": "../ui-input-trigger"
-    },
-    {
-      "path": "../ui-renderer"
-    },
-    {
-      "path": "../ui-sidebar-right"
-    },
-    {
-      "path": "../ui-slots"
-    }
+    { "path": "../../../vendor/cordis" },
+    { "path": "../locale/tsconfig.client.json" },
+    { "path": "../ui-chat/tsconfig.client.json" },
+    { "path": "../ui-conversation/tsconfig.client.json" },
+    { "path": "../ui-input-trigger" },
+    { "path": "../ui-primitives" },
+    { "path": "../ui-renderer" },
+    { "path": "../ui-sidebar-right" },
+    { "path": "../ui-slots" }
   ]
 }

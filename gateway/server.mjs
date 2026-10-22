@@ -258,7 +258,7 @@ function showRenew(error){
   renew.textContent='重新登录';
   renew.onclick=async()=>{await fetch('/__vh/logout',{method:'POST'});location.reload();};
   const skip=document.createElement('button');
-  skip.textContent='仍然进入（知识库不可用）';
+  skip.textContent='仍然进入（部分能力不可用）';
   skip.onclick=()=>location.replace('./');
   detail.append(document.createElement('br'),renew,skip);
 }
@@ -267,7 +267,7 @@ async function boot(){
   if(cfg.authenticated){
     // The session cookie outlives a gateway restart, but the VOS token lives
     // only in gateway memory. Replay it so capability endpoints (V-Office,
-    // WeKnora) keep working; a failed replay offers an explicit way out
+    // albums) keep working; a failed replay offers an explicit way out
     // instead of silently entering with dead capabilities.
     if(cfg.tokenReady===false){
       try{await authorize(cfg);}
@@ -326,6 +326,9 @@ async function requireUser(req, res) {
     json(res, 401, { error: 'unknown user' });
     return undefined;
   }
+  // Handed-out links must be absolute on the domain this tenant is browsing,
+  // and only this tenant's requests may say what that domain is.
+  rememberOrigin(req.headers, record.namespace);
   return record;
 }
 
@@ -491,6 +494,10 @@ async function handleControl(req, res, url) {
     const session = authenticate(req);
     if (session) {
       const user = { username: session.username, namespace: session.namespace };
+      // The page calls this on every load, which makes it the one place that
+      // reliably sees each tenant's real domain; recording it only on
+      // capability routes left the map empty until the user opened a file.
+      rememberOrigin(req.headers, session.namespace);
       console.log(`session ${session.username}: tokenReady=${String(hasUsableTokens(session.namespace))}`);
       if (hasUsableTokens(session.namespace)) {
         json(res, 200, { authenticated: true, user, tokenReady: true });
@@ -539,6 +546,33 @@ async function handleControl(req, res, url) {
     json(res, 200, { authenticated: false, clientId: CLIENT_ID, scope: SCOPE, csrf }, {
       'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
     });
+    return;
+  }
+
+  // Short editor link. The storage service's own URL embeds the WOPI source and
+  // a signed token, which runs to hundreds of characters; a chat client that
+  // wraps or truncates it drops the signature and the editor answers
+  // "unauthorized WOPI host". This path carries only the name and mints a fresh
+  // token on every click, so it stays short and never expires.
+  if (url.pathname === '/__vh/office/open' && req.method === 'GET') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    const name = (url.searchParams.get('name') ?? '').trim();
+    if (name === '') {
+      json(res, 400, { error: 'name-required' });
+      return;
+    }
+    try {
+      const link = await editorUrlFor(record.namespace, {
+        name,
+        edit: url.searchParams.get('readonly') !== '1',
+      });
+      res.writeHead(302, { location: link.editorUrl, 'cache-control': 'no-store' });
+      res.end();
+    } catch (error) {
+      console.error(`editor link failed (${record.namespace}):`, error?.message ?? error);
+      json(res, 502, { error: 'editor-unavailable', message: '编辑器地址暂时取不到，请稍后重试' });
+    }
     return;
   }
 
@@ -709,6 +743,10 @@ async function proxyRequest(req, res) {
     return;
   }
 
+  // This is the browser itself, not the instance behind it: its headers carry
+  // the domain this tenant is actually on.
+  rememberOrigin(req.headers, session.namespace);
+
   const instance = await instanceFor(session);
   if (!instance?.cookie) {
     res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
@@ -801,8 +839,6 @@ async function proxyUpgrade(req, socket, head) {
 }
 
 const server = createServer((req, res) => {
-  // Every request refreshes the origin a handed-out link must be absolute on.
-  rememberOrigin(req.headers);
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname.startsWith('/__vh/')) {
     void handleControl(req, res, url).catch((error) => {

@@ -11,9 +11,10 @@ x-v-harness-env: &v-harness-env
   IMAGE_STUDIO_BASE_URL: ${IMAGE_STUDIO_BASE_URL:-http://image-studio-backend:5000}
   VH_OFFICE_BASE: ${VH_OFFICE_BASE:-http://v-office-storage:5000}
   VH_ALBUM_URL: ${VH_ALBUM_URL:-http://172.17.0.1:1182/app/com.ictrek.ai-album/api}
-  # 知识库（WeKnora/HybRAG）不在本 compose 里，网关必须知道它实际监听的地址；
-  # 不设时网关只能退回内置探测地址，探测不到就是 503，面板会显示"读不到知识库列表"。
-  WEKNORA_URL: ${WEKNORA_URL:-http://172.17.0.1:29081}
+  # 知识库（HybRAG / com.ictrek.hybrag）与 v-harness 同在 vos_default 网络，
+  # 按 compose 别名直连后端 8080（容器内端口，不是宿主机映射的 29081），
+  # 不经过 VOS 网关的 /app 前缀，也就少一次 strip 转发。
+  WEKNORA_URL: ${WEKNORA_URL:-http://hybrag-app:8080}
   SESSION_TTL_MS: ${SESSION_TTL_MS:-43200000}
   DSH_PERMISSION_MODE: workspace-write
   NODE_ENV: production

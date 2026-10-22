@@ -96,6 +96,24 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
       packages/client/ui-user-questions/locale \
       /build/plugins/dsh-client-ui-user-questions/
 
+# Managed VOS model discovery and settings use local Host and Client builds.
+# These land in the same /build/plugins tree the runtime stage copies, so the
+# overlay loop below finds every package it names.
+RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
+ && pnpm exec tsc -b packages/client/ui-settings-models/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle \
+ && pnpm --filter @deepseek-ai/dsh-api-remotes bundle \
+ && for spec in \
+      client/ui-settings-models:dsh-client-ui-settings-models \
+      llm/llm-pi-ai:dsh-llm-pi-ai \
+      api/session-controller:dsh-api-session-controller \
+      api/remotes:dsh-api-remotes; do \
+      source="${spec%:*}"; name="${spec#*:}"; \
+      mkdir -p "/build/plugins/$name"; \
+      cp -R "packages/$source/package.json" "packages/$source/lib" "/build/plugins/$name/"; \
+      if [ -d "packages/$source/locale" ]; then cp -R "packages/$source/locale" "/build/plugins/$name/"; fi; \
+    done
+
 # ============================================================
 # Stage: agent-side tool plugins built from this repository
 # ============================================================
@@ -113,24 +131,7 @@ FROM plugins AS agent-plugins
 RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.txt) \
  && pnpm exec tsdown --config-loader native --config scripts/agent-plugins.tsdown.config.ts \
  && node --import tsx/esm scripts/stage-agent-plugins.ts \
-      --out /build/agent-plugins \
-      --plugin $(cat gateway/agent-plugins/plugins.txt)
-
-# Managed VOS model discovery and settings use local Host and Client builds.
-RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
- && pnpm exec tsc -b packages/client/ui-settings-models/tsconfig.json \
- && pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle \
- && pnpm --filter @deepseek-ai/dsh-api-remotes bundle \
- && for spec in \
-      client/ui-settings-models:dsh-client-ui-settings-models \
-      llm/llm-pi-ai:dsh-llm-pi-ai \
-      api/session-controller:dsh-api-session-controller \
-      api/remotes:dsh-api-remotes; do \
-      source="${spec%:*}"; name="${spec#*:}"; \
-      mkdir -p "/build/plugins/$name"; \
-      cp -R "packages/$source/package.json" "packages/$source/lib" "/build/plugins/$name/"; \
-      if [ -d "packages/$source/locale" ]; then cp -R "packages/$source/locale" "/build/plugins/$name/"; fi; \
-    done
+      --out /build/agent-plugins
 
 # ============================================================
 # Stage: runtime image
@@ -200,7 +201,7 @@ COPY --from=agent-plugins /build/agent-plugins/ /opt/v-harness/agent-plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
- && chmod 0755 /opt/v-harness/skills/voffice/scripts/voffice.mjs /opt/v-harness/skills/weknora/scripts/weknora.mjs /opt/v-harness/skills/album/scripts/album.mjs \
+ && chmod 0755 /opt/v-harness/skills/voffice/scripts/voffice.mjs /opt/v-harness/skills/album/scripts/album.mjs /opt/v-harness/skills/weknora/scripts/weknora.mjs \
  && chown -R root:root /opt/v-harness/bin \
  && printf 'root ALL=(root) NOPASSWD: /opt/v-harness/bin/vh-userctl, /opt/v-harness/bin/vh-file\n' > /etc/sudoers.d/vh \
  && chmod 0440 /etc/sudoers.d/vh
