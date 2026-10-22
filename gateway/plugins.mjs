@@ -50,7 +50,8 @@ export async function syncClientPlugins(user) {
     // Default profiles resolve bundled packages from the shared installation.
     // Docker installs the matching artifacts there before any tenant starts.
     if (!(await exists(join(target, 'package.json')))) {
-      if (!(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) throw new Error(`installed plugin missing: ${name}`)
+      if (['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller'].includes(name)
+          && !(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) throw new Error(`installed plugin missing: ${name}`)
       continue
     }
     try {

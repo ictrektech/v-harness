@@ -149,7 +149,8 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-RUN for source in /opt/v-harness/plugins/*; do \
+RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller; do \
+      source="/opt/v-harness/plugins/$name"; \
       target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$(basename "$source")"; \
       test -f "$target/package.json"; \
       cp -R "$source/lib/." "$target/lib/"; \
