@@ -57,7 +57,9 @@ autoInstallPeers: false
 
 /** Plugins shipped from this repository, by package name. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
-const BUNDLED = ['dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', ...MANAGED]
+// dsh-client-locale rides along because the VOS language following postdates
+// the published dsh the image installs; the profile copy is refreshed too.
+const BUNDLED = ['dsh-client-locale', 'dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', ...MANAGED]
 
 /**
  * Create the tenant's profile directory before dsh's first boot when it does

@@ -96,6 +96,15 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
       packages/client/ui-user-questions/locale \
       /build/plugins/dsh-client-ui-user-questions/
 
+# The locale plugin follows the language VOS publishes (the vos_platform
+# bridge and the stamped preferences-locale entry). That support postdates
+# the published dsh the runtime stage installs, so the image builds it from
+# this repository and gateway/plugins.mjs overlays the profile's copy.
+RUN pnpm exec tsc -b packages/client/locale/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-locale bundle \
+ && mkdir -p /build/plugins/dsh-client-locale \
+ && cp -R packages/client/locale/package.json packages/client/locale/lib /build/plugins/dsh-client-locale/
+
 # Managed VOS model discovery and settings use local Host and Client builds.
 # These land in the same /build/plugins tree the runtime stage copies, so the
 # overlay loop below finds every package it names.
@@ -186,7 +195,7 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes; do \
+RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes dsh-client-locale; do \
       source="/opt/v-harness/plugins/$name"; \
       target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$(basename "$source")"; \
       test -f "$target/package.json"; \
