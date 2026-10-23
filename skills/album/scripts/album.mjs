@@ -39,8 +39,11 @@ import { pipeline } from 'node:stream/promises'
 
 const SOCKET_ENV = 'VH_ALBUM_SOCK'
 const REQUEST_TIMEOUT_MS = 120_000
+/** Error bodies are diagnostics: keep a sample, never the whole payload. */
 const ERROR_BODY_LIMIT = 4_096
-const THUMB_DIR = 'album-thumbs'
+/** Result bodies carry the photo list and must be read whole (14 assets ≈ 13 KB). */
+const RESULT_BODY_LIMIT = 8 * 1024 * 1024
+const THUMB_DIR = process.env.ALBUM_THUMB_DIR ?? 'album-thumbs'
 const THUMB_SIZES = new Set(['thumb', 'preview', 'full'])
 
 class UsageError extends Error {}
@@ -102,15 +105,20 @@ function resolveInWorkspace(target) {
 
 /**
  * Read a response body as JSON when possible, as text otherwise.
+ *
+ * `limit` exists because the two callers want opposite things: an error body is
+ * a diagnostic and may be truncated, while a successful result must be read
+ * whole — truncating it turns a valid list into unparsable text.
  * @param {import('node:http').IncomingMessage} response
+ * @param {number} [limit] maximum bytes to buffer.
  * @returns {Promise<unknown>}
  */
-async function readBody(response) {
+async function readBody(response, limit = ERROR_BODY_LIMIT) {
   const chunks = []
   let size = 0
   for await (const chunk of response) {
     size += chunk.length
-    if (size > ERROR_BODY_LIMIT) break
+    if (size > limit) break
     chunks.push(chunk)
   }
   const text = Buffer.concat(chunks).toString('utf8').trim()
@@ -120,6 +128,25 @@ async function readBody(response) {
   } catch {
     return text
   }
+}
+
+/**
+ * Parse one successful body, failing loudly when it is not a JSON document.
+ *
+ * Silently degrading an unreadable result to `{}` is what made a full album
+ * look empty: callers must learn that the answer was lost, not receive a
+ * plausible zero.
+ * @param {unknown} body - result of {@link readBody}.
+ * @returns {Record<string, unknown> | unknown[]} the document, or `{}` when
+ *   the endpoint legitimately answered without a body.
+ */
+function resultObject(body) {
+  if (body === undefined) return {}
+  if (typeof body === 'string') {
+    throw new UsageError(`相册返回了无法解析的响应：${body.slice(0, 200)}`)
+  }
+  if (Array.isArray(body)) return body
+  return typeof body === 'object' && body !== null ? body : {}
 }
 
 /**
@@ -208,8 +235,7 @@ async function getJson(transport, path) {
   request.end()
   const resolved = await response
   await ensureOk(resolved)
-  const body = await readBody(resolved)
-  return body && typeof body === 'object' ? body : {}
+  return resultObject(await readBody(resolved, RESULT_BODY_LIMIT))
 }
 
 /**
@@ -230,8 +256,7 @@ async function postJson(transport, path, payload) {
   request.end(data)
   const resolved = await response
   await ensureOk(resolved)
-  const body = await readBody(resolved)
-  return body && typeof body === 'object' ? body : {}
+  return resultObject(await readBody(resolved, RESULT_BODY_LIMIT))
 }
 
 /**
@@ -325,17 +350,18 @@ async function withThumb(transport, asset, size) {
  */
 async function withThumbs(transport, assets, limit) {
   const count = Math.max(0, Math.min(limit, assets.length, 6))
+  let failures = 0
   for (const asset of assets.slice(0, count)) {
     try {
       const shaped = await withThumb(transport, asset, 'preview')
       Object.assign(asset, { thumbPath: shaped.thumbPath })
     } catch (error) {
-      // 单张缩略图取不到不影响列表，只是没有本地预览文件。
-      if (error instanceof UsageError && (error.status === 404 || error.status === 403)) continue
-      throw error
+      // 单张缩略图取不到只少一张预览：列表本身仍然有效，失败数如实上报。
+      // 整个命令因一张预览失败而报废，比缺一张图糟得多（线上发生过）。
+      if (!(error instanceof Error && error.name === 'AbortError')) failures += 1
     }
   }
-  return assets
+  return { failures }
 }
 
 /**
@@ -405,8 +431,11 @@ async function run(argv) {
     const assets = Array.isArray(body.assets?.items)
       ? body.assets.items
       : Array.isArray(body.assets) ? body.assets : []
-    const shaped = await withThumbs(transport, assets.map(shapeAsset), thumbs)
-    return { ok: true, total: shaped.length, assets: shaped, hint }
+    const list = assets.map(shapeAsset)
+    const { failures } = await withThumbs(transport, list, thumbs)
+    const result = { ok: true, total: list.length, assets: list, hint }
+    if (failures > 0) result.thumbFailures = failures
+    return result
   }
 
   if (command === 'person') {
@@ -522,7 +551,7 @@ async function run(argv) {
     request.end(body)
     const resolved = await response
     await ensureOk(resolved)
-    const payload = await readBody(resolved)
+    const payload = await readBody(resolved, RESULT_BODY_LIMIT)
     const id = Array.isArray(payload) ? payload[0]?.id : payload?.id
     const duplicated = Array.isArray(payload) ? payload[0]?.duplicate : payload?.duplicate
     const result = { ok: true, id, duplicate: duplicated === true, name, size: stats.size }
