@@ -40,7 +40,7 @@
   min-width: 0;
   height: 40px;
   padding: 0 12px;
-  border: 1px solid var(--dsw-alias-border-l);
+  border: 1px solid var(--dsw-alias-border-l4);
   border-radius: 12px;
   background: var(--form-fill);
   color: var(--dsw-alias-label-primary);
@@ -62,7 +62,7 @@
   min-height: 84px;
   padding: 10px 12px;
   resize: vertical;
-  border: 1px solid var(--dsw-alias-border-l);
+  border: 1px solid var(--dsw-alias-border-l4);
   border-radius: 12px;
   background: var(--form-fill);
   color: var(--dsw-alias-label-primary);
