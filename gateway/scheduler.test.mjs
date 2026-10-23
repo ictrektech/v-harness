@@ -60,8 +60,10 @@ test('declared endpoints are authoritative; chat, responses, messages and comple
     { qualified: 'kind-chat', kind: 'chat' },
     { qualified: 'kind-embedding', kind: 'embedding' },
     { qualified: 'unknown' },
+    { qualified: 'upstream-unknown', kind: 'unknown', upstream_id: 'ictrek' },
+    { qualified: 'upstream-embedding', kind: 'embedding', upstream_id: 'ml-server' },
   ] });
-  assert.deepEqual(models.map(row => row.id), ['a', 'b', 'c', 'd', 'e', 'kind-chat']);
+  assert.deepEqual(models.map(row => row.id), ['a', 'b', 'c', 'd', 'e', 'kind-chat', 'upstream-unknown']);
   assert.equal(models[3].api, 'text-completions');
   assert.throws(() => schedulerModels({ data: [] }), /Invalid/);
 });

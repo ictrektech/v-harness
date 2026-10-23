@@ -32,6 +32,10 @@ export function schedulerModels(payload) {
     else if (endpoints.some(e => ['completions', 'completion'].includes(e))) api = 'text-completions';
     else if (!endpoints.length && (capabilities.some(c => ['chat', 'completion', 'completions', 'generate', 'generation', 'tools', 'thinking'].includes(c))
       || !capabilities.length && ['chat', 'completion', 'completions'].includes(normalized(row.kind)))) api = 'openai-completions';
+    // An upstream-routed model of undeclared kind is still a chat model: the
+    // scheduler answers it through its upstream, so inference works even
+    // though neither endpoints nor capabilities say anything usable.
+    else if (!endpoints.length && !capabilities.length && normalized(row.kind) === 'unknown' && row.upstream_id) api = 'openai-completions';
     const id = row.qualified ?? row.id;
     if (!api || typeof id !== 'string' || !id) return [];
     return [{ id, name: row.name ?? id, api, input: capabilities.includes('vision') ? ['text', 'image'] : ['text'] }];
