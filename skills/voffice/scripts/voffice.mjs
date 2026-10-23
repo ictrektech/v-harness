@@ -38,7 +38,10 @@ const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 const MAX_NAME_LEN = 200
 const SOCKET_ENV = 'VH_OFFICE_SOCK'
 const REQUEST_TIMEOUT_MS = 300_000
+/** Error bodies are diagnostics: keep a sample, never the whole payload. */
 const ERROR_BODY_LIMIT = 4_096
+/** Result bodies (file listings) must be read whole; truncation turns them into noise. */
+const RESULT_BODY_LIMIT = 8 * 1024 * 1024
 
 class UsageError extends Error {}
 
@@ -126,12 +129,12 @@ function resolveInWorkspace(target) {
  * @param {import('node:http').IncomingMessage} response
  * @returns {Promise<unknown>}
  */
-async function readBody(response) {
+async function readBody(response, limit = ERROR_BODY_LIMIT) {
   const chunks = []
   let size = 0
   for await (const chunk of response) {
     size += chunk.length
-    if (size > ERROR_BODY_LIMIT) break
+    if (size > limit) break
     chunks.push(chunk)
   }
   const text = Buffer.concat(chunks).toString('utf8').trim()
@@ -141,6 +144,24 @@ async function readBody(response) {
   } catch {
     return text
   }
+}
+
+/**
+ * Parse one successful body, failing loudly when it is not a JSON document.
+ *
+ * A truncated listing must surface as an error: degrading it to `{}` would
+ * report an empty document directory that is in fact full.
+ * @param {unknown} body - result of {@link readBody}.
+ * @returns {Record<string, unknown> | unknown[]} the document, or `{}` when
+ *   the endpoint legitimately answered without a body.
+ */
+function resultObject(body) {
+  if (body === undefined) return {}
+  if (typeof body === 'string') {
+    throw new UsageError(`V-Office 返回了无法解析的响应：${body.slice(0, 200)}`)
+  }
+  if (Array.isArray(body)) return body
+  return typeof body === 'object' && body !== null ? body : {}
 }
 
 /**
@@ -240,8 +261,7 @@ async function getJson(transport, path) {
   request.end()
   const resolved = await response
   await ensureOk(resolved)
-  const body = await readBody(resolved)
-  return body && typeof body === 'object' ? body : {}
+  return resultObject(await readBody(resolved, RESULT_BODY_LIMIT))
 }
 
 /**
