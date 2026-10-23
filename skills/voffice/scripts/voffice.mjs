@@ -254,7 +254,7 @@ async function getJson(transport, path) {
  */
 async function editorLink(transport, name, options = {}) {
   const params = new URLSearchParams({ name, edit: options.readonly ? '0' : '1' })
-  // 下面 body.url 会被归一化成门户相对路径，原因见 browserLink。
+  // 下面 body.url 会被归一化成门户短链接，原因见 openLink。
   if (options.lang) params.set('lang', options.lang)
   // 非 0 版本号换 docKey，逼 Collabora 丢弃内存副本重新读盘：
   // 云端文件刚被覆盖、旧编辑会话还开着时用它。
@@ -265,7 +265,11 @@ async function editorLink(transport, name, options = {}) {
   }
   return {
     name: typeof body.name === 'string' ? body.name : name,
-    url: absoluteLink(body.url, await portalOrigin(transport)),
+    url: await openLink(transport, name, {
+      readonly: options.readonly === true,
+      lang: options.lang,
+      fresh: options.fresh === true,
+    }),
     canWrite: body.canWrite !== false,
     expiresIn: typeof body.expiresIn === 'number' ? body.expiresIn : 3600,
   }
@@ -283,10 +287,13 @@ async function editorLink(transport, name, options = {}) {
  * @param {string} url - what the storage service returned.
  * @returns the portal-relative path, or the original URL when it is not ours.
  */
-async function sharedLink(transport, name, readonly) {
-  const query = new URLSearchParams({ name })
-  if (readonly) query.set('readonly', '1')
-  const path = `/__vh/office/open?${query.toString()}`
+async function openLink(transport, name, { readonly = false, lang, fresh = false } = {}) {
+  const params = new URLSearchParams({ name })
+  // 网关的 /open 路由用 edit=0 表示只读（readonly 参数它不认）。
+  if (readonly) params.set('edit', '0')
+  if (lang) params.set('lang', lang)
+  if (fresh) params.set('v', String(Math.floor(Date.now() / 1000)))
+  const path = `/__vh/office/open?${params.toString()}`
   const origin = await portalOrigin(transport)
   // A loopback origin is the instance talking to itself, never a place the
   // user can be sent; hand back the bare path instead of a dead host.
@@ -334,7 +341,7 @@ async function withViewLinks(transport, files, limit) {
       // Probe once so an unsupported type is simply left without a link, then
       // hand out the portal's short path instead of the long signed URL.
       await editorLink(transport, name, { readonly: true })
-      file.viewUrl = await sharedLink(transport, name, true)
+      file.viewUrl = await openLink(transport, name, { readonly: true })
     } catch (error) {
       // editor-link 不可用（旧版上游/该文件类型不支持）时列表照常返回，
       // 只是没有可点的预览链接。
@@ -485,7 +492,7 @@ async function run(argv) {
       return {
         ok: true,
         name: link.name,
-        url: await sharedLink(transport, name, readonly),
+        url: await openLink(transport, name, { readonly }),
         canWrite: link.canWrite,
         // The short link re-signs on every click, so it does not expire.
         expiresIn: 0,
@@ -501,7 +508,7 @@ async function run(argv) {
       return {
         ok: true,
         name,
-        url: await sharedLink(transport, name, readonly),
+        url: await openLink(transport, name, { readonly }),
         canWrite: !readonly,
         expiresIn: 0,
         hint: '把 url 原样放进 markdown 链接给用户（[在线编辑](url)）。点开即进入在线编辑，保存直接写回「我的文档」。',
