@@ -34,7 +34,7 @@ TARGET_SHEET_TITLES=()
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 # Debian package mirror for the build stage; an empty value keeps the base
 # image's own sources.
-APT_MIRROR="${APT_MIRROR:-mirrors.aliyun.com}"
+APT_MIRROR="${APT_MIRROR:-mirrors.huaweicloud.com}"
 
 PUSH_IMAGES=1
 UPDATE_FEISHU=1

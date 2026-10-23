@@ -142,7 +142,7 @@ ARG DSH_VERSION=0.2.1-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.
-ARG APT_MIRROR=mirrors.aliyun.com
+ARG APT_MIRROR=mirrors.huaweicloud.com
 
 ENV NODE_ENV=production \
     DATA_ROOT=/data \
