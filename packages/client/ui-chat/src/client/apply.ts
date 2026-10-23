@@ -243,6 +243,7 @@ export function apply(ctx: Context): void {
         return {
           ...nodeSources(binding),
           fileMentions: (owner: TurnTailOwnerProps) => ctx.get('chatFileMentions')?.forClosing(owner, sessionId),
+          inlineMarks: (owner: TurnTailOwnerProps) => ctx.get('chatInlineMarks')?.forClosing(owner),
           // Files open in the right Sidebar, not in a desktop application: the
           // content stays in the product, beside the conversation that produced
           // it. A relative path, or an absolute one inside the session's

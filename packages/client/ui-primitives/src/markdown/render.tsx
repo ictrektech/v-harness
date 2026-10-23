@@ -179,6 +179,23 @@ export interface MarkdownFileMentions {
 }
 
 /**
+ * Inline marks for prose: the owner recognizes markers inside an ordinary text
+ * run — a citation number, a badge — and replaces that run with nodes of its
+ * own. The renderer carries no vocabulary of its own, so an absent owner keeps
+ * every run as the literal string the author wrote.
+ */
+export interface MarkdownInlineMarks {
+  /**
+   * Decorate one prose run. Called only outside anchors, and only for settled
+   * documents: a streaming run has no final vocabulary to bake in.
+   * @param text - The run exactly as written.
+   * @param key - The render key of the run's position in its block.
+   * @returns Nodes replacing the run, or undefined to keep it as plain text.
+   */
+  resolve(text: string, key: Key): ReactNode | undefined
+}
+
+/**
  * One render pass's state: immutable options and targets plus the footnote
  * numbering accumulated in document order while references render.
  */
@@ -187,6 +204,8 @@ export interface MarkdownRenderContext {
   readonly streaming: boolean
   /** Localized fence copy-button labels. */
   readonly labels: MarkdownLabels
+  /** Prose mark vocabulary; absent wherever no owner recognizes markers. */
+  readonly marks: MarkdownInlineMarks | undefined
   /** Inside a blockquote's children: tables there always fill the quote's width. */
   readonly inBlockquote?: boolean
   /** Inline-code file mentions; absent wherever no opener vocabulary exists. */
@@ -272,8 +291,12 @@ function renderChildren(
 
 function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderContext): ReactNode {
   switch (node.type) {
-    case 'text':
-      return node.value
+    case 'text': {
+      // Inside an anchor the run stays literal: a mark that opens its source
+      // would nest an interactive element in a link.
+      const marks = context.inLink === true ? undefined : context.marks
+      return marks?.resolve(node.value, key) ?? node.value
+    }
     case 'paragraph':
       return <p key={key}>{renderChildren(node.children, context)}</p>
     case 'heading':

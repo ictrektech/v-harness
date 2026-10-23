@@ -1,0 +1,25 @@
+/* The one badge recipe: a source row's number and the `[n]` in prose that
+   points at it are the same mark, so they cannot drift apart. */
+
+.badge {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border: 0.5px solid color-mix(in srgb, var(--dsw-alias-link) 22%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--dsw-alias-link) 8%, transparent);
+  color: var(--dsw-alias-link);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* In a sentence: clear of the glyphs on both sides, raised to sit on the
+   text's baseline rather than the line box's. */
+.prose {
+  margin: 0 2px;
+  vertical-align: 2px;
+}

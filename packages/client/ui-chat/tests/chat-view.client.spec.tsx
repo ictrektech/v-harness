@@ -514,6 +514,8 @@ function makeHarness(
     forkAt,
     // Absent-service default; mention tests override with a real resolver.
     fileMentions: () => undefined,
+    // Absent-service default; prose-mark tests override with a real vocabulary.
+    inlineMarks: () => undefined,
     t,
   }
   const set = (next: HarnessUpdate): void => {
@@ -712,6 +714,28 @@ describe('Chat node rendering', () => {
     fireEvent.click(mention)
     // The vocabulary was built from the closing message's own owner currency.
     expect(h.openFile).toHaveBeenCalledWith('for-seq-4/site/report.html')
+  })
+
+  it('threads the injected prose-mark vocabulary into the closing prose only', () => {
+    const h = makeHarness({
+      nodes: [
+        user(1, '试用期有年假吗'),
+        assistant(2, '先查一下[1]', 1),
+        assistant(4, '年假 5 天[1]。', 1),
+      ],
+      turnEnds: new Map([[1, 4]]),
+    })
+    // The vocabulary is asked once, with the closing message's own owner
+    // currency: the mid-turn narration keeps its marker as written.
+    h.props.inlineMarks = owner => ({
+      resolve: (text, key) => text.includes('[1]')
+        ? [<mark key={String(key)}>{`[${String(owner.seq)}]`}</mark>]
+        : undefined,
+    })
+    const view = render(<h.ChatView {...h.props} />)
+    const marks = view.container.querySelectorAll('mark')
+    expect(marks).toHaveLength(1)
+    expect(marks[0]?.textContent).toBe('[4]')
   })
 
   it('formatRunDuration localizes units and floors partial seconds', () => {

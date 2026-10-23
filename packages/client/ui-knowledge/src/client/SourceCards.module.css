@@ -61,13 +61,14 @@
 
 .rowTitle {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
 .document {
   overflow: hidden;
+  flex: 1 1 auto;
   color: var(--dsw-alias-label-primary);
   font-size: 12px;
   line-height: 18px;

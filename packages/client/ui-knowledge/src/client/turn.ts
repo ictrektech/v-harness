@@ -151,6 +151,7 @@ function fromPrinted(row: unknown): Citation | undefined {
   return {
     chunkId,
     knowledgeId: text(row.knowledge_id) ?? '',
+    knowledgeBaseId: text(row.knowledge_base_id) ?? '',
     title: text(row.title) ?? '',
     chunkIndex: indexOf(row.chunk_index),
     score: typeof row.score === 'number' ? row.score : 0,

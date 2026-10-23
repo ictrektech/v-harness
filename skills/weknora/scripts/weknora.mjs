@@ -355,10 +355,10 @@ function citation(row) {
   return {
     chunk_id: row.id,
     knowledge_id: row.knowledge_id,
+    knowledge_base_id: row.knowledge_base_id ?? '',
     title: row.knowledge_title || row.title || '',
     chunk_index: row.chunk_index ?? 0,
     score: row.score ?? 0,
-    match_type: row.match_type ?? '',
     snippet: snippet(row.content),
   }
 }

@@ -3,9 +3,11 @@
  *
  * It is the whole knowledge surface after the question is asked: one row per
  * passage the run actually retrieved, with the document title, the chunk
- * position, and the opening of the text. Clicking a row expands it to the real
- * chunk in place — no side panel, because the user is reading the answer and
- * the source should open where their eyes already are.
+ * position, and the opening of the text. Rows are numbered in retrieval order,
+ * so the `[1]` an answer writes points at the first row of this card and at
+ * nothing else. Clicking a row expands it to the real chunk in place — no side
+ * panel, because the user is reading the answer and the source should open
+ * where their eyes already are.
  *
  * @module @deepseek-ai/dsh-client-ui-knowledge/client
  */
@@ -14,6 +16,7 @@ import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { readDocument, type Chunk, type Citation } from './api.ts'
 import { selectCitations } from './turn.ts'
+import badge from './MarkBadge.module.css'
 import css from './SourceCards.module.css'
 
 /** Passage rows shown before the rest collapse into one "more" row. */
@@ -72,7 +75,7 @@ export function SourceCards(props: SourceCardsProps): ReactNode {
         <span className={css.count}>{t('sources.count', { count: String(citations.length) })}</span>
       </header>
       <ul className={css.list}>
-        {shown.map(citation => (
+        {shown.map((citation, position) => (
           <li key={citation.chunkId}>
             <button
               className={open === citation.chunkId ? `${css.row} ${css.rowOpen}` : css.row}
@@ -80,6 +83,7 @@ export function SourceCards(props: SourceCardsProps): ReactNode {
               type="button"
             >
               <span className={css.rowTitle}>
+                <span className={badge.badge}>{String(position + 1)}</span>
                 <span className={css.document}>{citation.title}</span>
                 <span className={css.index}>{`#${String(citation.chunkIndex)}`}</span>
               </span>

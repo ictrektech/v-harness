@@ -41,6 +41,8 @@ export interface Document {
 export interface Citation {
   readonly chunkId: string
   readonly knowledgeId: string
+  /** The library this document belongs to; empty when the server omits it. */
+  readonly knowledgeBaseId: string
   readonly title: string
   readonly chunkIndex: number
   readonly score: number
@@ -234,6 +236,7 @@ export function citationOf(row: unknown): Citation | undefined {
   return {
     chunkId,
     knowledgeId: text(row.knowledge_id) ?? '',
+    knowledgeBaseId: text(row.knowledge_base_id) ?? '',
     title: text(row.knowledge_title) ?? '',
     chunkIndex: indexOf(row.chunk_index),
     score: typeof row.score === 'number' ? row.score : 0,

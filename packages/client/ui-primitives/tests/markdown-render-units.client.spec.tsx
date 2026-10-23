@@ -21,6 +21,7 @@ function makeContext(): MarkdownRenderContext {
   return {
     streaming: false,
     labels: markdownLabels,
+    marks: undefined,
     fileMentions: undefined,
     pathImages: undefined,
     targets: createReferenceTargets(),

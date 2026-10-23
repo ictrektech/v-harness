@@ -15,7 +15,7 @@ import type {
   PropsRenderFactories, PropsStore, SlotHookFactory, SnapshotSelectorHook,
 } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
-import type { MarkdownFileMentions, MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MarkdownFileMentions, MarkdownInlineMarks, MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // Type-only: the Session-scope access Hook (`useAccess`) the Chat entries read.
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
@@ -139,10 +139,22 @@ export interface ChatFileMentions {
   forClosing(owner: TurnTailOwnerProps, sessionId: SessionId): MarkdownFileMentions | undefined
 }
 
+/** Optional prose mark provider consumed by Chat. */
+export interface ChatInlineMarks {
+  /**
+   * Resolve prose marks for one closing Turn.
+   * @param owner - closing-Turn identity and its settled seq.
+   * @returns the mark vocabulary when this Turn needs one.
+   */
+  forClosing(owner: TurnTailOwnerProps): MarkdownInlineMarks | undefined
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Optional prose file-mention provider. */
     chatFileMentions: ChatFileMentions
+    /** Optional prose mark provider; absent means every run stays literal. */
+    chatInlineMarks: ChatInlineMarks
   }
 }
 
@@ -218,6 +230,8 @@ export interface ChatNodeOwnerProps {
   /** Session-authorized image loader supplied by the Chat view. */
   loadImage: MessageImageLoader
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
+  /** Prose marks for this Node's closing Turn, when a provider recognizes them. */
+  inlineMarks: (owner: TurnTailOwnerProps) => MarkdownInlineMarks | undefined
   /** Turn-process state when this Node belongs to a projected Turn. */
   turnProcess?: TurnProcessOwnerProps | undefined
 }
@@ -323,6 +337,7 @@ export interface ChatViewInjected {
   }
   forkAt: (seq: number) => void
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
+  inlineMarks: (owner: TurnTailOwnerProps) => MarkdownInlineMarks | undefined
 }
 
 /** Existing Session-owned node sources shared by the view and its flow renderer. */
@@ -330,7 +345,7 @@ export type ChatFlowDataInjected = Pick<ChatViewInjected, 'hooks' | 'keyedHooks'
 
 /** Ordered rows and reconciled local echoes rendered inside one Chat viewport. */
 export interface ChatFlowOwnerProps extends Pick<ChatNodeOwnerProps,
-  'cwd' | 'openFile' | 'inspectCall' | 'forkAt' | 'loadImage' | 'fileMentions'> {
+  'cwd' | 'openFile' | 'inspectCall' | 'forkAt' | 'loadImage' | 'fileMentions' | 'inlineMarks'> {
   readonly entries: readonly RenderEntry[]
   readonly pendingInputs: readonly (PendingSubmission | InboxState['next-step'][number])[]
   readonly lastInputTurn: number | undefined

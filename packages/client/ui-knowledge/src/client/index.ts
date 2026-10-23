@@ -1,11 +1,11 @@
 /**
- * Web knowledge-base surface: the `@` scope pick, the model the answer runs
- * on, and the passages card under an answer.
+ * Web knowledge-base surface: the `@` scope pick, the `[n]` marks inside an
+ * answer, and the passages card under it.
  *
  * There is no knowledge-base page. Choosing a library (or one of its
  * documents) happens in the message through `@`, and what the run actually
- * retrieved appears under the reply it grounded — the two places the user is
- * already looking.
+ * retrieved appears twice, from one array: as a numbered mark where the answer
+ * cites it, and as the numbered row that opens the passage.
  *
  * @module @deepseek-ai/dsh-client-ui-knowledge/client
  */
@@ -18,6 +18,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { KnowledgeBaseChip, KnowledgeDocumentChip } from './KnowledgeChip.tsx'
 import { en, NS, zh } from './locales.ts'
+import { knowledgeMarks } from './marks.tsx'
 import { baseScopeRule, documentScopeRule } from './markers.ts'
 import { knowledgeSource } from './source.ts'
 import { SourceCards } from './SourceCards.tsx'
@@ -63,4 +64,9 @@ export function apply(ctx: ClientContext): void {
     id: TAIL_ID,
     locale: NS,
   }, SourceCards)), 'ui-knowledge: source cards')
+
+  // The prose side of the same facts: the chat view reaches this face through
+  // ctx.get, so its absence — this plugin composed out — leaves every `[n]` as
+  // the text the model wrote.
+  ctx.provide('chatInlineMarks', knowledgeMarks())
 }
