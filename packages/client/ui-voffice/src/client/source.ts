@@ -1,17 +1,21 @@
 /**
  * The `@` V-Office document source.
  *
- * One level: typing after `@` lists the documents in this user's own V-Office
- * folder, filtered as the user types. A settling pick inserts an atomic
- * reference, so the turn carries the document as a fact rather than a name the
- * run hopes to remember; the drill action (Tab, or the row's chevron) opens
- * that document in an online editor instead, and hands the pick back as
- * handled so the draft is left untouched.
+ * One menu, two levels, the shape the knowledge source already uses: typing
+ * after `@` offers one row naming the user's own folder, and opening that row
+ * descends into the documents. The level lives in the text the user can see and
+ * undo (`@我的文档/`), so backing out is ordinary editing rather than a hidden
+ * mode, and the folder listing is fetched only once the menu descends.
+ *
+ * A settling pick inside the folder inserts an atomic reference, so the turn
+ * carries the document as a fact rather than a name the run hopes to remember.
+ * The drill action (Tab, or the row's chevron) opens that document in an online
+ * editor instead and hands the pick back as handled, leaving the draft alone.
  *
  * @module @deepseek-ai/dsh-client-ui-voffice/client
  */
 import type {
-  InputTriggerCandidate, InputTriggerSource,
+  InputTriggerCandidate, InputTriggerCrumb, InputTriggerSource,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { failureOf, listDocuments, openDocument } from './api.ts'
 import type { VofficeKey } from './locales.ts'
@@ -19,6 +23,9 @@ import { markerOf } from './markers.ts'
 
 /** Rows one menu may render; the listing itself is never truncated upstream. */
 const ROW_LIMIT = 100
+
+/** Menu value that returns a descended menu to the folder level. */
+const ROOT = 'voffice-root'
 
 /** Dictionary-bound translate. */
 export type Translate = (key: VofficeKey) => string
@@ -62,7 +69,56 @@ function describeOf(name: string, t: Translate): string {
  * @returns one inert candidate.
  */
 function noticeRow(name: string, description: string): InputTriggerCandidate {
-  return { name, description, section: '', icon: 'file', value: '' }
+  return { name, description, icon: 'file', value: '' }
+}
+
+/**
+ * The only row the menu opens on: the folder itself.
+ * @param t - the V-Office dictionary.
+ * @returns the descendable folder row.
+ */
+function folderRow(t: Translate): InputTriggerCandidate {
+  return {
+    name: t('source.root'),
+    label: t('source.root'),
+    description: t('source.rootHint'),
+    icon: 'folder',
+    value: ROOT,
+    drill: true,
+  }
+}
+
+/**
+ * Rows inside the folder, filtered by what the user typed after the slash.
+ * @param keyword - text typed after the folder token.
+ * @param signal - aborted when the user keeps typing or closes the menu.
+ * @param t - the V-Office dictionary.
+ * @returns the document rows, or one inert notice row.
+ */
+async function documentRows(
+  keyword: string,
+  signal: AbortSignal,
+  t: Translate,
+): Promise<readonly InputTriggerCandidate[]> {
+  const list = await listDocuments(signal)
+  if (list === undefined) {
+    // An aborted request is a superseded one, not a failure to report.
+    if (signal.aborted) return []
+    return [noticeRow(t('source.failed'), failureOf() ?? '')]
+  }
+  if (list.length === 0) return [noticeRow(t('source.empty'), '')]
+  const needle = keyword.trim().toLowerCase()
+  const matched = needle === '' ? list : list.filter(file => file.name.toLowerCase().includes(needle))
+  if (matched.length === 0) return [noticeRow(t('source.empty'), '')]
+  return matched.slice(0, ROW_LIMIT).map(file => ({
+    name: file.name,
+    label: file.name,
+    description: describeOf(file.name, t),
+    icon: 'file' as const,
+    value: file.name,
+    // Tab and the row chevron open the document instead of inserting it.
+    drill: true,
+  }))
 }
 
 /**
@@ -80,32 +136,31 @@ export function vofficeSource(t: Translate): InputTriggerSource {
     showGroupTitle: false,
 
     async candidates(_session, { query, signal }) {
-      const list = await listDocuments(signal)
-      if (list === undefined) {
-        // An aborted request is a superseded one, not a failure to report.
-        if (signal.aborted) return []
-        return [noticeRow(t('source.failed'), failureOf() ?? '')]
-      }
-      if (list.length === 0) return [noticeRow(t('source.empty'), '')]
-      const needle = pathOf(query).trim().toLowerCase()
-      const matched = needle === '' ? list : list.filter(file => file.name.toLowerCase().includes(needle))
-      if (matched.length === 0) return [noticeRow(t('source.empty'), '')]
-      return matched.slice(0, ROW_LIMIT).map(file => ({
-        name: file.name,
-        label: file.name,
-        description: describeOf(file.name, t),
-        section: t('source.section'),
-        icon: 'file' as const,
-        value: file.name,
-        // Tab and the row chevron open the document instead of inserting it.
-        drill: true,
-      }))
+      const path = pathOf(query)
+      const slash = path.indexOf('/')
+      // The folder level costs no request: it is one row the user descends.
+      if (slash === -1) return [folderRow(t)]
+      return documentRows(path.slice(slash + 1), signal, t)
+    },
+
+    header(_session, { query }): readonly InputTriggerCrumb[] | undefined {
+      const path = pathOf(query)
+      const slash = path.indexOf('/')
+      // Only a descent owes a way back; text the user typed carries its own
+      // context in the draft.
+      if (slash === -1) return undefined
+      return [{ label: t('source.root'), value: ROOT }]
     },
 
     onPick({ candidate, action }) {
       const name = candidate.value
       // Notice rows carry no value: claiming one would insert an empty ref.
       if (name === undefined || name === '') return undefined
+      if (name === ROOT) {
+        // The only thing the folder row can do is open the folder, whether the
+        // user settled it or drilled into it.
+        return { text: `@${t('source.root')}/`, continue: true }
+      }
       if (action === 'drill') {
         openDocument(name)
         // The draft keeps whatever the user typed; only the editor tab opens.

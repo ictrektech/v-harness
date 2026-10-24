@@ -6,6 +6,9 @@ import { vofficeSource } from '../src/client/source.ts'
 /** Translate to the key itself: assertions then name the key, not the copy. */
 const t = (key: string): string => key
 
+/** Folder token as the descended draft carries it, under {@link t}. */
+const FOLDER = 'source.root'
+
 /** One mounted composer session. */
 const session = { sessionId: 'session-1' } as unknown as ClientSessionContext
 
@@ -36,23 +39,50 @@ function pick(candidate: { name: string; value?: string }, action: 'pick' | 'dri
 
 afterEach(() => { vi.unstubAllGlobals() })
 
-describe('the V-Office @ source', () => {
-  it('lists the user documents and filters them as the query grows', async () => {
+describe('the folder level', () => {
+  it('offers one descendable row and asks the gateway for nothing', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const rows = await vofficeSource(t).candidates(session, request(''))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ name: FOLDER, icon: 'folder', drill: true })
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('descends into the folder whether the row was settled or drilled', () => {
+    const source = vofficeSource(t)
+    const row = { name: FOLDER, value: 'voffice-root' }
+    expect(source.onPick(pick(row, 'pick'))).toEqual({ text: `@${FOLDER}/`, continue: true })
+    expect(source.onPick(pick(row, 'drill'))).toEqual({ text: `@${FOLDER}/`, continue: true })
+  })
+
+  it('carries a crumb back to the folder once descended', () => {
+    const source = vofficeSource(t)
+    expect(source.header?.(session, { query: '', drilled: false })).toBeUndefined()
+    expect(source.header?.(session, { query: `${FOLDER}/预算`, drilled: true }))
+      .toEqual([{ label: FOLDER, value: 'voffice-root' }])
+  })
+})
+
+describe('the document level', () => {
+  it('lists the documents and filters them as the query grows', async () => {
     stubList({ ok: true, files: [{ name: '预算表.xlsx' }, { name: '年度总结.docx' }] })
     const source = vofficeSource(t)
-    expect((await source.candidates(session, request(''))).map(row => row.name)).toEqual(['预算表.xlsx', '年度总结.docx'])
-    expect((await source.candidates(session, request('@预算'))).map(row => row.name)).toEqual(['预算表.xlsx'])
+    expect((await source.candidates(session, request(`${FOLDER}/`))).map(row => row.name))
+      .toEqual(['预算表.xlsx', '年度总结.docx'])
+    expect((await source.candidates(session, request(`${FOLDER}/预算`))).map(row => row.name))
+      .toEqual(['预算表.xlsx'])
   })
 
   it('describes each row by kind without asking the gateway for it', async () => {
     stubList({ ok: true, files: [{ name: '预算表.xlsx' }, { name: '笔记' }] })
-    const rows = await vofficeSource(t).candidates(session, request(''))
+    const rows = await vofficeSource(t).candidates(session, request(`${FOLDER}/`))
     expect(rows.map(row => row.description)).toEqual(['source.kindSheet', ''])
   })
 
-  it('names a listing failure instead of showing an empty menu', async () => {
+  it('names a listing failure instead of showing an empty list', async () => {
     stubList({ error: 'vos-token-unavailable', message: '令牌已过期' }, 401)
-    const rows = await vofficeSource(t).candidates(session, request(''))
+    const rows = await vofficeSource(t).candidates(session, request(`${FOLDER}/`))
     expect(rows).toHaveLength(1)
     expect(rows[0]?.name).toBe('source.failed')
     expect(rows[0]?.description).toBe('令牌已过期')
@@ -60,14 +90,14 @@ describe('the V-Office @ source', () => {
 
   it('says so when the folder holds nothing', async () => {
     stubList({ ok: true, files: [] })
-    const rows = await vofficeSource(t).candidates(session, request(''))
+    const rows = await vofficeSource(t).candidates(session, request(`${FOLDER}/`))
     expect(rows[0]?.name).toBe('source.empty')
   })
 
   it('never claims a notice row', async () => {
     stubList({ ok: true, files: [] })
     const source = vofficeSource(t)
-    const [row] = await source.candidates(session, request(''))
+    const [row] = await source.candidates(session, request(`${FOLDER}/`))
     expect(source.onPick(pick(row!, 'pick'))).toBeUndefined()
   })
 

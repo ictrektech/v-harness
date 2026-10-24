@@ -7,7 +7,8 @@ export const NS = 'ui-voffice'
 
 /** Chinese dictionary; its key set is the source of truth. */
 export const zh = {
-  'source.section': '我的文档',
+  'source.root': '我的文档',
+  'source.rootHint': '查看全部文档',
   'source.empty': '还没有文档，可以在 V-Office 里新建',
   'source.failed': '无法读取文档列表',
   'source.kindWord': 'Word 文档',
@@ -28,7 +29,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /** English dictionary, checked complete against {@link zh}. */
 export const en = {
-  'source.section': 'My documents',
+  // No space in the folder token: the reference trigger ends at whitespace,
+  // so a spaced name would break the descended `@…/` draft it writes.
+  'source.root': 'Documents',
+  'source.rootHint': 'Show every document',
   'source.empty': 'No documents yet — create one in V-Office',
   'source.failed': 'Could not read the document list',
   'source.kindWord': 'Word document',
