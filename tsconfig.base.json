@@ -289,6 +289,7 @@
       "@deepseek-ai/dsh-client-ui-input-trigger": ["./packages/client/ui-input-trigger/src"],
       "@deepseek-ai/dsh-client-ui-reference": ["./packages/client/ui-reference/src"],
       "@deepseek-ai/dsh-client-ui-knowledge": ["./packages/client/ui-knowledge/src"],
+      "@deepseek-ai/dsh-client-ui-voffice": ["./packages/client/ui-voffice/src"],
       "@deepseek-ai/dsh-client-ui-commands": ["./packages/client/ui-commands/src"],
       "@deepseek-ai/dsh-client-ui-model-selection": ["./packages/client/ui-model-selection/src"],
       "@deepseek-ai/dsh-client-ui-deepseek-model-label-1017": ["./packages/client/ui-deepseek-model-label-1017/src"],

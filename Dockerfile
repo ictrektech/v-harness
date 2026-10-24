@@ -96,6 +96,18 @@ RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
       packages/client/ui-user-questions/locale \
       /build/plugins/dsh-client-ui-user-questions/
 
+# The `@` source over the signed-in user's V-Office folder. Unpublished, so no
+# profile dependency graph names it: the carrier bundle mounts the row and
+# gateway/plugins.mjs creates the profile copy from this payload.
+RUN pnpm exec tsc -b packages/client/ui-voffice/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-voffice bundle \
+ && mkdir -p /build/plugins/dsh-client-ui-voffice \
+ && cp -R \
+      packages/client/ui-voffice/package.json \
+      packages/client/ui-voffice/lib \
+      packages/client/ui-voffice/locale \
+      /build/plugins/dsh-client-ui-voffice/
+
 # The locale plugin follows the language VOS publishes (the vos_platform
 # bridge and the stamped preferences-locale entry). That support postdates
 # the published dsh the runtime stage installs, so the image builds it from

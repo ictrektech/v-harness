@@ -59,7 +59,10 @@ autoInstallPeers: false
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
 // dsh-client-locale rides along because the VOS language following postdates
 // the published dsh the image installs; the profile copy is refreshed too.
-const BUNDLED = ['dsh-client-locale', 'dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', ...MANAGED]
+// dsh-client-ui-voffice is not part of the published dependency graph at all,
+// so its profile copy is created rather than replaced; the carrier bundle
+// mounts its row.
+const BUNDLED = ['dsh-client-locale', 'dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-voffice', ...MANAGED]
 
 /**
  * Create the tenant's profile directory before dsh's first boot when it does
@@ -140,12 +143,16 @@ export async function syncClientPlugins(user) {
     }
     // Default profiles resolve bundled packages from the shared installation.
     // Docker installs the matching artifacts there before any tenant starts.
-    if (!(await exists(join(target, 'package.json')))) {
-      if (MANAGED.includes(name)
-          && !(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) throw new Error(`installed plugin missing: ${name}`)
-      continue
+    // A package the published dependency graph never carried has no profile
+    // copy at all, so it is created here: the carrier bundle mounts its row and
+    // the profile-scope resolution needs the directory to exist.
+    if (!(await exists(join(target, 'package.json')))
+        && MANAGED.includes(name)
+        && !(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) {
+      throw new Error(`installed plugin missing: ${name}`)
     }
     try {
+      await mkdir(modules, { recursive: true })
       await rm(target, { recursive: true, force: true })
       await cp(source, target, { recursive: true })
       await chownTo(target, user.uid, user.linuxName)

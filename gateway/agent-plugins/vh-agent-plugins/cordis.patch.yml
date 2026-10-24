@@ -41,3 +41,9 @@
     # the upstream web-app bundle neither depends on nor mounts it.
     - id: ui-knowledge
       name: '@deepseek-ai/dsh-client-ui-knowledge'
+
+    # The composer's `@` source over the user's own V-Office folder. Published
+    # nowhere, so nothing in the dependency graph names it: gateway/plugins.mjs
+    # creates the profile copy and this row is what mounts it.
+    - id: ui-voffice
+      name: '@deepseek-ai/dsh-client-ui-voffice'

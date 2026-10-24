@@ -415,6 +415,39 @@ function officeError(status, code, message) {
 }
 
 /**
+ * List the documents in one tenant's V-Office folder.
+ *
+ * Browser surfaces reach this instead of the capability socket: a page holds
+ * neither that socket nor a VOS token, and the tenant's identity must not
+ * travel to the page. The listing is passed through as V-Office returns it —
+ * a surface picks the fields it renders, so a new upstream field needs no
+ * change here.
+ * @param {string} namespace - tenant whose VOS session authorizes the read.
+ * @returns {Promise<Record<string, unknown>[]>} that tenant's own documents.
+ */
+export async function listDocuments(namespace) {
+  const token = await accessTokenFor(namespace);
+  if (!token) {
+    throw officeError(401, 'vos-token-unavailable', 'VOS 登录令牌缺失或已过期，请在 v-harness 页面刷新后重试');
+  }
+  const response = await fetch(`${OFFICE_BASE.origin}${OFFICE_PREFIX}/api/v1/files`, {
+    headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  }).catch((error) => {
+    throw officeError(502, 'v-office-unreachable', `V-Office 服务不可达：${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (!response.ok) {
+    throw officeError(
+      response.status === 401 ? 401 : 502,
+      response.status === 401 ? 'vos-token-unavailable' : 'v-office-failed',
+      `V-Office 返回 HTTP ${String(response.status)}`,
+    );
+  }
+  const body = await response.json().catch(() => undefined);
+  return Array.isArray(body?.files) ? body.files : [];
+}
+
+/**
  * Exchange one document for a Collabora editor URL as the tenant's own user.
  *
  * This is the only piece the browser-side surfaces need: the storage service

@@ -33,6 +33,7 @@ import {
   ensureOfficeCapability,
   expiryFromToken,
   hasUsableTokens,
+  listDocuments,
   rememberOrigin,
   rememberTokens,
 } from './office.mjs';
@@ -443,6 +444,24 @@ async function handleControl(req, res, url) {
     const record = await requireUser(req, res);
     if (!record) return;
     await handleWeknoraControl(record.namespace, req, res, url.pathname.slice('/__vh/weknora'.length));
+    return;
+  }
+
+  // V-Office document listing for the composer's `@` menu. The page holds
+  // neither the tenant socket nor a VOS token, so the gateway answers the
+  // listing itself and never trusts a caller-supplied identity.
+  if (url.pathname === '/__vh/office/list' && req.method === 'GET') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    try {
+      const files = await listDocuments(record.namespace);
+      json(res, 200, { ok: true, total: files.length, files });
+    } catch (error) {
+      json(res, error?.status ?? 502, {
+        error: error?.code ?? 'office-failed',
+        message: error instanceof Error ? error.message : '读取文档列表失败',
+      });
+    }
     return;
   }
 

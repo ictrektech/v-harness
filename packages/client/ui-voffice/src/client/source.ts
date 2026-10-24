@@ -1,0 +1,136 @@
+/**
+ * The `@` V-Office document source.
+ *
+ * One level: typing after `@` lists the documents in this user's own V-Office
+ * folder, filtered as the user types. A settling pick inserts an atomic
+ * reference, so the turn carries the document as a fact rather than a name the
+ * run hopes to remember; the drill action (Tab, or the row's chevron) opens
+ * that document in an online editor instead, and hands the pick back as
+ * handled so the draft is left untouched.
+ *
+ * @module @deepseek-ai/dsh-client-ui-voffice/client
+ */
+import type {
+  InputTriggerCandidate, InputTriggerSource,
+} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+import { failureOf, listDocuments, openDocument } from './api.ts'
+import type { VofficeKey } from './locales.ts'
+import { markerOf } from './markers.ts'
+
+/** Rows one menu may render; the listing itself is never truncated upstream. */
+const ROW_LIMIT = 100
+
+/** Dictionary-bound translate. */
+export type Translate = (key: VofficeKey) => string
+
+/** Extension to the copy naming what that kind of document is. */
+const KIND_KEYS: Readonly<Record<string, VofficeKey>> = {
+  doc: 'source.kindWord',
+  docx: 'source.kindWord',
+  xls: 'source.kindSheet',
+  xlsx: 'source.kindSheet',
+  csv: 'source.kindSheet',
+  ppt: 'source.kindSlides',
+  pptx: 'source.kindSlides',
+  pdf: 'source.kindPdf',
+}
+
+/**
+ * @param query - text between `@` and the caret.
+ * @returns that text without a leading trigger character the pipeline kept.
+ */
+function pathOf(query: string): string {
+  return query.startsWith('@') ? query.slice(1) : query
+}
+
+/**
+ * @param name - the document's cloud name.
+ * @param t - the V-Office dictionary.
+ * @returns what kind of document it is, or an empty string when unknown.
+ */
+function describeOf(name: string, t: Translate): string {
+  const dot = name.lastIndexOf('.')
+  if (dot === -1 || dot === name.length - 1) return ''
+  const key = KIND_KEYS[name.slice(dot + 1).toLowerCase()]
+  return key === undefined ? '' : t(key)
+}
+
+/**
+ * The row a menu shows instead of documents, never selectable.
+ * @param name - already-translated row text.
+ * @param description - cause line, empty when there is nothing to explain.
+ * @returns one inert candidate.
+ */
+function noticeRow(name: string, description: string): InputTriggerCandidate {
+  return { name, description, section: '', icon: 'file', value: '' }
+}
+
+/**
+ * Build the `@` source for this plugin.
+ * @param t - the V-Office dictionary.
+ * @returns the trigger source to register.
+ */
+export function vofficeSource(t: Translate): InputTriggerSource {
+  return {
+    trigger: '@',
+    name: 'voffice',
+    // Ahead of the file and session sources: on this platform the user's own
+    // cloud documents are the likeliest thing they mean after `@`.
+    order: -10,
+    showGroupTitle: false,
+
+    async candidates(_session, { query, signal }) {
+      const list = await listDocuments(signal)
+      if (list === undefined) {
+        // An aborted request is a superseded one, not a failure to report.
+        if (signal.aborted) return []
+        return [noticeRow(t('source.failed'), failureOf() ?? '')]
+      }
+      if (list.length === 0) return [noticeRow(t('source.empty'), '')]
+      const needle = pathOf(query).trim().toLowerCase()
+      const matched = needle === '' ? list : list.filter(file => file.name.toLowerCase().includes(needle))
+      if (matched.length === 0) return [noticeRow(t('source.empty'), '')]
+      return matched.slice(0, ROW_LIMIT).map(file => ({
+        name: file.name,
+        label: file.name,
+        description: describeOf(file.name, t),
+        section: t('source.section'),
+        icon: 'file' as const,
+        value: file.name,
+        // Tab and the row chevron open the document instead of inserting it.
+        drill: true,
+      }))
+    },
+
+    onPick({ candidate, action }) {
+      const name = candidate.value
+      // Notice rows carry no value: claiming one would insert an empty ref.
+      if (name === undefined || name === '') return undefined
+      if (action === 'drill') {
+        openDocument(name)
+        // The draft keeps whatever the user typed; only the editor tab opens.
+        return 'handled'
+      }
+      return {
+        insert: {
+          source: 'voffice',
+          ref: name,
+          label: name,
+          appearance: 'file',
+          clipboardText: name,
+        },
+      }
+    },
+
+    codec: {
+      clipboardText: ref => ref,
+      serialize: ref => Promise.resolve(markerOf(ref)),
+    },
+
+    openReference(_session, { ref }) {
+      if (ref === '') return false
+      openDocument(ref)
+      return true
+    },
+  }
+}
