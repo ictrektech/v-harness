@@ -5,6 +5,8 @@ import { isSea } from 'node:sea'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
+// Type-only: merges `ctx.workingDirectory` into the Context.
+import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
 import { registerAlbumTools } from './tools.ts'
 
@@ -69,9 +71,17 @@ export function apply(ctx: Context, config: Config = {}): void {
     throw new Error('skill-album: assetRoot must be an absolute directory')
   }
   const runtime = resolveRuntime(config, assetRoot)
-  // The tool needs the tool registry and the shell seam; a composition that
-  // only lists skills keeps the catalog without it.
-  ctx.inject(['tools', 'shell'], (toolCtx) => {
-    registerAlbumTools(toolCtx, runtime)
+  // The tool needs the tool registry, the shell seam, and the session working
+  // directory: the CLI writes thumbnails relative to its cwd and the card reads
+  // them back through the workspace, so running in the dsh process directory
+  // fails every download. A composition that only lists skills keeps the
+  // catalog without any of them.
+  ctx.inject(['tools', 'shell', 'workingDirectory'], (toolCtx) => {
+    registerAlbumTools(toolCtx, runtime, async (exec) => {
+      // PTC sub-dispatches and unowned registries carry no agent; fall back to
+      // the shell's own default rather than inventing a directory.
+      if (exec.agent === undefined) return undefined
+      return toolCtx.workingDirectory.ensure(exec.agent, exec.signal)
+    })
   })
 }

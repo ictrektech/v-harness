@@ -3,10 +3,19 @@
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges `ctx.shell` into the Context.
 import type {} from '@deepseek-ai/dsh-shell'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
+
+/** Resolve the calling session's workspace, or undefined when no agent owns the call. */
+export type WorkingDirectoryResolver = (exec: ToolExecution) => Promise<string | undefined>
+
+/** What both photo-grid tools return. */
+export interface SearchValue {
+  total: number
+  photos: PhotoRow[]
+}
 
 /** One photo row the cards render. */
-interface PhotoRow {
+export interface PhotoRow {
   id: string
   filename: string
   type: string
@@ -29,11 +38,23 @@ function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
 }
 
-/** Shared runner: spawn the bundled CLI and parse its JSON answer. */
-function cliRunner(ctx: Context, runtime: { node: string; cli: string }) {
-  return async function run(args: readonly string[], signal?: AbortSignal): Promise<Record<string, unknown>> {
+/** Shared runner: spawn the bundled CLI in the session workspace and parse its JSON answer. */
+function cliRunner(
+  ctx: Context,
+  runtime: { node: string; cli: string },
+  resolveWorkdir: WorkingDirectoryResolver,
+) {
+  return async function run(args: readonly string[], exec: ToolExecution): Promise<Record<string, unknown>> {
+    // The CLI resolves `album-thumbs` against its own cwd and the card reads the
+    // bytes back through the session workspace, so the process has to start
+    // there; the dsh process directory is neither writable nor in the workspace.
+    const workdir = await resolveWorkdir(exec)
     const command = [runtime.node, runtime.cli, ...args].map(quote).join(' ')
-    const spec = ctx.shell.resolve({ command, ...(signal === undefined ? {} : { signal }) })
+    const spec = ctx.shell.resolve({
+      command,
+      signal: exec.signal,
+      ...(workdir === undefined ? {} : { workdir }),
+    })
     const execution = await ctx.shell.execute(spec)
     const result = await execution.result()
     if (result.timedOut) throw new Error('album did not finish within the time limit')
@@ -52,8 +73,16 @@ function cliRunner(ctx: Context, runtime: { node: string; cli: string }) {
   }
 }
 
-/** Shape the CLI's photo-listing answer. */
-function photoList(value: Record<string, unknown>): { total: number; photos: PhotoRow[] } {
+/**
+ * Shape the CLI's photo-listing answer.
+ *
+ * A row without a downloaded thumbnail is dropped: the Web card rejects the
+ * whole result when any row lacks `thumbPath`, so one failed download would
+ * otherwise blank the card. `total` stays the CLI's own count.
+ * @param value - the CLI's JSON answer.
+ * @returns the rows the card can render plus the CLI's total.
+ */
+export function photoList(value: Record<string, unknown>): SearchValue {
   const rows = Array.isArray(value.assets) ? value.assets : []
   const photos = rows.map((row) => {
     const record = (row ?? {}) as Record<string, unknown>
@@ -66,7 +95,7 @@ function photoList(value: Record<string, unknown>): { total: number; photos: Pho
       favorite: record.favorite === true,
       thumbPath: String(record.thumbPath ?? ''),
     }
-  })
+  }).filter(photo => photo.thumbPath !== '')
   return { total: Number(value.total ?? photos.length), photos }
 }
 
@@ -89,9 +118,14 @@ const photoSchema = {
  * persisted with the result so the Web photo-grid card replays identically.
  * @param ctx - Context carrying the tool and shell seams.
  * @param runtime - resolved executables.
+ * @param resolveWorkdir - the calling session's workspace, so thumbnails land where the card reads them.
  */
-export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: string }): void {
-  const run = cliRunner(ctx, runtime)
+export function registerAlbumTools(
+  ctx: Context,
+  runtime: { node: string; cli: string },
+  resolveWorkdir: WorkingDirectoryResolver,
+): void {
+  const run = cliRunner(ctx, runtime, resolveWorkdir)
 
   const searchOutput = {
     schema: {
@@ -104,7 +138,7 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
     },
     // The grid card owns the thumbnails and the open action; the model gets the
     // ids and descriptions it needs for a follow-up and nothing to restate.
-    render: (_args: unknown, value: { total: number; photos: readonly PhotoRow[] }) => [{
+    render: (_args: unknown, value: SearchValue) => [{
       type: 'text' as const,
       text: JSON.stringify({
         total: value.total,
@@ -128,7 +162,7 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
     },
     async execute(args, exec) {
       const argv = ['search', args.query, '--thumbs', '6', ...(args.size === undefined ? [] : ['--size', String(args.size)])]
-      return photoList(await run(argv, exec.signal))
+      return photoList(await run(argv, exec))
     },
   }))
 
@@ -152,11 +186,11 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
       presentationMeta: (_args, value) => ({ kind: 'album.photos', ...value }),
     },
     async execute(args, exec) {
-      const argv = ['photos']
+      const argv = ['photos', '--thumbs', '6']
       for (const [key, value] of Object.entries(args)) {
         if (value !== undefined) argv.push(`--${key}`, String(value))
       }
-      return photoList(await run(argv, exec.signal))
+      return photoList(await run(argv, exec))
     },
   }))
 
@@ -190,7 +224,7 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
-      const value = await run(['person', args.name], exec.signal)
+      const value = await run(['person', args.name], exec)
       const rows = Array.isArray(value.people) ? value.people : []
       return {
         people: rows.map(row => ({
@@ -230,7 +264,7 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(_args, exec) {
-      const value = await run(['albums'], exec.signal)
+      const value = await run(['albums'], exec)
       const rows = Array.isArray(value.albums) ? value.albums : []
       return {
         albums: rows.map(row => ({
@@ -268,7 +302,7 @@ export function registerAlbumTools(ctx: Context, runtime: { node: string; cli: s
     },
     async execute(args, exec) {
       const argv = ['upload', args.file, ...(args.album === undefined ? [] : ['--album', args.album])]
-      const value = await run(argv, exec.signal)
+      const value = await run(argv, exec)
       return {
         id: String(value.id ?? ''),
         name: String(value.name ?? ''),

@@ -16,6 +16,9 @@
     },
     {
       "path": "../../shell/shell"
+    },
+    {
+      "path": "../../session/working-directory"
     }
   ]
 }
