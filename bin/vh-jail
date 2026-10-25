@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Run one user's dsh inside a mount + pid + uts + chroot jail.
+# Run one user's dsh inside a mount + pid + ipc + uts + chroot jail.
 #
 # The jail layout mirrors an ordinary Linux server:
 #
 #   /home/<namespace>   the tenant's own content (bound from /data/users/...)
 #   /usr /bin /lib ...  shared runtime, mounted read-only
 #   /data               not mounted at all
+#
+# Everything bound in is an allow-list. The container's /etc, /dev and /proc are
+# shared by every tenant, so rbinding a whole directory would hand one tenant
+# whatever that directory happens to expose to the others: /etc/passwd lists
+# every account, /dev/shm is one writable tmpfs for the whole container. Only the
+# named entries below are reachable, and identity files are generated per tenant.
 #
 # The hostname is set per namespace so the prompt reads `vh-xxxx@dsh:~` instead
 # of exposing the container id, and `cd ..` from the tenant home stops at /home
@@ -37,6 +43,7 @@ shift 3 || die 'usage: vh-jail <account> <uid> <home> <command...>'
 namespace="$(basename "$home")"
 [[ "$namespace" =~ ^[0-9a-f]{40}$ ]] || die "invalid namespace: ${namespace}"
 
+export VH_JAIL_ACCOUNT="$account"
 export VH_JAIL_UID="$uid"
 export VH_JAIL_NAMESPACE="$namespace"
 export VH_JAIL_HOST_HOME="$home"
@@ -47,9 +54,11 @@ export VH_JAIL_SKILLS="$SKILLS_ROOT"
 export VH_JAIL_HOSTNAME="$JAIL_HOSTNAME"
 
 # --mount-proc gives the pid namespace its own /proc, so `ps` only lists this
-# user's processes. --fork is required for --pid to take effect. --uts exists
-# only so the hostname below stays inside this session.
-exec unshare --mount --pid --uts --fork --mount-proc bash -c '
+# user's processes. --fork is required for --pid to take effect. --ipc drops the
+# shared System V / POSIX IPC key space, which would otherwise let two tenants
+# attach to the same 0666 shared-memory segment. --uts exists only so the
+# hostname below stays inside this session.
+exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   set -euo pipefail
   cd /
   # Keep these mounts inside this namespace; propagating them would corrupt the
@@ -61,14 +70,27 @@ exec unshare --mount --pid --uts --fork --mount-proc bash -c '
   root="/tmp/.vh-root-$VH_JAIL_NAMESPACE"
   rm -rf "$root"
   mkdir -p "$root"
-  mount -t tmpfs -o mode=0755 tmpfs "$root"
+  mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$root"
 
-  # Public read-only runtime, exactly like a shared server.
-  for dir in usr etc; do
-    mkdir -p "$root/$dir"
-    mount --rbind "/$dir" "$root/$dir"
-    mount -o remount,bind,ro "$root/$dir"
-  done
+  # Bind one allow-listed entry read-only. Directories are re-bound (not
+  # recursively) so an unexpected submount on the host stays out of the jail.
+  bind_ro() {
+    local source="/$1" target="$root/$1"
+    [[ -e "$source" ]] || return 0
+    mkdir -p "$(dirname "$target")"
+    if [[ -d "$source" ]]; then
+      mkdir -p "$target"
+      mount --bind "$source" "$target"
+    else
+      touch "$target"
+      mount --bind "$source" "$target"
+    fi
+    mount -o remount,bind,ro "$target"
+  }
+
+  # Public read-only runtime, exactly like a shared server. /usr is one unit
+  # because the loader, Node, dsh and its native modules all live under it.
+  bind_ro usr
 
   # Debian merged-/usr layout: /bin, /lib, /lib64 and /sbin are symlinks into
   # /usr. The new root has to recreate them or the dynamic loader is missing.
@@ -80,16 +102,69 @@ exec unshare --mount --pid --uts --fork --mount-proc bash -c '
     fi
   done
 
+  # The container /etc is shared with every tenant, so the whole directory never
+  # comes in. What is bound are the files a running process genuinely resolves
+  # (loader cache, TLS roots, timezone, NSS) and nothing else: no /etc/shadow,
+  # no /etc/sudoers, no /etc/ld.so.preload. Identity files are written below.
+  mkdir -p "$root/etc"
+  for entry in \
+    ld.so.cache ld.so.conf ld.so.conf.d alternatives \
+    ssl/certs ssl/openssl.cnf \
+    nsswitch.conf localtime timezone \
+    mime.types services protocols \
+    profile profile.d bash.bashrc bash_completion.d inputrc \
+    terminfo gitconfig; do
+    bind_ro "etc/$entry"
+  done
+  ln -sfn /proc/mounts "$root/etc/mtab"
+
+  # Identity as this tenant sees it: the account itself, and localhost only.
+  # A missing getpwuid entry breaks os.userInfo() and every group lookup, so the
+  # tenant must be present; the rest of the container must not be.
+  printf "%s:x:%s:%s::%s:/usr/sbin/nologin\n" \
+    "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" "$VH_JAIL_UID" "$VH_JAIL_HOME" \
+    > "$root/etc/passwd"
+  printf "%s:x:%s:\n" "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" > "$root/etc/group"
+  printf "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n" \
+    > "$root/etc/hosts"
+  chmod 0644 "$root/etc/passwd" "$root/etc/group" "$root/etc/hosts"
+  # DNS is not a jail concern (the container network is shared by design) but
+  # name resolution is required by every model call, so the resolver comes in.
+  bind_ro etc/resolv.conf
+
   # Product skills, read-only, at the path DSH_BUNDLED_SKILL_DIR promises.
   mkdir -p "$root$VH_JAIL_SKILLS"
-  mount --rbind "$VH_JAIL_SKILLS" "$root$VH_JAIL_SKILLS"
+  mount --bind "$VH_JAIL_SKILLS" "$root$VH_JAIL_SKILLS"
   mount -o remount,bind,ro "$root$VH_JAIL_SKILLS"
 
-  # Devices and a private proc; /tmp is scratch.
+  # Devices: a fresh tmpfs with the nodes a process actually needs. The container
+  # /dev is shared, and rbinding it would carry /dev/shm (one writable 64MB
+  # tmpfs for the whole container) and a view of the pty of every other tenant.
   mkdir -p "$root/dev" "$root/proc" "$root/tmp"
-  mount --rbind /dev "$root/dev"
-  mount --rbind /proc "$root/proc"
-  mount -t tmpfs -o mode=1777 tmpfs "$root/tmp"
+  mount -t tmpfs -o mode=0755,nosuid tmpfs "$root/dev"
+  for node in null:1:3 zero:1:5 full:1:7 random:1:8 urandom:1:9 tty:5:0; do
+    node_name="${node%%:*}"
+    rest="${node#*:}"
+    mknod -m 0666 "$root/dev/$node_name" c "${rest%%:*}" "${rest#*:}"
+  done
+  mkdir -p "$root/dev/pts" "$root/dev/shm"
+  # A private devpts instance: ptys allocated inside the jail are numbered here
+  # and stay invisible to the host and to other tenants.
+  mount -t devpts -o newinstance,ptmxmode=0666,mode=0620,gid=5 devpts "$root/dev/pts"
+  ln -sfn pts/ptmx "$root/dev/ptmx"
+  # Private scratch, so the classic cross-tenant tmpfs is not shared.
+  mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$root/dev/shm"
+  ln -sfn /proc/self/fd "$root/dev/fd"
+  ln -sfn /proc/self/fd/0 "$root/dev/stdin"
+  ln -sfn /proc/self/fd/1 "$root/dev/stdout"
+  ln -sfn /proc/self/fd/2 "$root/dev/stderr"
+
+  # A fresh proc rather than a recursive bind of the container one: the bind
+  # would also carry /proc/sys and leave it read-write. Inside the pid namespace
+  # this instance lists only this tenant.
+  mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
+
+  mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$root/tmp"
 
   # The tenant home, at the same path the gateway advertises as HOME.
   mkdir -p "$root$VH_JAIL_HOME"
@@ -97,10 +172,19 @@ exec unshare --mount --pid --uts --fork --mount-proc bash -c '
   chmod 0700 "$root$VH_JAIL_HOME"
 
   # Everything above is root-side setup. The command starts unprivileged and
-  # without CAP_SYS_CHROOT, so it cannot climb out of the jail root.
+  # without CAP_SYS_CHROOT, so it cannot climb out of the jail root. The bounding
+  # set, inheritable set and ambient set are dropped too: the container runs with
+  # SYS_ADMIN and unconfined seccomp for vh-jail itself, and that posture must not
+  # be inherited by the tenant. --no-new-privs keeps a setuid binary inside the
+  # home from reintroducing privilege.
   exec chroot "$root" /bin/sh -c "
     export HOME=\"$VH_JAIL_HOME\"
     cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
-    exec /usr/bin/setpriv --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \"\$@\"
+    exec /usr/bin/setpriv \
+      --no-new-privs \
+      --bounding-set=-all \
+      --inh-caps=-all \
+      --ambient-caps=-all \
+      --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \"\$@\"
   " sh "$@"
 ' -- "$@"

@@ -140,6 +140,7 @@ VOS 里部署走 `build_image.sh` + `ictrek.app/scripts/package.sh`，见 [RELEA
 - **key 由每个用户自己填写**，与 dsh 官方一致：写进该用户私有的 `.credentials.yaml`（0600）。不做网关代持/代理——没有平台共享 key，也就不存在"一个用户泄露等于全平台泄露"。
 - **agent 能读自己的 key**：沙盒只防写。这是用户在自己的账号里读自己的凭据，影响面仅限本人。
 - **单用户能拖垮全容器**：容器内做不到每用户 cgroup，只有容器级限制。
-- **已做 mount / pid namespace 隔离**：`vh-jail` 先进入 mount+pid namespace，用 tmpfs 遮住 `/data/users` 再只 bind 回自己的 home，然后降权。租户看不到别人的目录或进程。
+- **已做 mount / pid / ipc namespace 隔离**：`vh-jail` 先进入 mount+pid+ipc namespace，用 tmpfs 遮住 `/data/users` 再只 bind 回自己的 home，然后降权。租户看不到别人的目录或进程，`/dev/shm` 与 System V 共享内存都是各租户私有的。
+- **挂载是白名单**：`/etc` 不再整体 bind，只给 loader/TLS/时区/NSS 等必需文件，`passwd`/`group`/`hosts` 按租户现生成；`/dev` 是最小设备节点 + 独立 devpts + 私有 shm；`/proc` 重挂为 `nosuid,nodev,noexec`。降权时清空 bounding/inheritable/ambient cap 并加 `--no-new-privs`。
 - **不做 net namespace 隔离**：容器仍是共享网络，`127.0.0.1:<port>` 对其他租户可见。跨租户访问靠 cookie / socket 权限挡住（V-Office 能力端点就是 0600 socket）。将来要补，在 `vh-jail` 里加 `--net` 并配好 loopback。
 - **不做 iptables**：容器无 `NET_ADMIN`；且跨用户需要对方的 cookie，协议层已经挡住。
