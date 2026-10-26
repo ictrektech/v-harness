@@ -11,6 +11,8 @@ English | [中文](README.zh.md)
 
 Use `dsh-client-ui-primitives` to build web-client controls and render agent output with shared React UI. It includes standard controls, icons, anchored overlays, and renderers for Markdown with TeX, terminal output, file reads, diffs, search, web retrieval, and JSON. The renderers handle untrusted model output by dropping raw HTML, restricting links, and parsing ANSI escape sequences. The components import no Cordis runtime; callers supply localized labels, and theme-facing colors use `--dsw-*` design tokens.
 
+The VOS distribution uses the v-harness interwoven mark and product name. The VOS icon master and transparent UI mark live in `ictrek.app/assets/`; `node ictrek.app/scripts/gen-icon.mjs` exports the 256px package icon using ImageMagick. Browser marks inherit the theme text color, and the running status reads “v-harness exploring”.
+
 ## Table of Contents
 
 - [Use this package](#use-this-package)

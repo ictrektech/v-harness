@@ -681,7 +681,7 @@ describe('PluginManagerController', () => {
     face.runInstall()
     expect(plugins.inspect).not.toHaveBeenCalled()
     expect(state().install).toMatchObject({ phase: 'idle', inputError: { problem: 'already-installed', reason: BUNDLE.name } })
-    // A bundle the installation supplies upgrades with DSH instead.
+    // A bundle the installation supplies upgrades with v-harness instead.
     face.editInstallSpec(shipped.name)
     face.runInstall()
     expect(state().install).toMatchObject({ phase: 'idle', inputError: { problem: 'shipped', reason: shipped.name } })

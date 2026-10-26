@@ -109,12 +109,14 @@ describe('the V-Office @ source', () => {
 })
 
 describe('the document marker', () => {
+  const context = { read: () => undefined }
+
   it('renders a sent marker back into a chip node', () => {
-    const hit = documentRule.match(`看看 ${markerOf('预算表.xlsx')} 的合计`, 0)
+    const hit = documentRule.match(`看看 ${markerOf('预算表.xlsx')} 的合计`, 0, context)
     expect(hit?.data).toEqual({ name: '预算表.xlsx' })
   })
 
   it('ignores text that carries no marker', () => {
-    expect(documentRule.match('普通的一句话', 0)).toBeUndefined()
+    expect(documentRule.match('普通的一句话', 0, context)).toBeUndefined()
   })
 })

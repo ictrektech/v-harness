@@ -1,6 +1,6 @@
 {
-  "name": "DeepSeek Harness",
-  "short_name": "DSH",
+  "name": "v-harness",
+  "short_name": "v-harness",
   "start_url": "./",
   "scope": "./",
   "display": "fullscreen",

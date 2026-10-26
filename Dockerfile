@@ -30,7 +30,7 @@ FROM ${BASE_IMAGE} AS plugins
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
-ENV npm_config_registry=${NPM_REGISTRY}
+ENV npm_config_registry=${NPM_REGISTRY} COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
 WORKDIR /build
 
 # pnpm is pinned to the repository's own version (packageManager in
@@ -56,7 +56,7 @@ COPY tsdown.config.ts ./
 # and its compilation reads declarations that other workspace packages
 # produce, so those packages are build-time dependencies of the plugin and the
 # install cannot be narrowed to a runtime closure.
-RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm install --frozen-lockfile --ignore-scripts --registry="${NPM_REGISTRY}"
 
 # The client compilation reads generated declarations (the Typert /remote
 # artifacts), which the Host side produces from source. Generating them is a
@@ -135,6 +135,17 @@ RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
       if [ -d "packages/$source/locale" ]; then cp -R "packages/$source/locale" "/build/plugins/$name/"; fi; \
     done
 
+# v-harness owns the visible brand in both the shell and dynamic UI plugins.
+# Rebuild the shared primitives before Vite and stage each changed locale owner.
+ENV DSH_CLIENT_BUILD_PROFILE=official DSH_CLIENT_TITLE=v-harness
+RUN pnpm run build:lib:client \
+ && pnpm --filter @deepseek-ai/dsh-web-frontend build \
+ && for name in ui-agent-preset ui-brand-official ui-chat ui-conversation ui-model-selection ui-plugin-manager ui-plugin-market ui-settings-account ui-settings-models ui-sidebar-browser ui-sidebar-documentpreview; do \
+      source="packages/client/$name"; target="/build/plugins/dsh-client-$name"; \
+      mkdir -p "$target"; cp -R "$source/package.json" "$source/lib" "$target/"; \
+      if [ -d "$source/locale" ]; then cp -R "$source/locale" "$target/"; fi; \
+    done
+
 # ============================================================
 # Stage: agent-side tool plugins built from this repository
 # ============================================================
@@ -207,13 +218,16 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes dsh-client-locale; do \
+RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes dsh-client-locale dsh-client-ui-agent-preset dsh-client-ui-brand-official dsh-client-ui-chat dsh-client-ui-conversation dsh-client-ui-model-selection dsh-client-ui-plugin-manager dsh-client-ui-plugin-market dsh-client-ui-settings-account dsh-client-ui-sidebar-browser dsh-client-ui-sidebar-documentpreview; do \
       source="/opt/v-harness/plugins/$name"; \
       target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$(basename "$source")"; \
       test -f "$target/package.json"; \
       cp -R "$source/lib/." "$target/lib/"; \
       if [ -d "$source/locale" ]; then cp -R "$source/locale/." "$target/locale/"; fi; \
     done
+
+# The boot server reads the frontend from the shared installation.
+COPY --from=plugins /build/apps/web/dist/ /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/
 
 # Agent-side tool plugins plus their carrier bundle (manifest.json lists the
 # plugins); gateway/plugins.mjs copies them into each tenant profile and

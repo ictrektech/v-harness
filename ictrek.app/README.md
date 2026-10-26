@@ -2,6 +2,10 @@
 
 > VOS 应用标识为 `com.ictrek.v-harness`。
 
+## 品牌资源
+
+`assets/icon-master.png` 为确认的渐变圆角方形图标，`assets/mark.svg` 为透明底深色矢量标识。安装包图标通过 `node ictrek.app/scripts/gen-icon.mjs` 导出为 256×256 RGBA PNG（需要 ImageMagick）。镜像同时构建共享界面组件、动态插件及 Web 入口，将品牌覆盖应用于新用户和已有用户。原始版权和第三方许可声明保留。
+
 ## 应用形态
 
 - 单容器：网关 + 每个用户一个 `dsh --profile web` 进程
