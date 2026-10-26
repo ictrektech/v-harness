@@ -1,0 +1,102 @@
+/* Inline region measurement above the composer: no modal, no backdrop. */
+
+.picker {
+  /* Bounded width, not a bounded image: capping the image height letterboxes it
+     inside the stage, and then the stage and the picture disagree about where
+     "20%" is. */
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-l2);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-text-l1);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--dsw-alias-text-l3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage {
+  position: relative;
+  /* The flex column would otherwise shrink this to the space left and clip the
+     photo; the stage must always be exactly as tall as the image inside it. */
+  flex: none;
+
+  /* The image must never start a native drag; the rectangle is drawn by us. */
+  touch-action: none;
+  cursor: crosshair;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-l1);
+  line-height: 0;
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.box {
+  position: absolute;
+  border: 2px dashed var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 45%);
+  pointer-events: none;
+}
+
+.meta {
+  /* One line, always: the readout grows from a hint to numbers mid-drag, and a
+     wrap there would move the photo under the pointer. */
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.readout {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-text-l2);
+}
+
+.dismiss {
+  all: unset;
+  margin-left: auto;
+  cursor: pointer;
+  color: var(--dsw-alias-text-l3);
+  display: inline-flex;
+}
+
+.actions {
+  display: inline-flex;
+  gap: 6px;
+}

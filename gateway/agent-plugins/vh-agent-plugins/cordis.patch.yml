@@ -16,6 +16,14 @@
       name: '@deepseek-ai/dsh-skill-image-studio'
       disabled: !!js "!process.env.IMAGE_STUDIO_BASE_URL && !process.env.IMAGE_STUDIO_AUTH_FILE"
 
+    # PhotoCraft photo editing. The capability endpoint has a working default
+    # (the VOS app's storage service), so this row mounts by default and only an
+    # explicit opt-out removes it; the tools hold no credential — the gateway
+    # fronts the tenant's own capability socket.
+    - id: skill-photocraft
+      name: '@deepseek-ai/dsh-skill-photocraft'
+      disabled: !!js "!!process.env.VH_PHOTOCRAFT_OFF"
+
     # The interactive AI-album tools are retired: the album flow ships as a
     # plain skill (skills/album) whose CLI the model runs and presents with,
     # so there is no tool-call card to feed. Re-enable only together with a

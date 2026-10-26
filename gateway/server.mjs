@@ -38,6 +38,7 @@ import {
   rememberTokens,
 } from './office.mjs';
 import { closeAlbumCapabilities, ensureAlbumCapability } from './album.mjs';
+import { closePhotocraftCapabilities, ensurePhotocraftCapability } from './photocraft.mjs';
 import {
   CSRF_COOKIE,
   SESSION_COOKIE,
@@ -705,6 +706,7 @@ async function startCapabilities(record) {
     ensureOfficeCapability(options),
     ensureWeknoraCapability(options),
     ensureAlbumCapability(options),
+    ensurePhotocraftCapability(options),
   ]);
   for (const result of settled) {
     if (result.status === 'rejected') {
@@ -893,7 +895,7 @@ function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities()]).finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closePhotocraftCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });

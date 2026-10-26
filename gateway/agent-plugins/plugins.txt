@@ -1,2 +1,3 @@
 packages/skill/skill-album
 packages/skill/skill-image-studio
+packages/skill/skill-photocraft

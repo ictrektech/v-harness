@@ -66,3 +66,69 @@
     transition: none;
   }
 }
+
+/* Region measurement: an optional affordance on each draft image, never a modal. */
+
+.regionBadge {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 6px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-l1);
+  color: var(--dsw-alias-text-l3);
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.regionBadgeOn {
+  border-style: solid;
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary);
+}
+
+.regionChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.regionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-brand-primary);
+  border-radius: 999px;
+  color: var(--dsw-alias-brand-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.regionChipCut {
+  border-color: #ff2d55;
+  color: #ff2d55;
+}
+
+.regionChipPlace {
+  border-color: #3ddc84;
+  color: #2aa665;
+}
+
+.regionChip button {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+/* One line of guidance: the composer is where the user learns the two moves. */
+
+.tip {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-text-l3);
+}

@@ -415,6 +415,28 @@ export const InputBar = memo(function InputBar({
             count: imageLimits.maxImagesPerMessage,
             size: imageSizeText(imageLimits.maxImageBytes),
           },
+          // A measured region rides in the draft as one tag, so it is logged
+          // with the turn and needs no extra message part type.
+          ...inputActions === undefined ? {} : {
+            // Replacing the draft sidesteps the caret: the picker's button is
+            // outside the editor, so a captured span is stale by the time it is
+            // used and the insertion would be refused silently.
+            onInsertRegion: (token: string) => {
+              // Two lines instead of a cross-package helper: ui-attachment
+              // already imports this package, so sharing code would close a
+              // cycle between the composer and its attachment surface.
+              const next = draft.trim() === '' ? token : `${draft.trimEnd()}\n${token}`
+              inputActions.setDraft(next)
+              return true
+            },
+          },
+          ...keyboard === undefined ? {} : {
+            onSubmitDraft: () => {
+              if (machineBusy) return false
+              keyboard.submit(primarySubmitMode, 'click')
+              return true
+            },
+          },
         })}
         {/* One scrollport, one text surface: the contenteditable grows with
             its content and .scroll — capped at 14 lines in CSS — is the only

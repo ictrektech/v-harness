@@ -4,6 +4,7 @@ import type { DropOverlayLabels } from '../DropOverlay.tsx'
 import type { FileCardLabels } from '../FileCard.tsx'
 import type { ImageLightboxLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MessageImageLabels } from '../MessageImage.tsx'
+import type { RegionPickerLabels } from './RegionPicker.tsx'
 
 /**
  * Resolve original-image lightbox strings from the conversation namespace.
@@ -75,5 +76,20 @@ export function attachmentRailLabels(t: TranslateNS<'conversation'>): Attachment
     group: t('attachment.pending'),
     scrollLeft: t('attachment.scrollLeft'),
     scrollRight: t('attachment.scrollRight'),
+  }
+}
+
+/**
+ * Resolve the inline region picker strings from the conversation namespace.
+ * @param t - conversation namespace translator.
+ * @returns translated picker labels.
+ */
+export function regionPickerLabels(t: TranslateNS<'conversation'>): RegionPickerLabels {
+  return {
+    title: t('image.region.title'),
+    hint: t('image.region.hint'),
+    clear: t('image.region.clear'),
+    done: t('image.region.done'),
+    close: t('image.region.close'),
   }
 }
