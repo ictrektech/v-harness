@@ -8,12 +8,14 @@
  * @module @deepseek-ai/dsh-skill-photocraft/tools
  */
 
-import { readFile } from 'node:fs/promises'
+import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-working-directory'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { extname, join, resolve } from 'node:path'
 import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import { AlbumClient, McpClient, type FileBridge } from './client.ts'
 import { normalizeRegion, toPixels, type Region } from './coords.ts'
 import { RECIPES } from './recipes.ts'
@@ -137,19 +139,55 @@ function backgroundOf(instruction: string): string | undefined {
 }
 
 
+/** Disambiguates two imports that land in the same millisecond. */
+let uploaded = 0
+
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
+const MAX_IMPORT_BYTES = 30 * 1024 * 1024
+
+/**
+ * Turn whatever the model was given into a file on this machine.
+ *
+ * The picture in a chat message is identified as `sha256:<hex>`, and that is the
+ * one identifier a model always has in hand; asking it for a path made every run
+ * fail on a location it could only guess. Absolute paths are still taken (the
+ * agent may legitimately point at a copy it made), and a bare workspace name is
+ * passed through for the engine to resolve itself.
+ * @param source - attachment id, absolute path, or workspace file name.
+ * @returns absolute path to read, or undefined when the engine owns the name.
+ */
+function localFileOf(source: string): string | undefined {
+  const digest = /^sha256:([0-9a-f]{64})$/u.exec(source)
+  if (digest !== null) {
+    const hex = digest[1] ?? ''
+    return join(ATTACHMENT_ROOT, 'v1', 'objects', hex.slice(0, 2), hex)
+  }
+  return source.startsWith('/') ? resolve(source) : undefined
+}
+
 /**
  * Bring a source into the engine's workspace.
  * @param bridge - file bridge of the capability.
- * @param source - chat attachment path or workspace file name.
+ * @param source - attachment id, absolute path, or workspace file name.
  * @returns the workspace file name to open.
  */
 async function importSource(bridge: FileBridge, source: string): Promise<string> {
-  if (!source.startsWith('/')) return source
-  const absolute = resolve(source)
-  if (!absolute.startsWith(`${resolve(ATTACHMENT_ROOT)}/`)) {
-    throw new Error(`photocraft: 只能导入附件目录里的图片（${ATTACHMENT_ROOT}）`)
+  const absolute = localFileOf(source)
+  if (absolute === undefined) return source
+  // A picture may arrive as a chat attachment or as a file the agent already
+  // copied into the workspace, so either root is accepted — but only for image
+  // files, and only when they are actually there.
+  const insideAttachments = absolute.startsWith(`${resolve(ATTACHMENT_ROOT)}/`)
+  if (!insideAttachments) {
+    if (!IMAGE_EXTENSIONS.includes(extname(absolute).toLowerCase())) {
+      throw new Error(`photocraft: 只能导入图片文件（${IMAGE_EXTENSIONS.join(' ')}）`)
+    }
+    const info = await stat(absolute).catch(() => undefined)
+    if (info === undefined || !info.isFile()) throw new Error(`photocraft: 找不到图片 ${source}`)
+    if (info.size > MAX_IMPORT_BYTES) throw new Error(`photocraft: 图片超过 ${String(MAX_IMPORT_BYTES / 1024 / 1024)}MB`)
   }
-  const name = `wish-${String(Date.now())}.png`
+  uploaded += 1
+  const name = `wish-${String(Date.now())}-${String(uploaded)}.png`
   await bridge.upload(name, await readFile(absolute))
   return name
 }
@@ -162,7 +200,12 @@ async function importSource(bridge: FileBridge, source: string): Promise<string>
  * @param file - name of the file to save.
  * @returns the file name holding the piece.
  */
-async function cutPiece(client: McpClient, name: string, region: Region, file: string): Promise<{ file: string; width: number; height: number }> {
+async function cutPiece(
+  client: McpClient,
+  name: string,
+  region: Region,
+  file: string,
+): Promise<{ file: string; width: number; height: number }> {
   const document = await client.call('doc_inspect', {}) as { width?: number; height?: number }
   const box = toPixels(region, { width: document.width ?? 0, height: document.height ?? 0 })
   await client.run('select.rect', { ...box })
@@ -186,6 +229,25 @@ async function cutPiece(client: McpClient, name: string, region: Region, file: s
  * @param verb - what happened, for the caption.
  * @returns the tool value.
  */
+/**
+ * Put finished bytes where the session can reach them.
+ *
+ * The download bridge only hands back memory, so a result that is never written
+ * is a file name that exists nowhere — `present` then fails with FS_NOT_FOUND on
+ * a file the agent was just told it had.
+ *
+ * @param ctx - context carrying the working directory.
+ * @param exec - the call being served, which owns the target workspace.
+ * @param name - file name the caller will use to refer to the result.
+ * @param bytes - encoded picture.
+ * @returns the same name, now resolvable from the session workspace.
+ */
+async function saveDeliverable(ctx: Context, exec: ToolExecution, name: string, bytes: Buffer): Promise<string> {
+  const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+  await writeFile(join(cwd, name), bytes)
+  return name
+}
+
 async function finish(
   ctx: Context,
   client: McpClient,
@@ -193,10 +255,12 @@ async function finish(
   side: number,
   applied: string,
   verb: string,
+  exec: ToolExecution,
 ): Promise<{ file: string; bytes: number; applied: string; preview: Preview }> {
   const file = `wish-${String(Date.now())}.png`
   await client.call('doc_save', { path: file, format: 'png' })
   const bytes = await bridge.download(file)
+  await saveDeliverable(ctx, exec, file, bytes)
   return {
     file,
     bytes: bytes.length,
@@ -271,10 +335,13 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         ...(value.preview === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.preview) }]),
       ],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const source = (args.source ?? '').trim()
       if (source === '') throw new Error('photocraft: 需要一张图（聊天附件路径或工作区文件名）')
-      const assets = args.assets ?? []
+      // Materials are attachments as well, so they take the same upload bridge:
+      // the engine only opens files that live in its own workspace.
+      const assets: string[] = []
+      for (const asset of args.assets ?? []) assets.push(await importSource(bridge, asset))
       const regions = args.regions ?? []
       const places = args.places ?? []
       const main = await importSource(bridge, source)
@@ -311,7 +378,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
             scale,
           })
         }
-        return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'placed')
+        return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'placed', exec)
       }
 
       await mcp.open(main)
@@ -329,7 +396,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       // same wish is repeated at each of them, in order.
       const boxes = regions.length === 0 ? [undefined] : regions.map(region => normalizeRegion(region))
       for (const region of boxes) await recipe.run(mcp, { ...base, ...region ?? {} }, bridge)
-      return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'edited')
+      return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'edited', exec)
     },
   }))
 
@@ -354,12 +421,12 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         text: `已导出 ${value.file}（${String(Math.round(value.bytes / 1024))}KB）`,
       }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const format = (args.format ?? 'psd').toLowerCase()
       const name = args.file ?? `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
       await mcp.call('doc_save', { path: name, format: format === 'jpeg' ? 'jpg' : format })
       const bytes = await bridge.download(name)
-      return { file: name, bytes: bytes.length }
+      return { file: await saveDeliverable(ctx, exec, name, bytes), bytes: bytes.length }
     },
   }))
 }

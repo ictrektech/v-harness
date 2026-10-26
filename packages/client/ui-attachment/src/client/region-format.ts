@@ -49,16 +49,29 @@ export type RegionRole = 'cut' | 'place'
 
 /**
  * The tag appended to the message.
+ *
+ * `img` is the picture's position in the message (`1` for the first image) and is
+ * the only field a model can line up with what it received: `image` is a draft id
+ * that exists solely in this browser and means nothing once the message is sent.
  * @param attachmentId - the draft attachment the region was drawn on.
  * @param region - fractions of that image.
  * @param role - `cut` for the first image, `place` for any later one.
+ * @param index - which box on that image, starting at 1.
+ * @param image - which picture in the message, starting at 1.
  * @returns the one-line token.
  */
-export function formatRegionToken(attachmentId: string, region: Region, role: RegionRole = 'cut', index = 1): string {
+export function formatRegionToken(
+  attachmentId: string,
+  region: Region,
+  role: RegionRole = 'cut',
+  index = 1,
+  image = 1,
+): string {
   const fixed = (value: number): string => value.toFixed(4)
   const attributes = [
     `role="${role}"`,
     `n="${String(index)}"`,
+    `img="${String(image)}"`,
     `image="${attachmentId}"`,
     `x="${fixed(region.x)}"`,
     `y="${fixed(region.y)}"`,

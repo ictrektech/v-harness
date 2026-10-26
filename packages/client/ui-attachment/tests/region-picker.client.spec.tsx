@@ -42,7 +42,7 @@ const messages: Record<string, string> = {
   'image.region.title': '框选要处理的位置',
   'image.region.hint': '在图上拖一个框',
   'image.region.clear': '清除',
-  'image.region.done': '就用这块并发送',
+  'image.region.done': '就用这些框',
   'image.region.chip': '区域',
   'attachment.dropBlocked': '当前无法添加文件或图片',
   'attachment.dropTitle': '文件或图片拖动到此处即可添加',
@@ -79,37 +79,61 @@ describe('region measurement', () => {
     expect(screen.getByText('框选要处理的位置')).toBeTruthy()
   })
 
-  it('sends the measured box in one action and leaves no tag behind', async () => {
+  it('writes the measured box into the draft and leaves sending to the user', async () => {
     const onInsertRegion = vi.fn((token: string) => { void token; return true })
-    const onSubmitDraft = vi.fn(() => true)
-    render(<ComposerAttachments {...props({ onInsertRegion, onSubmitDraft })} />)
+    render(<ComposerAttachments {...props({ onInsertRegion })} />)
 
     const stage = document.querySelector('[data-region-stage]')
     expect(stage).toBeTruthy()
     fireEvent.pointerDown(stage as Element, { clientX: 80, clientY: 120 })
     fireEvent.pointerMove(window, { clientX: 400, clientY: 200 })
     fireEvent.pointerUp(window)
-    fireEvent.click(screen.getByText('就用这块并发送'))
-    await new Promise(resolve => { setTimeout(resolve, 0) })
+    fireEvent.click(screen.getByText('就用这些框'))
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
 
     expect(onInsertRegion).toHaveBeenCalledTimes(1)
     const token = onInsertRegion.mock.calls[0]?.[0]
     expect(token).toBe('<region role="cut" n="1" image="a1" x="0.1000" y="0.3000" w="0.4000" h="0.2000"/>')
-    expect(onSubmitDraft).toHaveBeenCalledTimes(1)
   })
 
-  it('does not send when the draft refuses the insertion', async () => {
+  it('keeps the second picture open for a green box after the first is confirmed', async () => {
+    const onInsertRegion = vi.fn((token: string) => { void token; return true })
+    render(<ComposerAttachments {...props({ attachments: [photo('a1'), photo('a2')], onInsertRegion })} />)
+
+    const first = document.querySelector('[data-region-stage]') as Element
+    fireEvent.pointerDown(first, { clientX: 80, clientY: 120 })
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 200 })
+    fireEvent.pointerUp(window)
+    fireEvent.click(screen.getByText('就用这些框'))
+
+    // The material is measured by its own button, and its tag carries the role
+    // that pairs it with the red box of the same number.
+    // Each thumbnail's badge is labelled with the region action; the second one
+    // belongs to the material, which is the only picture that can take a green box.
+    const openers = screen.getAllByLabelText('框选')
+    fireEvent.click(openers[1] as Element)
+    const second = document.querySelector('[data-region-stage]') as Element
+    fireEvent.pointerDown(second, { clientX: 400, clientY: 200 })
+    fireEvent.pointerMove(window, { clientX: 560, clientY: 280 })
+    fireEvent.pointerUp(window)
+    fireEvent.click(screen.getByText('就用这些框'))
+
+    expect(onInsertRegion).toHaveBeenCalledTimes(2)
+    expect(onInsertRegion.mock.calls[1]?.[0])
+      .toBe('<region role="place" n="1" image="a2" x="0.5000" y="0.5000" w="0.2000" h="0.2000"/>')
+  })
+
+  it('does not remember a box the draft refused', async () => {
     const onInsertRegion = vi.fn((token: string) => { void token; return false })
-    const onSubmitDraft = vi.fn(() => true)
-    render(<ComposerAttachments {...props({ onInsertRegion, onSubmitDraft })} />)
+    render(<ComposerAttachments {...props({ onInsertRegion })} />)
     const stage = document.querySelector('[data-region-stage]') as Element
     fireEvent.pointerDown(stage, { clientX: 80, clientY: 120 })
     fireEvent.pointerMove(window, { clientX: 400, clientY: 200 })
     fireEvent.pointerUp(window)
-    fireEvent.click(screen.getByText('就用这块并发送'))
-    await new Promise(resolve => { setTimeout(resolve, 0) })
+    fireEvent.click(screen.getByText('就用这些框'))
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
     expect(onInsertRegion).toHaveBeenCalledTimes(1)
-    expect(onSubmitDraft).not.toHaveBeenCalled()
+    expect(screen.queryByText(/10%,30%/)).toBeNull()
   })
 
   it('offers nothing when the composer cannot edit the draft', () => {
@@ -130,7 +154,12 @@ describe('region-format', () => {
 
   it('writes fractions the model can scale onto any document', () => {
     expect(formatRegionToken('att_7f3c', { x: 0.14, y: 0.69, w: 0.71, h: 0.11 }, 'place', 2))
-      .toBe('<region role="place" n="2" image="att_7f3c" x="0.1400" y="0.6900" w="0.7100" h="0.1100"/>')
+      .toBe('<region role="place" n="2" img="1" image="att_7f3c" x="0.1400" y="0.6900" w="0.7100" h="0.1100"/>')
+  })
+
+  it('names the picture by its position in the message, not by a draft id', () => {
+    expect(formatRegionToken('att_9ab1', { x: 0.5, y: 0.5, w: 0.25, h: 0.2 }, 'place', 1, 2))
+      .toContain('img="2"')
   })
 
   it('summarises a box for the chip', () => {

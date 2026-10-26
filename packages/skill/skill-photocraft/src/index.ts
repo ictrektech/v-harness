@@ -66,7 +66,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     album: new AlbumClient(albumEndpoint, timeoutMs),
     previewSide: config.previewSide ?? DEFAULT_PREVIEW_SIDE,
   }
-  ctx.inject(['tools', 'attachments'], (toolCtx) => {
+  ctx.inject(['tools', 'attachments', 'workingDirectory'], (toolCtx) => {
     registerPhotocraftTools(toolCtx, runtime)
   })
 }

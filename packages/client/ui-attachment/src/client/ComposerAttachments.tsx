@@ -24,7 +24,7 @@ interface ComposerRailItem extends AttachmentRailItem {
 /** Draft image previews, pending-file cards, drop target, and original-image preview. */
 export function ComposerAttachments({
   attachments, canAcceptDrop, onAddFiles, onRemoveAttachment, uploads, onRetryFile, dropLimits,
-  onInsertRegion, onSubmitDraft, t,
+  onInsertRegion, t,
 }: ComposerAttachmentsProps) {
   const [preview, setPreview] = useState<ComposerImageAttachment | null>(null)
   const [measuring, setMeasuring] = useState<ComposerImageAttachment | null>(null)
@@ -56,7 +56,6 @@ export function ComposerAttachments({
     (id: string): RegionRole => (images[0]?.id === id ? 'cut' : 'place'),
     [images],
   )
-
   // Derived from state rather than from a transition: the attachment list
   // updates more than once per upload, and a transition-based effect opens the
   // picker on whichever update happens to be first — or not at all.
@@ -136,7 +135,7 @@ export function ComposerAttachments({
                       aria-label={t('image.region.open')}
                       onClick={() => { setMeasuring(current => current?.id === attachment.id ? null : attachment) }}
                     >
-                      {roleOf(attachment.id) === 'cut' ? '①' : '②'} {t('image.region.open')}
+                      {roleOf(attachment.id) === 'cut' ? '①' : '②'}
                     </button>
                   )}
                   <button
@@ -166,13 +165,15 @@ export function ComposerAttachments({
           onChange={(regions) => { remember(measuring.id, regions) }}
           onConfirm={(regions) => {
             const role = roleOf(measuring.id)
-            const tokens = regions.map((region, index) => formatRegionToken(measuring.id, region, role, index + 1))
+            // The model receives the pictures in this order and can see no draft
+            // id, so the position is the one handle both sides share.
+            const picture = images.findIndex(image => image.id === measuring.id) + 1
+            const tokens = regions.map((region, index) => formatRegionToken(measuring.id, region, role, index + 1, picture))
             const inserted = onInsertRegion?.(tokens.join('\n')) ?? false
             setMeasuring(null)
-            // Only a tag that actually reached the draft may be shown as sent.
-            if (!inserted) return
-            remember(measuring.id, regions)
-            setTimeout(() => { onSubmitDraft?.() }, 0)
+            // Only a tag that actually reached the draft may be shown as queued:
+            // a refused insertion leaves no chip claiming the box is in the message.
+            remember(measuring.id, inserted ? regions : [])
           }}
           onClose={() => {
             setDismissed(current => new Set(current).add(measuring.id))
@@ -187,7 +188,7 @@ export function ComposerAttachments({
               key={`${id}-${String(index)}`}
               className={roleOf(id) === 'cut' ? `${css.regionChip} ${css.regionChipCut}` : `${css.regionChip} ${css.regionChipPlace}`}
             >
-              {roleOf(id) === 'cut' ? '①' : '②'} {String(index + 1)} · {regionSummary(region)}
+              {String(index + 1)} · {regionSummary(region)}
               <button
                 type="button"
                 aria-label={t('image.region.clear')}
