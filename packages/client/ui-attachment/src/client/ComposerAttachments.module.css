@@ -69,24 +69,29 @@
 
 /* Region measurement: an optional affordance on each draft image, never a modal. */
 
+/* A 44px thumbnail cannot afford a word: the badge is a corner glyph whose
+   accessible name still carries the action. */
+
 .regionBadge {
   position: absolute;
-  left: 4px;
-  bottom: 4px;
-  padding: 1px 6px;
-  border: 1px dashed var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-l1);
-  color: var(--dsw-alias-text-l3);
+  left: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
   font-size: 10px;
   line-height: 16px;
+  text-align: center;
   cursor: pointer;
 }
 
 .regionBadgeOn {
-  border-style: solid;
-  border-color: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-brand-primary);
+  background: var(--dsw-alias-brand-primary);
+  color: #fff;
 }
 
 .regionChips {

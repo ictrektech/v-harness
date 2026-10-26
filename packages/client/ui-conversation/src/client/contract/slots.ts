@@ -77,24 +77,17 @@ export interface ComposerAttachmentsOwnerProps {
   /** Display-ready limits for the drop invitation. */
   dropLimits?: { readonly count: number; readonly size: string } | undefined
   /**
-   * Append a measured region token to the draft at the caret.
+   * Append measured region tokens to the draft.
    *
    * Absent when the composer cannot edit the draft; the attachment surface then
    * hides the region affordance instead of offering a control that cannot land
-   * anywhere. Returns whether the draft accepted the insertion, which is what
-   * decides if a following {@link ComposerAttachmentsOwnerProps.onSubmitDraft}
-   * would send anything at all.
+   * anywhere. Returns whether the draft accepted the insertion.
+   *
+   * Insertion never submits: one message must be able to carry a red box on the
+   * subject and a green box on the material, so the draft stays editable until
+   * the user sends it themselves.
    */
   onInsertRegion?: (token: string) => boolean
-  /**
-   * Send the current draft.
-   *
-   * Paired with {@link ComposerAttachmentsOwnerProps.onInsertRegion} so a
-   * measured region can go out in one action: the user drags a box, presses the
-   * picker's only button, and the request leaves — no tag ever sits in the draft
-   * for them to read or delete.
-   */
-  onSubmitDraft?: () => boolean
 }
 
 /**

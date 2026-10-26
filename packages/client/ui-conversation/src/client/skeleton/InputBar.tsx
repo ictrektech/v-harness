@@ -430,13 +430,6 @@ export const InputBar = memo(function InputBar({
               return true
             },
           },
-          ...keyboard === undefined ? {} : {
-            onSubmitDraft: () => {
-              if (machineBusy) return false
-              keyboard.submit(primarySubmitMode, 'click')
-              return true
-            },
-          },
         })}
         {/* One scrollport, one text surface: the contenteditable grows with
             its content and .scroll — capped at 14 lines in CSS — is the only
