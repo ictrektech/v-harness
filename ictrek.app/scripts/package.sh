@@ -312,30 +312,32 @@ PY
 }
 
 verify_package() {
-  local package_path="$1" app_tarball="$2" required
+  local package_path="$1" app_tarball="$2" required app_entries outer_entries
   log "Verify app.tar.gz contents"
+  app_entries="$(tar tzf "$app_tarball")"
   for required in .env manifest.yml docker-compose.yml configs.yml routers.yml icon.png README.zh-CN.md README.en.md; do
-    tar tzf "$app_tarball" | grep -qx "$required" || die "app.tar.gz missing required file: ${required}"
+    grep -Fxq "$required" <<< "$app_entries" || die "app.tar.gz missing required file: ${required}"
   done
-  tar tf "$package_path" | grep -qx "app.tar.gz" || die "package is missing app.tar.gz"
+  outer_entries="$(tar tf "$package_path")"
+  [[ "$outer_entries" == "app.tar.gz" ]] || die "package must contain exactly app.tar.gz"
 
   local manifest_text compose_text routers_text
   manifest_text="$(tar xOf "$app_tarball" manifest.yml)"
-  printf '%s\n' "$manifest_text" | grep -Fq "  basePath: ${FRONTEND_BASE_PATH}" \
+  grep -Fq "  basePath: ${FRONTEND_BASE_PATH}" <<< "$manifest_text" \
     || die "manifest frontend.basePath must be ${FRONTEND_BASE_PATH}"
-  printf '%s\n' "$manifest_text" | grep -Fq "id: ${APP_ID}" \
+  grep -Fq "id: ${APP_ID}" <<< "$manifest_text" \
     || die "manifest id must be ${APP_ID}"
 
   compose_text="$(tar xOf "$app_tarball" docker-compose.yml)"
-  printf '%s\n' "$compose_text" | grep -q 'HeadersRegexp' \
+  grep -q 'HeadersRegexp' <<< "$compose_text" \
     && die "Traefik v3 requires HeaderRegexp, not HeadersRegexp"
-  printf '%s\n' "$compose_text" | grep -Fq '${VOS_APP_STORAGE_PATH}/data:/data' \
+  grep -Fq '${VOS_APP_STORAGE_PATH}/data:/data' <<< "$compose_text" \
     || die "compose must mount VOS_APP_STORAGE_PATH/data at /data"
 
   routers_text="$(tar xOf "$app_tarball" routers.yml)"
-  printf '%s\n' "$routers_text" | grep -Fq "  - id: ${ROUTER_PAGE_ID}" \
+  grep -Fq "  - id: ${ROUTER_PAGE_ID}" <<< "$routers_text" \
     || die "routers.yml must declare page id ${ROUTER_PAGE_ID}"
-  printf '%s\n' "$routers_text" | grep -Fq "    iframe-src: ${ROUTER_IFRAME_SRC/__APP_VERSION__/${APP_VERSION}}" \
+  grep -Fq "    iframe-src: ${ROUTER_IFRAME_SRC/__APP_VERSION__/${APP_VERSION}}" <<< "$routers_text" \
     || die "routers.yml iframe-src mismatch"
 }
 
