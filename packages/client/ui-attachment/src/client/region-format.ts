@@ -54,10 +54,11 @@ export type RegionRole = 'cut' | 'place'
  * @param role - `cut` for the first image, `place` for any later one.
  * @returns the one-line token.
  */
-export function formatRegionToken(attachmentId: string, region: Region, role: RegionRole = 'cut'): string {
+export function formatRegionToken(attachmentId: string, region: Region, role: RegionRole = 'cut', index = 1): string {
   const fixed = (value: number): string => value.toFixed(4)
   const attributes = [
     `role="${role}"`,
+    `n="${String(index)}"`,
     `image="${attachmentId}"`,
     `x="${fixed(region.x)}"`,
     `y="${fixed(region.y)}"`,

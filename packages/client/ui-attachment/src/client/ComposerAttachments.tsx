@@ -28,10 +28,12 @@ export function ComposerAttachments({
 }: ComposerAttachmentsProps) {
   const [preview, setPreview] = useState<ComposerImageAttachment | null>(null)
   const [measuring, setMeasuring] = useState<ComposerImageAttachment | null>(null)
-  const [regions, setRegions] = useState<ReadonlyMap<string, Region>>(new Map())
+  const [marks, setMarks] = useState<ReadonlyMap<string, readonly Region[]>>(new Map())
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
   const [dragActive, setDragActive] = useState(false)
   const dragDepth = useRef(0)
   const closePreview = useCallback(() => { setPreview(null) }, [])
+
   useEffect(() => {
     if (preview !== null && !attachments.some(attachment => attachment.id === preview.id)) setPreview(null)
   }, [attachments, preview])
@@ -44,43 +46,43 @@ export function ComposerAttachments({
     return installDocumentDropEvents(canAcceptDrop, onAddFiles, dragDepth, setDragActive)
   }, [canAcceptDrop, onAddFiles])
 
+  // The first image is the subject, every later one is material — that order is
+  // the role, so the picker needs no colour switch.
+  const images = useMemo(
+    () => attachments.filter((attachment): attachment is ComposerImageAttachment => attachment.kind === 'image'),
+    [attachments],
+  )
+  const roleOf = useCallback(
+    (id: string): RegionRole => (images[0]?.id === id ? 'cut' : 'place'),
+    [images],
+  )
 
   // Derived from state rather than from a transition: the attachment list
-  // updates more than once per upload (pending, then ready), and a
-  // transition-based effect opens the picker on whichever update happens to be
-  // first — or not at all. One image, no region, not dismissed ⇒ open.
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
+  // updates more than once per upload, and a transition-based effect opens the
+  // picker on whichever update happens to be first — or not at all.
   useEffect(() => {
     if (onInsertRegion === undefined || measuring !== null) return
-    const images = attachments.filter((attachment): attachment is ComposerImageAttachment => attachment.kind === 'image')
-    if (images.length !== 1) return
     const [only] = images
-    if (only === undefined || dismissed.has(only.id) || regions.has(only.id)) return
+    if (images.length === 0 || only === undefined) return
+    if (dismissed.has(only.id) || (marks.get(only.id)?.length ?? 0) > 0) return
     setMeasuring(only)
-  }, [attachments, dismissed, measuring, onInsertRegion, regions])
+  }, [dismissed, images, marks, measuring, onInsertRegion])
+
+  const remember = useCallback((id: string, regions: readonly Region[]) => {
+    setMarks((current) => {
+      const next = new Map(current)
+      if (regions.length === 0) next.delete(id)
+      else next.set(id, regions)
+      return next
+    })
+  }, [])
 
   const railItems = useMemo<ComposerRailItem[]>(() => attachments.map(attachment => ({
     id: attachment.id,
     attachment,
   })), [attachments])
 
-  // The first image is the subject, every later one is material: the order the
-  // user attached them in is the role, so no extra switch is needed.
-  const roleOf = useCallback((id: string): RegionRole => {
-    const images = attachments.filter(item => item.kind === 'image')
-    return images[0]?.id === id ? 'cut' : 'place'
-  }, [attachments])
-
-  const remember = useCallback((id: string, region: Region | undefined) => {
-    setRegions((current) => {
-      const next = new Map(current)
-      if (region === undefined) next.delete(id)
-      else next.set(id, region)
-      return next
-    })
-  }, [])
-
-  const measuringRegion = measuring === null ? undefined : regions.get(measuring.id)
+  const measuringValues = measuring === null ? [] : marks.get(measuring.id) ?? []
 
   return (
     <>
@@ -115,7 +117,7 @@ export function ComposerAttachments({
                   />
                 )
               }
-              const region = regions.get(attachment.id)
+              const marked = (marks.get(attachment.id)?.length ?? 0) > 0
               return (
                 <div className={css.imageItem}>
                   <button
@@ -129,12 +131,12 @@ export function ComposerAttachments({
                   {onInsertRegion !== undefined && (
                     <button
                       type="button"
-                      className={region === undefined ? css.regionBadge : `${css.regionBadge} ${css.regionBadgeOn}`}
+                      className={marked ? `${css.regionBadge} ${css.regionBadgeOn}` : css.regionBadge}
                       title={t('image.region.title')}
                       aria-label={t('image.region.open')}
                       onClick={() => { setMeasuring(current => current?.id === attachment.id ? null : attachment) }}
                     >
-                      {t('image.region.open')}
+                      {roleOf(attachment.id) === 'cut' ? '①' : '②'} {t('image.region.open')}
                     </button>
                   )}
                   <button
@@ -151,25 +153,25 @@ export function ComposerAttachments({
           />
         </div>
       )}
-      {onInsertRegion !== undefined && attachments.some(item => item.kind === 'image') && (
+      {onInsertRegion !== undefined && images.length > 0 && (
         <p className={css.tip}>{t('image.region.tip')}</p>
       )}
       {measuring !== null && (
         <RegionPicker
           src={measuring.previewUrl}
           alt={measuring.file.name || t('image.original')}
-          value={measuringRegion}
+          values={measuringValues}
+          role={roleOf(measuring.id)}
           labels={regionPickerLabels(t)}
-          onChange={(region) => { remember(measuring.id, region) }}
-          onConfirm={(region) => {
-            const inserted = onInsertRegion?.(formatRegionToken(measuring.id, region, roleOf(measuring.id))) ?? false
+          onChange={(regions) => { remember(measuring.id, regions) }}
+          onConfirm={(regions) => {
+            const role = roleOf(measuring.id)
+            const tokens = regions.map((region, index) => formatRegionToken(measuring.id, region, role, index + 1))
+            const inserted = onInsertRegion?.(tokens.join('\n')) ?? false
             setMeasuring(null)
-            // Only a tag that actually reached the draft may be shown as sent;
-            // a refused insertion must not leave a chip implying it worked.
+            // Only a tag that actually reached the draft may be shown as sent.
             if (!inserted) return
-            remember(measuring.id, region)
-            // The draft write and the submit read the same editor; let the write
-            // land first instead of racing it in the same tick.
+            remember(measuring.id, regions)
             setTimeout(() => { onSubmitDraft?.() }, 0)
           }}
           onClose={() => {
@@ -178,20 +180,23 @@ export function ComposerAttachments({
           }}
         />
       )}
-      {regions.size > 0 && (
+      {marks.size > 0 && measuring === null && (
         <div className={css.regionChips}>
-          {[...regions.entries()].map(([id, region]) => (
-            <span key={id} className={roleOf(id) === 'cut' ? `${css.regionChip} ${css.regionChipCut}` : `${css.regionChip} ${css.regionChipPlace}`}>
-              {t('image.region.chip')} {regionSummary(region)}
+          {[...marks.entries()].flatMap(([id, regions]) => regions.map((region, index) => (
+            <span
+              key={`${id}-${String(index)}`}
+              className={roleOf(id) === 'cut' ? `${css.regionChip} ${css.regionChipCut}` : `${css.regionChip} ${css.regionChipPlace}`}
+            >
+              {roleOf(id) === 'cut' ? '①' : '②'} {String(index + 1)} · {regionSummary(region)}
               <button
                 type="button"
                 aria-label={t('image.region.clear')}
-                onClick={() => { remember(id, undefined) }}
+                onClick={() => { remember(id, regions.filter((_value, at) => at !== index)) }}
               >
                 <IconCloseFillRegular size={10} />
               </button>
             </span>
-          ))}
+          )))}
         </div>
       )}
       {preview !== null && (

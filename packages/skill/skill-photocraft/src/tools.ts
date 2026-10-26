@@ -15,7 +15,7 @@ import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachme
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { AlbumClient, McpClient, type FileBridge } from './client.ts'
-import { normalizeRegion } from './coords.ts'
+import { normalizeRegion, toPixels, type Region } from './coords.ts'
 import { RECIPES } from './recipes.ts'
 
 /** Everything the tools need to reach the two capabilities. */
@@ -136,6 +136,75 @@ function backgroundOf(instruction: string): string | undefined {
   return undefined
 }
 
+
+/**
+ * Bring a source into the engine's workspace.
+ * @param bridge - file bridge of the capability.
+ * @param source - chat attachment path or workspace file name.
+ * @returns the workspace file name to open.
+ */
+async function importSource(bridge: FileBridge, source: string): Promise<string> {
+  if (!source.startsWith('/')) return source
+  const absolute = resolve(source)
+  if (!absolute.startsWith(`${resolve(ATTACHMENT_ROOT)}/`)) {
+    throw new Error(`photocraft: 只能导入附件目录里的图片（${ATTACHMENT_ROOT}）`)
+  }
+  const name = `wish-${String(Date.now())}.png`
+  await bridge.upload(name, await readFile(absolute))
+  return name
+}
+
+/**
+ * Cut one rectangle out of the opened picture into its own transparent file.
+ * @param client - MCP client with a document open.
+ * @param name - output file name.
+ * @param region - fractions of the picture.
+ * @param file - name of the file to save.
+ * @returns the file name holding the piece.
+ */
+async function cutPiece(client: McpClient, name: string, region: Region, file: string): Promise<{ file: string; width: number; height: number }> {
+  const document = await client.call('doc_inspect', {}) as { width?: number; height?: number }
+  const box = toPixels(region, { width: document.width ?? 0, height: document.height ?? 0 })
+  await client.run('select.rect', { ...box })
+  await client.run('select.modify.feather', { radius: 2 })
+  await client.run('edit.copy', {})
+  // A fresh transparent canvas keeps the piece free of its old neighbours.
+  await client.call('doc_new', { width: box.width, height: box.height, background: 'transparent' })
+  await client.run('edit.paste', { center: [box.width / 2, box.height / 2] })
+  await client.call('doc_save', { path: file, format: 'png' })
+  void name
+  return { file, width: box.width, height: box.height }
+}
+
+/**
+ * Save the active document, read it back, and return the picture to the caller.
+ * @param ctx - context owning the attachment store.
+ * @param client - MCP client with the finished document open.
+ * @param bridge - file bridge of the capability.
+ * @param side - preview long edge.
+ * @param applied - the wish this result answers.
+ * @param verb - what happened, for the caption.
+ * @returns the tool value.
+ */
+async function finish(
+  ctx: Context,
+  client: McpClient,
+  bridge: FileBridge,
+  side: number,
+  applied: string,
+  verb: string,
+): Promise<{ file: string; bytes: number; applied: string; preview: Preview }> {
+  const file = `wish-${String(Date.now())}.png`
+  await client.call('doc_save', { path: file, format: 'png' })
+  const bytes = await bridge.download(file)
+  return {
+    file,
+    bytes: bytes.length,
+    applied: `${verb}: ${applied}`,
+    preview: await keep(ctx, await client.preview(side), `${file}-preview.png`),
+  }
+}
+
 /**
  * Register the two PhotoCraft tools.
  * @param ctx - context carrying tools and the attachment store.
@@ -170,15 +239,18 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           },
         },
       },
-      place: {
-        type: 'object',
-        description: '绿框：结果要落到的位置和大小，0..1 的比例；只有和红框一起用时才有效',
-        additionalProperties: false,
-        properties: {
-          x: { type: 'number', required: true },
-          y: { type: 'number', required: true },
-          w: { type: 'number', required: true },
-          h: { type: 'number', required: true },
+      places: {
+        type: 'array',
+        description: '绿框：结果落点，按序号与 regions 一一对应；只有和红框一起用才有效',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            x: { type: 'number', required: true },
+            y: { type: 'number', required: true },
+            w: { type: 'number', required: true },
+            h: { type: 'number', required: true },
+          },
         },
       },
     },
@@ -202,47 +274,62 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
     async execute(args) {
       const source = (args.source ?? '').trim()
       if (source === '') throw new Error('photocraft: 需要一张图（聊天附件路径或工作区文件名）')
-
-      // One branch: an absolute path is a chat attachment, whose bytes this
-      // process may read but the agent's shell may not write.
-      let target = source
-      if (source.startsWith('/')) {
-        const absolute = resolve(source)
-        if (!absolute.startsWith(`${resolve(ATTACHMENT_ROOT)}/`)) {
-          throw new Error(`photocraft: 只能导入附件目录里的图片（${ATTACHMENT_ROOT}）`)
-        }
-        target = `wish-${String(Date.now())}.png`
-        await bridge.upload(target, await readFile(absolute))
-      }
-
-      await mcp.open(target)
-      // Recipes take fractions; the engine conversion happens there, once.
       const assets = args.assets ?? []
-      const id = recipeFor(args.instruction, assets.length > 0)
-      if (id === 'poster' && (args.text ?? '') === '') {
-        throw new Error('photocraft: 做海报需要一句文案（text）')
-      }
-      const background = id === 'cutout' ? backgroundOf(args.instruction) : undefined
-      const params: Record<string, unknown> = {
-        ...args.region === undefined ? {} : normalizeRegion(args.region),
-        ...background === undefined ? {} : { background },
-        ...assets.length === 0 ? {} : { asset: assets[0] },
-        ...args.text === undefined ? {} : { headline: args.text },
+      const regions = args.regions ?? []
+      const places = args.places ?? []
+      const main = await importSource(bridge, source)
+
+      // Green boxes present: cut each paired red box out and drop it on the
+      // material. One loop, no per-region special cases.
+      if (places.length > 0) {
+        const [target] = assets
+        if (target === undefined) throw new Error('photocraft: 有绿框但没有素材图')
+        const pieces: { file: string; width: number; height: number }[] = []
+        for (const [index, region] of regions.entries()) {
+          if (index >= places.length) break
+          // Each piece starts from the untouched source: cutting one piece
+          // replaces the active document, so the next one reopens it.
+          await mcp.open(main)
+          pieces.push(await cutPiece(mcp, main, normalizeRegion(region), `piece-${String(index)}-${String(Date.now())}.png`))
+        }
+        if (pieces.length === 0) throw new Error('photocraft: 绿框需要配一个红框')
+        await mcp.open(target)
+        const canvas = await mcp.call('doc_inspect', {}) as { width?: number; height?: number }
+        for (const [index, piece] of pieces.entries()) {
+          const place = normalizeRegion(places[index] as Region)
+          // The green box decides the size on the canvas, so the scale is the
+          // ratio between that width and the piece's own pixels — not the box
+          // width itself.
+          const targetWidth = place.w * (canvas.width ?? 0)
+          const scale = piece.width === 0 ? 100 : Number(((targetWidth / piece.width) * 100).toFixed(2))
+          await mcp.call('doc_place', {
+            path: piece.file,
+            center: [
+              Math.round((place.x + place.w / 2) * (canvas.width ?? 0)),
+              Math.round((place.y + place.h / 2) * (canvas.height ?? 0)),
+            ],
+            scale,
+          })
+        }
+        return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'placed')
       }
 
+      await mcp.open(main)
+      const id = recipeFor(args.instruction, assets.length > 0)
+      if (id === 'poster' && (args.text ?? '') === '') throw new Error('photocraft: 做海报需要一句文案（text）')
       const recipe = RECIPES.find(candidate => candidate.id === id)
       if (recipe === undefined) throw new Error(`photocraft: 缺少配方 ${id}`)
-      await recipe.run(mcp, params, bridge)
-
-      const name = `wish-${String(Date.now())}.png`
-      await mcp.call('doc_save', { path: name, format: 'png' })
-      const bytes = await bridge.download(name)
-      return {
-        file: name,
-        bytes: bytes.length,
-        applied: args.instruction,
-        preview: await keep(ctx, await mcp.preview(previewSide), `${name}-preview.png`),
+      const background = id === 'cutout' ? backgroundOf(args.instruction) : undefined
+      const base: Record<string, unknown> = {
+        ...background === undefined ? {} : { background },
+        ...assets.length === 0 || assets[0] === undefined ? {} : { asset: assets[0] },
+        ...args.text === undefined ? {} : { headline: args.text },
       }
+      // No red box: the wish applies to the whole picture. With red boxes, the
+      // same wish is repeated at each of them, in order.
+      const boxes = regions.length === 0 ? [undefined] : regions.map(region => normalizeRegion(region))
+      for (const region of boxes) await recipe.run(mcp, { ...base, ...region ?? {} }, bridge)
+      return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'edited')
     },
   }))
 

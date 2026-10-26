@@ -94,7 +94,7 @@ describe('region measurement', () => {
 
     expect(onInsertRegion).toHaveBeenCalledTimes(1)
     const token = onInsertRegion.mock.calls[0]?.[0]
-    expect(token).toMatch(/^<region image="a1" x="0\.1000" y="0\.3000" w="0\.4000" h="0\.2000"\/>$/u)
+    expect(token).toBe('<region role="cut" n="1" image="a1" x="0.1000" y="0.3000" w="0.4000" h="0.2000"/>')
     expect(onSubmitDraft).toHaveBeenCalledTimes(1)
   })
 
@@ -129,8 +129,8 @@ describe('region-format', () => {
   })
 
   it('writes fractions the model can scale onto any document', () => {
-    expect(formatRegionToken('att_7f3c', { x: 0.14, y: 0.69, w: 0.71, h: 0.11 }))
-      .toBe('<region image="att_7f3c" x="0.1400" y="0.6900" w="0.7100" h="0.1100"/>')
+    expect(formatRegionToken('att_7f3c', { x: 0.14, y: 0.69, w: 0.71, h: 0.11 }, 'place', 2))
+      .toBe('<region role="place" n="2" image="att_7f3c" x="0.1400" y="0.6900" w="0.7100" h="0.1100"/>')
   })
 
   it('summarises a box for the chip', () => {

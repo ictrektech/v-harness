@@ -100,3 +100,45 @@
   display: inline-flex;
   gap: 6px;
 }
+
+/* Two roles, two colours: red cuts from the subject, green places onto material. */
+
+.boxCut {
+  border-color: #ff2d55;
+}
+
+.boxPlace {
+  border-color: #3ddc84;
+}
+
+.number {
+  position: absolute;
+  left: -1px;
+  top: -18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #ff2d55;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 10px;
+}
+
+.badgeCut {
+  background: #ff2d55;
+}
+
+.badgePlace {
+  background: #3ddc84;
+}
