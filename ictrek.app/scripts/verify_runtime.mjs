@@ -14,6 +14,7 @@ for(const name of ['locale','ui-knowledge','ui-tool-cards','ui-user-questions','
  const bundle=await readFile('/opt/v-harness/plugins/dsh-client-'+name+'/lib/client.js','utf8');
  assert.ok(!/require\(["']@deepseek-ai\/(?:cosmokit|schemastery)["']\)/.test(bundle),name+' must inline its vendor utilities before staging');
 }
+assert.ok((await readFile('/opt/v-harness/plugins/dsh-api-session-controller/lib/client.js','utf8')).includes('@deepseek-ai/dsh-api-session-controller'),'session controller browser artifact must be staged with its Host artifact');
 const upstream=createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(req.url.includes('userinfo')?{sub:'startup-smoke',preferred_username:'startup-smoke'}:{models:[]}));});
 upstream.listen(18090,'127.0.0.1'); await once(upstream,'listening');
 const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090'},stdio:['ignore','inherit','inherit']});

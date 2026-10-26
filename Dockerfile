@@ -146,6 +146,12 @@ RUN pnpm run build:lib:client \
       if [ -d "$source/locale" ]; then cp -R "$source/locale" "$target/"; fi; \
     done
 
+# Host-phase packages gain their browser half in the final Client pass.
+RUN set -eu; for spec in api/session-controller:dsh-api-session-controller api/remotes:dsh-api-remotes llm/llm-pi-ai:dsh-llm-pi-ai; do \
+      source="${spec%:*}"; name="${spec#*:}"; \
+      cp -R "packages/$source/lib/." "/build/plugins/$name/lib/"; \
+    done
+
 # ============================================================
 # Stage: agent-side tool plugins built from this repository
 # ============================================================

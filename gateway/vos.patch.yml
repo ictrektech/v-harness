@@ -6,3 +6,6 @@
   config:
     credentialOnboarding: false
     schedulerManaged: true
+- id: workspace-controller
+  config:
+    documentsDirectory: !!js process.env.HOME + '/workspace'
