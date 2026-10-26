@@ -10,6 +10,10 @@ assert.equal(JSON.parse(await readFile(webRoot+'/manifest.webmanifest','utf8')).
 assert.match(await readFile(webRoot+'/favicon.svg','utf8'),/viewBox="0 0 1196 813"/,'installed favicon must carry the interwoven mark');
 assert.ok((await readFile('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js','utf8')).includes('v-harness'),'installed chat bundle must contain the fork copy');
 assert.ok((await readFile('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js','utf8')).includes('v-harness'),'installed layout bundle must retain the fork title after boot');
+for(const name of ['locale','ui-knowledge','ui-tool-cards','ui-user-questions','ui-voffice']) {
+ const bundle=await readFile('/opt/v-harness/plugins/dsh-client-'+name+'/lib/client.js','utf8');
+ assert.ok(!/require\(["']@deepseek-ai\/(?:cosmokit|schemastery)["']\)/.test(bundle),name+' must inline its vendor utilities before staging');
+}
 const upstream=createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(req.url.includes('userinfo')?{sub:'startup-smoke',preferred_username:'startup-smoke'}:{models:[]}));});
 upstream.listen(18090,'127.0.0.1'); await once(upstream,'listening');
 const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090'},stdio:['ignore','inherit','inherit']});

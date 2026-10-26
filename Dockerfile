@@ -136,11 +136,11 @@ RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
     done
 
 # v-harness owns the visible brand in both the shell and dynamic UI plugins.
-# Rebuild the shared primitives before Vite and stage each changed locale owner.
+# Stage every local browser plugin after vendor libraries and client bundles are rebuilt.
 ENV DSH_CLIENT_BUILD_PROFILE=official DSH_CLIENT_TITLE=v-harness
 RUN pnpm run build:lib:client \
  && pnpm --filter @deepseek-ai/dsh-web-frontend build \
- && for name in ui-layout ui-agent-preset ui-brand-official ui-chat ui-conversation ui-model-selection ui-plugin-manager ui-plugin-market ui-settings-account ui-settings-models ui-sidebar-browser ui-sidebar-documentpreview; do \
+ && for name in locale ui-knowledge ui-tool-cards ui-user-questions ui-voffice ui-layout ui-agent-preset ui-brand-official ui-chat ui-conversation ui-model-selection ui-plugin-manager ui-plugin-market ui-settings-account ui-settings-models ui-sidebar-browser ui-sidebar-documentpreview; do \
       source="packages/client/$name"; target="/build/plugins/dsh-client-$name"; \
       mkdir -p "$target"; cp -R "$source/package.json" "$source/lib" "$target/"; \
       if [ -d "$source/locale" ]; then cp -R "$source/locale" "$target/"; fi; \
