@@ -140,7 +140,7 @@ RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
 ENV DSH_CLIENT_BUILD_PROFILE=official DSH_CLIENT_TITLE=v-harness
 RUN pnpm run build:lib:client \
  && pnpm --filter @deepseek-ai/dsh-web-frontend build \
- && for name in ui-agent-preset ui-brand-official ui-chat ui-conversation ui-model-selection ui-plugin-manager ui-plugin-market ui-settings-account ui-settings-models ui-sidebar-browser ui-sidebar-documentpreview; do \
+ && for name in ui-layout ui-agent-preset ui-brand-official ui-chat ui-conversation ui-model-selection ui-plugin-manager ui-plugin-market ui-settings-account ui-settings-models ui-sidebar-browser ui-sidebar-documentpreview; do \
       source="packages/client/$name"; target="/build/plugins/dsh-client-$name"; \
       mkdir -p "$target"; cp -R "$source/package.json" "$source/lib" "$target/"; \
       if [ -d "$source/locale" ]; then cp -R "$source/locale" "$target/"; fi; \
@@ -218,7 +218,7 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes dsh-client-locale dsh-client-ui-agent-preset dsh-client-ui-brand-official dsh-client-ui-chat dsh-client-ui-conversation dsh-client-ui-model-selection dsh-client-ui-plugin-manager dsh-client-ui-plugin-market dsh-client-ui-settings-account dsh-client-ui-sidebar-browser dsh-client-ui-sidebar-documentpreview; do \
+RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes dsh-client-locale dsh-client-ui-layout dsh-client-ui-agent-preset dsh-client-ui-brand-official dsh-client-ui-chat dsh-client-ui-conversation dsh-client-ui-model-selection dsh-client-ui-plugin-manager dsh-client-ui-plugin-market dsh-client-ui-settings-account dsh-client-ui-sidebar-browser dsh-client-ui-sidebar-documentpreview; do \
       source="/opt/v-harness/plugins/$name"; \
       target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$(basename "$source")"; \
       test -f "$target/package.json"; \

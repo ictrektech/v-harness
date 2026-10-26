@@ -62,7 +62,7 @@ const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-sess
 // dsh-client-ui-voffice is not part of the published dependency graph at all,
 // so its profile copy is created rather than replaced; the carrier bundle
 // mounts its row.
-const BUNDLED = ['dsh-client-ui-agent-preset', 'dsh-client-ui-brand-official', 'dsh-client-ui-chat', 'dsh-client-ui-conversation', 'dsh-client-ui-model-selection', 'dsh-client-ui-plugin-manager', 'dsh-client-ui-plugin-market', 'dsh-client-ui-settings-account', 'dsh-client-ui-sidebar-browser', 'dsh-client-ui-sidebar-documentpreview', 'dsh-client-locale', 'dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-voffice', ...MANAGED]
+const BUNDLED = ['dsh-client-ui-layout', 'dsh-client-ui-agent-preset', 'dsh-client-ui-brand-official', 'dsh-client-ui-chat', 'dsh-client-ui-conversation', 'dsh-client-ui-model-selection', 'dsh-client-ui-plugin-manager', 'dsh-client-ui-plugin-market', 'dsh-client-ui-settings-account', 'dsh-client-ui-sidebar-browser', 'dsh-client-ui-sidebar-documentpreview', 'dsh-client-locale', 'dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-voffice', ...MANAGED]
 
 /**
  * Create the tenant's profile directory before dsh's first boot when it does
