@@ -62,6 +62,7 @@ export function RegionPicker({
   src, alt, values, strokes, role, labels, onChange, onStrokesChange, onConfirm, onClose,
 }: RegionPickerProps) {
   const stage = useRef<HTMLDivElement>(null)
+  const photo = useRef<HTMLImageElement>(null)
   const origin = useRef<Region | undefined>(undefined)
   const samples = useRef<readonly (readonly [number, number])[]>([])
   const [dragging, setDragging] = useState(false)
@@ -71,9 +72,16 @@ export function RegionPicker({
   const brushAllowed = role === 'cut'
   const activeTool: PickerTool = brushAllowed ? tool : 'box'
 
-  /** Pointer position as a fraction of the stage, which is the photo. */
+  /**
+   * Pointer position as a fraction of the photo itself.
+   *
+   * Measured on the image, not the stage: the stage is capped so a tall photo
+   * cannot swallow the whole viewport (which left the conversation nothing to
+   * scroll), and inside that cap the image is narrower than the stage. Reading
+   * the stage instead would stretch every box by the empty margins around it.
+   */
   const at = useCallback((clientX: number, clientY: number): Region | undefined => {
-    const box = stage.current?.getBoundingClientRect()
+    const box = photo.current?.getBoundingClientRect()
     if (box === undefined || box.width === 0 || box.height === 0) return undefined
     return { x: (clientX - box.left) / box.width, y: (clientY - box.top) / box.height, w: 0, h: 0 }
   }, [])
@@ -183,7 +191,7 @@ export function RegionPicker({
         role="presentation"
         data-region-stage
       >
-        <img className={css.image} src={src} alt={alt} draggable={false} />
+        <img ref={photo} className={css.image} src={src} alt={alt} draggable={false} />
         {values.map((value, index) => (
           <div
             key={`${String(index)}-${String(value.x)}-${String(value.y)}`}

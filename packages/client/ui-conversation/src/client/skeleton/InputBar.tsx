@@ -425,7 +425,15 @@ export const InputBar = memo(function InputBar({
               // Two lines instead of a cross-package helper: ui-attachment
               // already imports this package, so sharing code would close a
               // cycle between the composer and its attachment surface.
-              const next = draft.trim() === '' ? token : `${draft.trimEnd()}\n${token}`
+              // Replaces the tags already in the draft: the surface re-sends the
+              // whole set while a box is being adjusted, and appending would
+              // stack one tag per pointer move.
+              const kept = draft
+                .split('\n')
+                .filter(line => !line.startsWith('<region ') && !line.startsWith('<strokes '))
+                .join('\n')
+                .trimEnd()
+              const next = kept === '' ? token : `${kept}\n${token}`
               inputActions.setDraft(next)
               return true
             },

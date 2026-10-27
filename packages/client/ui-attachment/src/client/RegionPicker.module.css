@@ -41,6 +41,11 @@
   /* The flex column would otherwise shrink this to the space left and clip the
      photo; the stage must always be exactly as tall as the image inside it. */
   flex: none;
+  display: flex;
+  justify-content: center;
+  /* Without a ceiling a tall photo fills the viewport, the conversation behind
+     it collapses to zero height, and the page has nothing left to scroll. */
+  max-height: 45vh;
 
   /* The image must never start a native drag; the rectangle is drawn by us. */
   touch-action: none;
@@ -53,7 +58,11 @@
 
 .image {
   display: block;
-  width: 100%;
+  /* Fits inside the stage's ceiling without cropping, and keeps its own aspect
+     ratio so the pixel box the pointer maths reads stays exactly the photo. */
+  max-width: 100%;
+  max-height: 45vh;
+  width: auto;
   height: auto;
   pointer-events: none;
   -webkit-user-drag: none;

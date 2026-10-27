@@ -30,7 +30,6 @@ export function ComposerAttachments({
   const [measuring, setMeasuring] = useState<ComposerImageAttachment | null>(null)
   // Boxes and strokes per draft image; strokes only exist on the subject.
   const [marks, setMarks] = useState<ReadonlyMap<string, { regions: readonly Region[]; strokes: readonly Stroke[] }>>(new Map())
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
   const [dragActive, setDragActive] = useState(false)
   const dragDepth = useRef(0)
   const closePreview = useCallback(() => { setPreview(null) }, [])
@@ -57,17 +56,9 @@ export function ComposerAttachments({
     (id: string): RegionRole => (images[0]?.id === id ? 'cut' : 'place'),
     [images],
   )
-  // Derived from state rather than from a transition: the attachment list
-  // updates more than once per upload, and a transition-based effect opens the
-  // picker on whichever update happens to be first — or not at all.
-  useEffect(() => {
-    if (onInsertRegion === undefined || measuring !== null) return
-    const [only] = images
-    if (images.length === 0 || only === undefined) return
-    const marked = marks.get(only.id)
-    if (dismissed.has(only.id) || ((marked?.regions.length ?? 0) + (marked?.strokes.length ?? 0)) > 0) return
-    setMeasuring(only)
-  }, [dismissed, images, marks, measuring, onInsertRegion])
+  // The picker opens only on request: uploading a picture drops a thumbnail and
+  // nothing else. The ①② badge on that thumbnail opens and closes it, so an
+  // upload never covers the conversation with a panel the user did not ask for.
 
   const remember = useCallback((id: string, regions: readonly Region[], strokes: readonly Stroke[]) => {
     setMarks((current) => {
@@ -186,7 +177,19 @@ export function ComposerAttachments({
             remember(measuring.id, inserted ? regions : [], inserted ? strokes : [])
           }}
           onClose={() => {
-            setDismissed(current => new Set(current).add(measuring.id))
+            // A box the user drew is already an instruction: closing the panel
+            // must not drop it. Confirming still wins (it clears the marks
+            // first), so this only rescues boxes that would otherwise vanish.
+            const drawn = marks.get(measuring.id)
+            if (onInsertRegion !== undefined && drawn !== undefined) {
+              const role = roleOf(measuring.id)
+              const picture = images.findIndex(image => image.id === measuring.id) + 1
+              const tokens = [
+                ...drawn.regions.map((region, index) => formatRegionToken(measuring.id, region, role, index + 1, picture)),
+                ...drawn.strokes.map((stroke, index) => formatStrokeToken(measuring.id, stroke, index + 1, picture)),
+              ]
+              if (tokens.length > 0) onInsertRegion(tokens.join('\n'))
+            }
             setMeasuring(null)
           }}
         />
