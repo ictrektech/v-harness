@@ -12,7 +12,12 @@ const DEFAULT_TIMEOUT_MS = 300_000
 
 /** Where the capability endpoint lives and how big iteration previews are. */
 export interface Config {
-  /** `unix:/path/to/photocraft.sock` or an absolute `http(s)://` dev endpoint. */
+  /**
+   * `unix:/path/to/photocraft.sock` on a deployed tenant, or the VOS endpoint
+   * `http://<vos-host>:1182/app/com.ictrek.photocraft/storage` when running
+   * against a development VOS — the same port v-office is reached on, with the
+   * app's own prefix instead of a hand-mapped host port.
+   */
   endpoint?: string
   /** Long edge of the preview image handed to the model while iterating. */
   previewSide?: number
