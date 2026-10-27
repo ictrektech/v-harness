@@ -1,14 +1,15 @@
 # @deepseek-ai/dsh-skill-photocraft
 
 Natural-language photo editing over the per-tenant PhotoCraft capability: open a
-photo from the user's VOS directory or AI album, run a recipe (grade, cutout,
-watermark removal, quality repair, poster batch), look at the preview, export the
-result — optionally back into the album.
+photo from the chat attachment or the user's VOS directory, run a recipe (grade,
+cutout, watermark removal, quality repair, poster title), look at the preview,
+then export the result as PSD or JPG.
 
 ## Summary
 
-- Five tools: `photocraft_open`, `photocraft_recipe`, `photocraft_apply`,
-  `photocraft_region`, `photocraft_export`.
+- Two tools: `photocraft_edit` (open, pick the recipe from the user's own words,
+  run it, save a PNG, return a preview) and `photocraft_export` (a PSD or JPG of
+  the current document).
 - No credential handling: the gateway (`gateway/photocraft.mjs`) holds the
   tenant's VOS token and exposes a unix socket the tenant owns.
 - Every image-changing tool returns a preview as a durable attachment, so the
@@ -29,28 +30,29 @@ Configuration (all optional):
 | Field | Default | Meaning |
 |---|---|---|
 | `endpoint` | `unix:$HOME/.dsh/photocraft.sock` | capability endpoint; an absolute `http(s)://` URL targets the dev server |
-| `albumEndpoint` | `unix:$HOME/.dsh/album.sock` | AI-album capability, the photo source and result sink |
 | `previewSide` | `768` | long edge of the preview handed to the model |
 | `requestTimeoutMs` | `300000` | per-call deadline |
 
 ## Understand the implementation
 
 - `src/client.ts` — MCP over Streamable HTTP (JSON or SSE replies, session id
-  kept), the file bridge (`volumes`/`upload`/`download`/`index`/`new_folder`), and
-  the album multipart upload.
+  kept) and the file bridge (`volumes`/`upload`/`download`/`index`/`new_folder`).
+  `EngineClient` and `BridgeClient` are the faces the recipes and tools consume, so
+  their tests need no socket.
 - `src/recipes.ts` — the wish catalogue, as code rather than data: a recipe feeds
   one step's returned layer id into the next step.
-- `src/coords.ts` — `0..1` fractions in, pixels out, plus the `<region/>` parser
-  the composer writes into a user message.
-- `src/tools.ts` — the five tool definitions and their cards.
+- `src/coords.ts` — `0..1` fractions in, pixels out. The composer's `<region/>`
+  tags are read by the model, not parsed here; the tool only takes the `regions`
+  and `strokes` arrays.
+- `src/tools.ts` — the two tool definitions and their cards.
 
 ## Model Experience
 
-The model sees five tools whose descriptions name the wishes they answer, plus a
+The model sees two tools whose descriptions name the wishes they answer, plus a
 `SKILL.md` that carries the workflow and the traps. The catalogue keeps a 918
-command engine from being dumped into the prompt: `photocraft_recipe` narrows to
-one recipe, and `photocraft_apply` returns per-command results next to a preview
-image, so verification is visual rather than textual.
+command engine from being dumped into the prompt: the instruction picks one
+recipe, and a call returns a preview next to the file it saved, so verification
+is visual rather than textual.
 
 Previews are attachments, not base64 in the transcript, so a long editing session
 does not grow the text history. Each call adds one image to the turn; iterating
@@ -59,8 +61,8 @@ at the default 768 keeps a two-round edit within a few hundred kilobytes.
 #### KV Cache effect
 
 Tool definitions are static, so the system prefix stays cacheable across turns.
-Recipe text changes only between calls to `photocraft_recipe`, and preview images
-are appended as turn content rather than rewriting earlier messages.
+Preview images are appended as turn content rather than rewriting earlier
+messages.
 
 ## Known Limitations and Deferred Work
 
@@ -68,15 +70,16 @@ are appended as turn content rather than rewriting earlier messages.
   face replacement and outpainting are unavailable; `SKILL.md` routes them to
   Image Studio.
 - **Coordinates come from the model or the user.** The composer region picker
-  (`ui-attachment`) is not built yet, so a caller either passes a fraction box or
-  relies on a semantic selection; a 120px error erases the wrong area.
+  (`ui-attachment`) emits `<region/>` tags that the model transcribes into
+  `regions`/`strokes`; a transcription error erases the wrong area.
 - **No face detection.** `select.colorRange` rejects `detectFaces`; skin
   smoothing works on a colour range only.
 - **`select.sky` is unreliable on painted or heavily textured skies** and reports
   `changed: false` rather than guessing.
 - **One document per conversation.** Opening another file replaces the active
   document; there is no multi-document workspace in the tools yet.
-- **Batch export directories must exist.** The capability exposes no mkdir, so
-  `poster` creates `out/` through the file bridge and swallows the collision.
-- **Album writing is one-way per call.** There is no album listing tool here yet;
-  discovering an asset id is still the album skill's job.
+- **Batch variants are dormant.** `poster` can export a data set, but no tool
+  parameter feeds `variants` and the exported files are never read back, so the
+  wish "批量出几套文案" is refused instead of half-answered.
+- **No album access.** The tools neither read nor write the AI album; a picture
+  reaches them as a chat attachment or a file in the workspace.
