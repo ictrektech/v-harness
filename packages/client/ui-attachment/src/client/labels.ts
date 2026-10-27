@@ -91,5 +91,9 @@ export function regionPickerLabels(t: TranslateNS<'conversation'>): RegionPicker
     clear: t('image.region.clear'),
     done: t('image.region.done'),
     close: t('image.region.close'),
+    boxMode: t('image.region.boxMode'),
+    brushMode: t('image.region.brushMode'),
+    brushHint: t('image.region.brushHint'),
+    strokeChip: t('image.brush.chip'),
   }
 }

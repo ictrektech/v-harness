@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ComposerImageAttachment, ComposerAttachmentsProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { ComposerAttachments } from '../src/client/ComposerAttachments.tsx'
-import { clampRegion, formatRegionToken, regionSummary } from '../src/client/region-format.ts'
+import { clampRegion, clampStroke, formatRegionToken, formatStrokeToken, regionSummary } from '../src/client/region-format.ts'
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
@@ -44,12 +44,17 @@ const messages: Record<string, string> = {
   'image.region.clear': '清除',
   'image.region.done': '就用这些框',
   'image.region.chip': '区域',
+  'image.region.boxMode': '框选',
+  'image.region.brushMode': '画笔',
+  'image.region.brushHint': '按住涂抹要处理的位置，可画多笔',
+  'image.brush.chip': '笔迹 · {count} 点',
   'attachment.dropBlocked': '当前无法添加文件或图片',
   'attachment.dropTitle': '文件或图片拖动到此处即可添加',
 }
 
 const t = ((key: string, params?: Readonly<Record<string, unknown>>): string => {
   if (key === 'image.remove') return `移除图片 ${String(params?.name ?? '')}`
+  if (key === 'image.brush.chip') return `笔迹 · ${String(params?.count ?? 0)} 点`
   return messages[key] ?? key
 }) as unknown as ComposerAttachmentsProps['t']
 
@@ -93,7 +98,7 @@ describe('region measurement', () => {
 
     expect(onInsertRegion).toHaveBeenCalledTimes(1)
     const token = onInsertRegion.mock.calls[0]?.[0]
-    expect(token).toBe('<region role="cut" n="1" image="a1" x="0.1000" y="0.3000" w="0.4000" h="0.2000"/>')
+    expect(token).toBe('<region role="cut" n="1" img="1" image="a1" x="0.1000" y="0.3000" w="0.4000" h="0.2000"/>')
   })
 
   it('keeps the second picture open for a green box after the first is confirmed', async () => {
@@ -120,7 +125,7 @@ describe('region measurement', () => {
 
     expect(onInsertRegion).toHaveBeenCalledTimes(2)
     expect(onInsertRegion.mock.calls[1]?.[0])
-      .toBe('<region role="place" n="1" image="a2" x="0.5000" y="0.5000" w="0.2000" h="0.2000"/>')
+      .toBe('<region role="place" n="1" img="2" image="a2" x="0.5000" y="0.5000" w="0.2000" h="0.2000"/>')
   })
 
   it('does not remember a box the draft refused', async () => {
@@ -164,5 +169,43 @@ describe('region-format', () => {
 
   it('summarises a box for the chip', () => {
     expect(regionSummary({ x: 0.14, y: 0.69, w: 0.71, h: 0.11 })).toBe('14%,69% · 71%×11%')
+  })
+})
+
+describe('brush strokes', () => {
+  it('serializes a stroke into the tag the model reads', () => {
+    expect(formatStrokeToken('a1', { points: [[0.31234, 0.52], [0.33, 0.517]] }, 1, 1))
+      .toBe('<strokes img="1" n="1" image="a1">[[0.3123,0.5200],[0.3300,0.5170]]</strokes>')
+  })
+
+  it('thins samples and refuses a tap', () => {
+    expect(clampStroke([[0.1, 0.1], [0.1, 0.1], [0.1, 0.1]])).toBeUndefined()
+    const stroke = clampStroke([[0.1, 0.1], [0.1001, 0.1001], [0.4, 0.4], [0.7, 0.5]])
+    expect(stroke?.points).toEqual([[0.1, 0.1], [0.4, 0.4], [0.7, 0.5]])
+  })
+
+  it('paints on the subject and sends the stroke with the message', async () => {
+    const onInsertRegion = vi.fn((token: string) => { void token; return true })
+    render(<ComposerAttachments {...props({ onInsertRegion })} />)
+    fireEvent.click(screen.getByText('画笔'))
+    const stage = document.querySelector('[data-region-stage]') as Element
+    fireEvent.pointerDown(stage, { clientX: 240, clientY: 200 })
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 220 })
+    fireEvent.pointerMove(window, { clientX: 380, clientY: 240 })
+    fireEvent.pointerUp(window)
+    fireEvent.click(screen.getByText('就用这些框'))
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+    expect(onInsertRegion).toHaveBeenCalledTimes(1)
+    const token = String(onInsertRegion.mock.calls[0]?.[0])
+    expect(token).toMatch(/^<strokes img="1" n="1" image="a1">\[\[0\.3000,0\.5000\],/)
+    expect(screen.getByText(/笔迹 · 3 点/u)).toBeTruthy()
+  })
+
+  it('offers no brush on a material image', () => {
+    render(<ComposerAttachments {...props({ attachments: [photo('a1'), photo('a2')], onInsertRegion: () => true })} />)
+    const openers = screen.getAllByLabelText('框选')
+    fireEvent.click(openers[1] as Element)
+    expect(screen.queryByText('画笔')).toBeNull()
+    expect(screen.queryByText('框选')).toBeNull()
   })
 })

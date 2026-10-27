@@ -142,3 +142,46 @@
 .badgePlace {
   background: #3ddc84;
 }
+
+/* The box/brush toggle, shown only on the subject image. */
+
+.tools {
+  display: flex;
+  gap: 6px;
+}
+
+.tool {
+  all: unset;
+  cursor: pointer;
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--dsw-alias-text-l2);
+  border: 1px solid var(--dsw-alias-border-l1);
+}
+
+.toolOn {
+  color: #fff;
+  background: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+/* Brush strokes: one SVG over the photo, points are fractions so the lines
+   scale with the picture; non-scaling stroke keeps the line a constant px. */
+
+.strokes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.strokeLine {
+  fill: none;
+  stroke: #ff2d55;
+  stroke-width: 14;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.75;
+}

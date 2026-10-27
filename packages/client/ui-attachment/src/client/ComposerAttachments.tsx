@@ -9,7 +9,7 @@ import { DropOverlay } from '../DropOverlay.tsx'
 import { FileCard } from '../FileCard.tsx'
 import { ImageLightbox } from '@deepseek-ai/dsh-client-ui-primitives'
 import { RegionPicker } from './RegionPicker.tsx'
-import { formatRegionToken, regionSummary, type Region, type RegionRole } from './region-format.ts'
+import { formatRegionToken, formatStrokeToken, regionSummary, type Region, type RegionRole, type Stroke } from './region-format.ts'
 import {
   attachmentRailLabels, dropOverlayLabels, fileCardLabels, lightboxLabels, regionPickerLabels,
 } from './labels.ts'
@@ -28,7 +28,8 @@ export function ComposerAttachments({
 }: ComposerAttachmentsProps) {
   const [preview, setPreview] = useState<ComposerImageAttachment | null>(null)
   const [measuring, setMeasuring] = useState<ComposerImageAttachment | null>(null)
-  const [marks, setMarks] = useState<ReadonlyMap<string, readonly Region[]>>(new Map())
+  // Boxes and strokes per draft image; strokes only exist on the subject.
+  const [marks, setMarks] = useState<ReadonlyMap<string, { regions: readonly Region[]; strokes: readonly Stroke[] }>>(new Map())
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
   const [dragActive, setDragActive] = useState(false)
   const dragDepth = useRef(0)
@@ -63,15 +64,16 @@ export function ComposerAttachments({
     if (onInsertRegion === undefined || measuring !== null) return
     const [only] = images
     if (images.length === 0 || only === undefined) return
-    if (dismissed.has(only.id) || (marks.get(only.id)?.length ?? 0) > 0) return
+    const marked = marks.get(only.id)
+    if (dismissed.has(only.id) || ((marked?.regions.length ?? 0) + (marked?.strokes.length ?? 0)) > 0) return
     setMeasuring(only)
   }, [dismissed, images, marks, measuring, onInsertRegion])
 
-  const remember = useCallback((id: string, regions: readonly Region[]) => {
+  const remember = useCallback((id: string, regions: readonly Region[], strokes: readonly Stroke[]) => {
     setMarks((current) => {
       const next = new Map(current)
-      if (regions.length === 0) next.delete(id)
-      else next.set(id, regions)
+      if (regions.length === 0 && strokes.length === 0) next.delete(id)
+      else next.set(id, { regions, strokes })
       return next
     })
   }, [])
@@ -81,7 +83,9 @@ export function ComposerAttachments({
     attachment,
   })), [attachments])
 
-  const measuringValues = measuring === null ? [] : marks.get(measuring.id) ?? []
+  const measuringMark = measuring === null ? undefined : marks.get(measuring.id)
+  const measuringRegions = measuringMark?.regions ?? []
+  const measuringStrokes = measuringMark?.strokes ?? []
 
   return (
     <>
@@ -116,7 +120,8 @@ export function ComposerAttachments({
                   />
                 )
               }
-              const marked = (marks.get(attachment.id)?.length ?? 0) > 0
+              const mark = marks.get(attachment.id)
+              const marked = ((mark?.regions.length ?? 0) + (mark?.strokes.length ?? 0)) > 0
               return (
                 <div className={css.imageItem}>
                   <button
@@ -159,21 +164,26 @@ export function ComposerAttachments({
         <RegionPicker
           src={measuring.previewUrl}
           alt={measuring.file.name || t('image.original')}
-          values={measuringValues}
+          values={measuringRegions}
+          strokes={measuringStrokes}
           role={roleOf(measuring.id)}
           labels={regionPickerLabels(t)}
-          onChange={(regions) => { remember(measuring.id, regions) }}
-          onConfirm={(regions) => {
+          onChange={(regions) => { remember(measuring.id, regions, measuringStrokes) }}
+          onStrokesChange={(strokes) => { remember(measuring.id, measuringRegions, strokes) }}
+          onConfirm={(regions, strokes) => {
             const role = roleOf(measuring.id)
             // The model receives the pictures in this order and can see no draft
             // id, so the position is the one handle both sides share.
             const picture = images.findIndex(image => image.id === measuring.id) + 1
-            const tokens = regions.map((region, index) => formatRegionToken(measuring.id, region, role, index + 1, picture))
+            const tokens = [
+              ...regions.map((region, index) => formatRegionToken(measuring.id, region, role, index + 1, picture)),
+              ...strokes.map((stroke, index) => formatStrokeToken(measuring.id, stroke, index + 1, picture)),
+            ]
             const inserted = onInsertRegion?.(tokens.join('\n')) ?? false
             setMeasuring(null)
             // Only a tag that actually reached the draft may be shown as queued:
             // a refused insertion leaves no chip claiming the box is in the message.
-            remember(measuring.id, inserted ? regions : [])
+            remember(measuring.id, inserted ? regions : [], inserted ? strokes : [])
           }}
           onClose={() => {
             setDismissed(current => new Set(current).add(measuring.id))
@@ -183,21 +193,38 @@ export function ComposerAttachments({
       )}
       {marks.size > 0 && measuring === null && (
         <div className={css.regionChips}>
-          {[...marks.entries()].flatMap(([id, regions]) => regions.map((region, index) => (
-            <span
-              key={`${id}-${String(index)}`}
-              className={roleOf(id) === 'cut' ? `${css.regionChip} ${css.regionChipCut}` : `${css.regionChip} ${css.regionChipPlace}`}
-            >
-              {String(index + 1)} · {regionSummary(region)}
-              <button
-                type="button"
-                aria-label={t('image.region.clear')}
-                onClick={() => { remember(id, regions.filter((_value, at) => at !== index)) }}
+          {[...marks.entries()].flatMap(([id, mark]) => [
+            ...mark.regions.map((region, index) => (
+              <span
+                key={`${id}-r-${String(index)}`}
+                className={roleOf(id) === 'cut' ? `${css.regionChip} ${css.regionChipCut}` : `${css.regionChip} ${css.regionChipPlace}`}
               >
-                <IconCloseFillRegular size={10} />
-              </button>
-            </span>
-          )))}
+                {String(index + 1)} · {regionSummary(region)}
+                <button
+                  type="button"
+                  aria-label={t('image.region.clear')}
+                  onClick={() => { remember(id, mark.regions.filter((_value, at) => at !== index), mark.strokes) }}
+                >
+                  <IconCloseFillRegular size={10} />
+                </button>
+              </span>
+            )),
+            ...mark.strokes.map((stroke, index) => (
+              <span
+                key={`${id}-s-${String(index)}`}
+                className={`${css.regionChip} ${css.regionChipCut}`}
+              >
+                {t('image.brush.chip', { count: stroke.points.length })}
+                <button
+                  type="button"
+                  aria-label={t('image.region.clear')}
+                  onClick={() => { remember(id, mark.regions, mark.strokes.filter((_value, at) => at !== index)) }}
+                >
+                  <IconCloseFillRegular size={10} />
+                </button>
+              </span>
+            )),
+          ])}
         </div>
       )}
       {preview !== null && (
