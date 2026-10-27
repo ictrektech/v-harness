@@ -195,6 +195,13 @@ ENV NODE_ENV=production \
 # fails, which removes a large part of why dsh is extensible at all.
 # Costs roughly 300 MB in the image; it does not slow down users who install
 # pure-JS plugins, because nothing is compiled for them.
+#
+# git is a product requirement for the same reason: a plugin spec may be a git
+# address (`pnpm add https://github.com/<owner>/<repo>`), and pnpm resolves one
+# with `git ls-remote` before it downloads anything. Without the executable the
+# install aborts with ERR_PNPM_GIT_RESOLVE_FAILED ("git ... not found on PATH"),
+# which reads like a broken repository rather than a missing image dependency.
+# openssh-client covers the `git+ssh://` form of the same specs.
 RUN if [ -n "${APT_MIRROR}" ]; then \
       for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
         if [ -f "$source" ]; then \
@@ -206,6 +213,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates \
       build-essential python3 \
+      git openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 # pnpm is needed the first time a user's profile installs its bundles.
