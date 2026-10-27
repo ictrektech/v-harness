@@ -154,6 +154,8 @@ source: "sha256:04a5784b204ec6390ab8a0539157f1d3e525d8c2c70e662809c37abc75718e4e
 
 交付时报两个名字，并用一句话说明哪个是哪个（"PNG 可直接看，PSD 保留了曲线/色偏层，可以再调"）。
 
+**写文件名就够，不要输出 `<a href="...">` 这类 HTML 标签。** 聊天窗口按 Markdown 渲染，裸 HTML 会原样显示成尖括号文本，用户看到的是 `<a href="wish-1793081251936.png">…</a>` 而不是可点的文件。要链接就写 Markdown：`[wish-1.png](wish-1.png)`。
+
 走 `photocraft_run` 做的编辑留在引擎文档里，没落盘。要交付时用 `photocraft_export { format: "png" }` 和 `{ format: "psd" }` 各导一次，或者最后用 `photocraft_edit` 的收尾路径。要别的格式（`jpg` 小文件、`tif` 印刷）同样走 `photocraft_export`。
 
 ## 十、常见的坑
