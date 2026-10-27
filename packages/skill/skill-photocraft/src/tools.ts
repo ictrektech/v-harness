@@ -737,7 +737,15 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       },
       presentationMeta: (_args, value) => ({ kind: 'photocraft.edit', ...value }),
       render: (_args, value) => [
-        { type: 'text', text: `已按「${value.applied}」处理：${value.file}（${String(Math.round(value.bytes / 1024))}KB，可直接查看）；可编辑源文件 ${value.source}，图层保留可再调` },
+        // The picture below arrives as an attachment named `…-preview.png`, a
+        // name that exists nowhere on disk. A model that copies it into
+        // `![](…)` produces a broken image, so the text names the real file and
+        // spells out the markdown that actually resolves.
+        {
+          type: 'text',
+          text: `已按「${value.applied}」处理：${value.file}（${String(Math.round(value.bytes / 1024))}KB，可直接查看）；可编辑源文件 ${value.source}，图层保留可再调\n`
+            + `给用户看成品就写 ![说明](${value.file})：工作区里只有这个文件，预览附件的名字（*-preview.png）只用于你查看，写成图片会加载失败。`,
+        },
         ...value.notes === undefined || value.notes.length === 0 ? [] : [{ type: 'text' as const, text: value.notes.join('\n') }],
         ...(value.preview === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.preview) }]),
       ],
