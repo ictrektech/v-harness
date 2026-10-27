@@ -1,6 +1,6 @@
 /** File identity, Sidebar preview, and contributed native actions for one delivery. */
 import type { ReactNode } from 'react'
-import { resolveWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
+import { fileMediaUrl, resolveWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 import { FileTypeIcon, fileExtension } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PresentedHost } from '../presented.ts'
@@ -8,6 +8,9 @@ import { PRESENTED_SUCCESS_HOLD_MS, PRESENTED_SUCCESS_FADE_MS, type PresentedOpe
 import { basename, type PresentedPath } from './turn-deliverables.ts'
 import type { NS } from './locales.ts'
 import css from './Deliverables.module.css'
+
+/** Extensions a viewer recognises as a picture, so the card can show the photo itself. */
+const PHOTO_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp'])
 
 function cardDescription(description: string | undefined, fallback: string): string {
   const trimmed = description?.replace(/\s*(?:\([^()]*\)|（[^（）]*）)\s*$/u, '').trim()
@@ -31,15 +34,22 @@ export function PresentedFileCard({ file, cwd, phase, host, onPreview, actions, 
   const reveal = host?.fileManager ?? 'directory'
   const name = basename(file.path)
   const metadata = fileExtension(name).toUpperCase() || t('presented.file')
+  // A delivered picture is the answer, not a filename to open later: show it in
+  // the card so the turn ends with the photo the user asked for.
+  const photo = PHOTO_EXTENSIONS.has(fileExtension(name).toLowerCase())
+    ? fileMediaUrl(globalThis.document?.baseURI ?? '', resolveWorkspacePath(cwd, file.path))
+    : undefined
   const status = phase === undefined
     ? cardDescription(file.description, metadata)
     : t(reveal === 'directory' && phase === 'revealed' ? 'presented.directoryOpened'
       : reveal === 'directory' && phase === 'revealing' ? 'presented.directoryOpening'
         : reveal === 'directory' && phase === 'revealError' ? 'presented.directoryError' : `presented.${phase}`)
-  return <div className={css.file} data-presented-file>
+  return <div className={css.file} data-presented-file data-photo={photo === undefined ? undefined : true}>
     <button type="button" className={css.cardPreview} title={resolveWorkspacePath(cwd, file.path)}
       aria-label={t('presented.previewCard', { name: file.path })} onClick={onPreview} />
-    <span className={css.fileIcon}><FileTypeIcon path={file.path} size={20} /></span>
+    {photo === undefined
+      ? <span className={css.fileIcon}><FileTypeIcon path={file.path} size={20} /></span>
+      : <span className={css.photo}><img src={photo} alt={name} loading="lazy" decoding="async" /></span>}
     <div className={css.fileBody}>
       <div className={css.details}>
         <span className={css.fileName}>{name}</span>

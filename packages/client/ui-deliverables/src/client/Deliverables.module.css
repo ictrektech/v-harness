@@ -12,6 +12,9 @@
 .cardPreview { position: absolute; z-index: 1; inset: 0; width: 100%; padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
 .cardPreview:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); }
 .fileIcon { position: relative; z-index: 2; box-sizing: border-box; flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; overflow: hidden; pointer-events: none; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: 10px; background: color-mix(in srgb, var(--dsw-static-neutral-00) 50%, transparent); color: var(--dsw-alias-link); }
+.file[data-photo] { flex-direction: column; align-items: stretch; gap: 8px; height: auto; padding: 8px; }
+.photo { position: relative; z-index: 2; box-sizing: border-box; flex: 0 0 auto; width: 100%; height: clamp(140px, 20vh, 220px); overflow: hidden; pointer-events: none; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: 10px; background: color-mix(in srgb, var(--dsw-static-neutral-00) 50%, transparent); }
+.photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
 :global(body[data-ds-dark-theme]) .fileIcon { background: color-mix(in srgb, var(--dsw-static-neutral-00) 5%, transparent); }
 .fileBody { position: relative; z-index: 2; display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; pointer-events: none; }
 .details { display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; }
