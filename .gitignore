@@ -53,3 +53,9 @@ native/system/test/bin/
 ictrek.app/dist/
 # Staged browser plugins: build output for the image, not source.
 plugins/
+
+# PhotoCraft 交付产物写到会话工作区，不进仓库
+wish-*.png
+wish-*.psd
+wish-*-view.png
+.pc-test/
