@@ -18,7 +18,7 @@
  * @module @deepseek-ai/dsh-skill-photocraft/recipes
  */
 
-import type { FileBridge, McpClient, StepResult } from './client.ts'
+import type { BridgeClient, EngineClient, StepResult } from './client.ts'
 import { toPixels, type Region } from './coords.ts'
 
 /** What one recipe run produced. */
@@ -36,12 +36,12 @@ export interface Recipe {
   readonly when: string
   /** Parameters the model must supply, described for the model. */
   readonly parameters: Record<string, string>
-  readonly run: (client: McpClient, params: Record<string, unknown>, bridge: FileBridge) => Promise<RecipeRun>
+  readonly run: (client: EngineClient, params: Record<string, unknown>, bridge: BridgeClient) => Promise<RecipeRun>
 }
 
 /** Collect results in order while keeping the code readable. */
 async function step(
-  client: McpClient,
+  client: EngineClient,
   steps: StepResult[],
   command: string,
   params: Record<string, unknown> = {},
@@ -58,6 +58,55 @@ function selectedLayer(reply: unknown): number | undefined {
   return Array.isArray(selected) && typeof selected[0] === 'number' ? selected[0] : undefined
 }
 
+/** One brush stroke, in document pixels. */
+interface Painted {
+  readonly points: readonly (readonly [number, number])[]
+  readonly size: number
+  readonly mode: 'add' | 'subtract'
+}
+
+/**
+ * Read the user's brush strokes: fractions in, document pixels out.
+ *
+ * `size` is a percentage of the short edge so one setting works at any
+ * resolution, and a stroke without points is dropped rather than sent as an
+ * empty dab (the engine refuses those).
+ * @param params - the call's parameters.
+ * @param size - document size in pixels.
+ * @returns the strokes the engine can use.
+ */
+function strokesOf(params: Record<string, unknown>, size: { width: number; height: number }): Painted[] {
+  const raw = params.strokes
+  if (!Array.isArray(raw)) return []
+  const short = Math.max(1, Math.min(size.width, size.height))
+  const out: Painted[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const stroke = entry as { points?: unknown; size?: unknown; mode?: unknown }
+    const points = Array.isArray(stroke.points)
+      ? stroke.points
+        .filter((point): point is number[] => Array.isArray(point) && point.length >= 2)
+        .map(point => [Number(point[0]) * size.width, Number(point[1]) * size.height] as const)
+      : []
+    if (points.length === 0) continue
+    const width = Number(stroke.size ?? 2)
+    out.push({
+      points,
+      size: Math.max(1, Math.round((Number.isFinite(width) ? width : 2) / 100 * short)),
+      mode: stroke.mode === 'subtract' ? 'subtract' : 'add',
+    })
+  }
+  return out
+}
+
+/** Whether a `select.*` command actually selected anything. */
+function selectedAnything(reply: unknown): boolean {
+  return typeof reply === 'object' && reply !== null && (reply as { selected?: unknown }).selected === true
+}
+
+/** [`selectedAnything`] under the name the cutout used to read. */
+const subjectFound = selectedAnything
+
 /** Read a `{layer: n}` reply without assuming the shape. */
 function layerId(reply: unknown): number | undefined {
   if (typeof reply !== 'object' || reply === null) return undefined
@@ -65,102 +114,181 @@ function layerId(reply: unknown): number | undefined {
   return typeof id === 'number' ? id : undefined
 }
 
+/** One layer as `doc_inspect` reports it. */
+interface LayerEntry {
+  readonly id: number
+  readonly kind?: string
+  readonly name?: string
+  readonly selected?: boolean
+}
+
+/** The part of `doc_inspect` a filter decision needs. */
+interface DocumentState {
+  readonly activeLayer?: number
+  readonly layers?: readonly LayerEntry[]
+}
+
 /**
- * Select the pixel layer filters need.
+ * Make a pixel layer active before asking for a filter.
  *
- * A failed reselect is not fatal: on a document whose only layer is already
- * selected the command refuses, and the filter still runs.
+ * The engine refuses filters on an adjustment layer (`filters need a pixel
+ * layer`), and any grade leaves an adjustment layer selected. `doc_inspect`
+ * reports the layer tree with each layer's kind and id, so the target is read
+ * from the document instead of guessed from a name like "Background", which an
+ * import is free not to use.
+ * @returns whether a pixel layer exists to run a filter on.
  */
-async function focusPixels(client: McpClient, steps: StepResult[], name = 'Background'): Promise<void> {
+async function ensurePixelLayer(client: EngineClient, steps: StepResult[]): Promise<boolean> {
+  let doc: DocumentState
   try {
-    await step(client, steps, 'layer.select', { layer: name })
+    doc = await client.call('doc_inspect') as DocumentState
   } catch {
-    // Nothing to switch to; keep the current target.
+    // An unreadable document is not a reason to skip the filter.
+    return true
+  }
+  const layers = doc.layers ?? []
+  if (layers.find(layer => layer.id === doc.activeLayer)?.kind === 'Pixel') return true
+  const pixel = layers.find(layer => layer.kind === 'Pixel')
+  if (pixel === undefined) return false
+  try {
+    await step(client, steps, 'layer.select', { layer: pixel.id })
+  } catch {
+    // Failing to reselect is not a reason to drop the filter: the active layer
+    // may already be a pixel layer, and skipping is worse than trying.
+  }
+  return true
+}
+
+/** Keep a computed curve inside the 0..255 the engine accepts. */
+function level(value: number): number {
+  return Math.min(255, Math.max(0, Math.round(value)))
+}
+
+/**
+ * Run a step whose refusal must not abort the whole wish.
+ *
+ * A grade ends with adjustment layers selected, so a filter asked for
+ * afterwards may be refused; the colour is still worth delivering.
+ * @returns whether the engine accepted the command.
+ */
+async function attempt(
+  client: EngineClient,
+  steps: StepResult[],
+  command: string,
+  params: Record<string, unknown> = {},
+): Promise<boolean> {
+  try {
+    await step(client, steps, command, params)
+    return true
+  } catch {
+    return false
   }
 }
 
-/** The colour-grade look, as curve points and balance shifts. */
+/**
+ * How a look moves the colour, as directions rather than magnitudes.
+ *
+ * `command_list` declares `colorBalance` as `[cyan-red, magenta-green,
+ * yellow-blue]` in -100..100 and `curves` as `[[in,out],…]` in 0..255. A look
+ * only says which way each axis moves and how it treats saturation; every
+ * magnitude is derived from `strength` below, so no number here is calibrated
+ * against one particular picture.
+ */
 const LOOKS = {
-  cool: {
-    points: [[0, 6], [64, 58], [192, 196], [255, 250]],
-    blue: [[0, 16], [128, 134], [255, 255]],
-    shadows: [-12, 2, 10],
-    midtones: [-4, 0, 8],
-    highlights: [8, 0, -10],
-  },
-  warm: {
-    points: [[0, 4], [64, 62], [192, 200], [255, 252]],
-    blue: [[0, 0], [128, 126], [255, 250]],
-    shadows: [8, 0, -6],
-    midtones: [6, 0, -4],
-    highlights: [6, -2, -8],
-  },
-  bleach: {
-    points: [[0, 0], [64, 48], [160, 190], [255, 255]],
-    blue: [[0, 4], [128, 130], [255, 255]],
-    shadows: [-4, 0, 2],
-    midtones: [0, 0, 2],
-    highlights: [2, 0, -2],
-  },
+  // Cool: toward cyan and blue. Saturation is left alone: a cool grade that
+  // also desaturates is what turns skin grey.
+  cool: { warmth: -1, lift: 0, saturation: 0, vibrance: 0 },
+  // Warm: the same axis pair in the other direction, plus a little vibrance,
+  // because warmth alone reads as "brighter".
+  warm: { warmth: 1, lift: 0, saturation: 0, vibrance: 0.5 },
+  // Bleach: lifted blacks, compressed whites, desaturated and slightly cool —
+  // the faded print look, not a contrast punch.
+  bleach: { warmth: -0.3, lift: 1, saturation: -2, vibrance: -1 },
+} as const
+
+/**
+ * The engine ranges a look spends its strength on.
+ *
+ * Each number is a fraction of a range `command_list` declares, so the mapping
+ * stays true at any strength instead of being tuned to one sample.
+ */
+const ENGINE = {
+  /** `colorBalance` axes are -100..100; a full strength spends a quarter. */
+  balance: 25,
+  /** `curves` spans 0..255; a full strength moves a midtone by 40 levels. */
+  curves: 40,
+  /** `addNoise.amount` is 0.1..400, so the tool's 0..100 is this factor. */
+  grain: 4,
 } as const
 
 const FILM: Recipe = {
   id: 'film',
   title: '电影感调色',
-  when: '用户说“调成电影感 / 冷调 / 日系 / 胶片”“颜色太闷了”“想要高级一点的色调”',
+  when: '用户说“调成电影感 / 冷调 / 日系 / 胶片 / 复古 / 老照片”“颜色太闷了”“想要高级一点的色调”',
   parameters: {
-    look: 'cool | warm | bleach，默认 cool',
-    strength: '1..100，默认 60，越小越轻',
-    vignette: '0..100，默认 40，暗角强度；0 表示不要暗角',
-    grain: '0..100，默认 0，颗粒强度',
+    look: 'cool（冷调、青蓝）| warm（暖调、红黄）| bleach（褪色胶片、低饱和、提黑位），默认 cool',
+    strength: '1..100，默认 50；这是唯一的力度来源，三个 look 都用它换算',
+    vignette: '0..100，默认 30；直接对应引擎 -100..100 的 vignetteAmount',
+    grain: '0..100，默认 0；映射到引擎 0.1..400 的 amount（×4）',
   },
   async run(client, params) {
     const steps: StepResult[] = []
+    const notes: string[] = []
     const look = typeof params.look === 'string' ? params.look : 'cool'
     const table = LOOKS[look === 'warm' || look === 'bleach' ? look : 'cool']
-    const strength = Math.min(100, Math.max(1, Number(params.strength ?? 60))) / 100
-    const scale = (points: readonly (readonly number[])[]): number[][] => points.map(([input, output]) => [
-      input as number,
-      Math.round((input as number) + ((output as number) - (input as number)) * strength),
-    ])
+    const strength = Math.min(100, Math.max(1, Number(params.strength ?? 50)))
+    // One knob drives every axis; the look only chooses a direction.
+    const axis = Math.round((strength / 100) * ENGINE.balance)
+    const curve = Math.round((strength / 100) * ENGINE.curves)
 
-    await step(client, steps, 'layer.newAdjustmentLayer.curves', {
-      points: scale(table.points),
-      blue: scale(table.blue),
-    })
-    await step(client, steps, 'layer.newAdjustmentLayer.colorBalance', {
-      shadows: table.shadows.map(value => Math.round(value * Math.max(0.5, strength))),
-      midtones: table.midtones.map(value => Math.round(value * Math.max(0.5, strength))),
-      highlights: table.highlights.map(value => Math.round(value * Math.max(0.5, strength))),
-    })
-    await step(client, steps, 'layer.newAdjustmentLayer.vibrance', {
-      vibrance: Math.round(12 * strength),
-      saturation: Math.round(-12 * strength),
-    })
-
-    const vignette = Number(params.vignette ?? 40)
-    if (vignette > 0) {
-      await focusPixels(client, steps)
-      await step(client, steps, 'filter.lensCorrection', {
+    // Filters need a pixel layer. A grade leaves an adjustment layer selected,
+    // so the target is read back from the document rather than remembered.
+    const grain = Math.min(100, Math.max(0, Number(params.grain ?? 0)))
+    if (grain > 0 && await ensurePixelLayer(client, steps)) {
+      const ok = await attempt(client, steps, 'filter.noise.addNoise', {
+        amount: Math.round(grain * ENGINE.grain * 10) / 10,
+        distribution: 'gaussian',
+        monochromatic: true,
+      })
+      if (!ok) notes.push('颗粒没加上：文档里没有可用的像素层')
+    }
+    const vignette = Math.min(100, Math.max(0, Number(params.vignette ?? 30)))
+    if (vignette > 0 && await ensurePixelLayer(client, steps)) {
+      const ok = await attempt(client, steps, 'filter.lensCorrection', {
         correctDistortion: false,
         correctCA: false,
         correctVignette: true,
         autoScale: false,
         vignetteAmount: -Math.round(vignette),
-        vignetteMidpoint: 55,
+        vignetteMidpoint: 50,
+        // Without this the corners only have the empty canvas behind them.
+        edge: 'edgeExtension',
       })
+      if (!ok) notes.push('暗角没加上：文档里没有可用的像素层')
     }
-    const grain = Number(params.grain ?? 0)
-    if (grain > 0) {
-      await focusPixels(client, steps)
-      await step(client, steps, 'filter.noise.addNoise', {
-        amount: Math.max(0.1, grain / 10),
-        distribution: 'gaussian',
-        monochromatic: true,
-        seed: 7,
-      })
+
+    const warm = table.warmth
+    const lift = Math.round(table.lift * curve)
+    await step(client, steps, 'layer.newAdjustmentLayer.curves', {
+      points: [[0, level(lift)], [255, level(255 - lift / 2)]],
+      red: [[0, 0], [128, level(128 + warm * curve)], [255, 255]],
+      blue: [[0, 0], [128, level(128 - warm * curve)], [255, 255]],
+    })
+    await step(client, steps, 'layer.newAdjustmentLayer.colorBalance', {
+      shadows: [Math.round(warm * axis), 0, Math.round(warm * axis)],
+      midtones: [Math.round(warm * axis * 0.8), 0, Math.round(warm * axis * 0.8)],
+      highlights: [Math.round(warm * axis * 0.4), 0, Math.round(warm * axis * 0.4)],
+    })
+    const vibrance = Math.round(table.vibrance * axis)
+    const saturation = Math.round(table.saturation * axis)
+    if (vibrance !== 0 || saturation !== 0) {
+      await step(client, steps, 'layer.newAdjustmentLayer.vibrance', { vibrance, saturation })
     }
-    return { steps, notes: ['调色是三个调整层，可以单独关掉某一步看对比'] }
+
+    notes.push(look === 'bleach'
+      ? '褪色胶片：提黑位、压高光、降饱和，强度由 strength 统一换算'
+      : '调色是调整层，可以单独关掉某一步看对比')
+    return { steps, notes }
   },
 }
 
@@ -170,18 +298,73 @@ const CUTOUT: Recipe = {
   when: '用户说“把背景去掉 / 换个底色 / 抠出来”“做成白底图”“证件照换背景”',
   parameters: {
     background: '底色，形如 #ffffff；留空表示只要透明底、不加填充层',
-    shift: '-100..100，默认 -12，负值收边；主体边缘带原背景时调小',
+    shift: '-100..100，默认 -20，负值收边；主体边缘带原背景时调小',
     soften: '0..100，默认 20，边缘平滑',
   },
   async run(client, params) {
     const steps: StepResult[] = []
-    await step(client, steps, 'select.subject', {})
+    // The box is the range the user drew, and GrabCut inside it is what decides
+    // the edge. Without one there is nothing to seed it with: Select Subject is
+    // a saliency heuristic (`segment/subject.rs` says it is not a semantic
+    // segmenter), so the honest answer is to ask for the box.
+    const document = await client.call('doc_inspect', {}) as { width?: number; height?: number }
+    const size = { width: document.width ?? 0, height: document.height ?? 0 }
+    if (size.width === 0 || size.height === 0) throw new Error('photocraft: 当前没有打开的文档')
+    // A brush beats a box: the user points at what belongs to the subject, so
+    // Quick Selection grows from those dabs instead of from a rectangle that has
+    // to contain the whole shape.
+    const painted = strokesOf(params, size)
+    const drawn = Number(params.w ?? 0) > 0 && Number(params.h ?? 0) > 0
+    const box = drawn
+      ? toPixels({
+        x: Number(params.x ?? 0),
+        y: Number(params.y ?? 0),
+        w: Number(params.w ?? 0),
+        h: Number(params.h ?? 0),
+      }, size)
+      : undefined
+    let seeded = false
+    if (painted.length > 0) {
+      // Quick Selection floods by colour, so on a low-contrast picture it runs
+      // over everything. The box is what stops it: the flood is grown first, then
+      // intersected with the box's GrabCut, so a stray flood cannot leave it.
+      for (const [index, stroke] of painted.entries()) {
+        const picked = await step(client, steps, 'select.quick', {
+          points: stroke.points,
+          size: stroke.size,
+          mode: index === 0 ? 'replace' : stroke.mode,
+          enhanceEdge: true,
+        })
+        seeded = seeded || selectedAnything(picked)
+      }
+      if (seeded && box !== undefined) {
+        await step(client, steps, 'select.object', {
+          rect: [box.x, box.y, box.width, box.height],
+          mode: 'intersect',
+        })
+      }
+    }
+    if (!seeded && box !== undefined) {
+      const picked = await step(client, steps, 'select.object', { rect: [box.x, box.y, box.width, box.height] })
+      seeded = selectedAnything(picked)
+    }
+    if (!seeded) {
+      const subject = await step(client, steps, 'select.subject', {})
+      if (!subjectFound(subject)) {
+        throw new Error('photocraft: 这张图里没找到可抠的主体，请先框出要保留的部分再抠')
+      }
+    }
     await step(client, steps, 'select.refineEdge', {
-      radius: 1,
+      radius: 2,
+      smartRadius: true,
       smooth: Number(params.soften ?? 20),
-      feather: 0.4,
-      shiftEdge: Number(params.shift ?? -25),
+      feather: 0.6,
+      shiftEdge: Number(params.shift ?? -20),
       decontaminate: true,
+      output: 'newLayerWithMask',
+      ...painted.length === 0 ? {} : {
+        refineStrokes: painted.map(stroke => ({ points: stroke.points, size: stroke.size, mode: 'add' as const })),
+      },
     })
     // refineEdge consumes the selection and yields a new masked layer; the
     // document keeps the original underneath, so the cutout is non-destructive.
@@ -198,7 +381,8 @@ const CUTOUT: Recipe = {
       steps,
       notes: [
         background === '' ? '结果层带蒙版，导出 PNG 即为透明底' : `结果层带蒙版，底色 ${background} 在它下面一层`,
-        '主体边缘如果还带一圈原背景，把 shift 调到 -25 再跑一次',
+        ...drawn || painted.length > 0 ? [] : ['没给框也没画笔，这版按画面里最显著的区域抠；回复时可以顺带说一句「框一下或涂一下会更准」'],
+        '主体边缘如果还带一圈原背景，把 shift 调到 -30 再跑一次',
       ],
     }
   },
@@ -252,25 +436,23 @@ const ENHANCE: Recipe = {
   title: '画质增强 / 偏色修复',
   when: '用户说“照片太糊 / 噪点多 / 颜色发黄发蓝 / 帮我修一下画质”',
   parameters: {
-    denoise: '0..10，默认 4，降噪强度',
-    sharpen: '0..500，默认 120，USM 锐化量',
+    denoise: '0..10，默认 4；直接对应引擎 reduceNoise.strength（引擎默认 6）',
+    sharpen: '1..500，默认 50；直接对应引擎 unsharpMask.amount（引擎默认 50）',
     autoColor: 'true | false，默认 true，自动校正偏色',
   },
   async run(client, params) {
     const steps: StepResult[] = []
-    await focusPixels(client, steps)
-    await step(client, steps, 'filter.noise.reduceNoise', {
-      strength: Math.min(10, Math.max(0, Number(params.denoise ?? 4))),
-      preserveDetails: 70,
-      reduceColorNoise: 40,
-    })
-    await step(client, steps, 'filter.sharpen.unsharpMask', {
-      amount: Math.min(500, Math.max(1, Number(params.sharpen ?? 120))),
-      radius: 1.2,
-      threshold: 2,
-    })
+    const denoise = Math.min(10, Math.max(0, Number(params.denoise ?? 4)))
+    const sharpen = Math.min(500, Math.max(1, Number(params.sharpen ?? 50)))
+    // Both filters need a pixel layer; say so instead of letting the engine
+    // answer with a bare refusal.
+    if (!await ensurePixelLayer(client, steps)) {
+      throw new Error('photocraft: 文档里没有像素层，无法降噪或锐化')
+    }
+    if (denoise > 0) await step(client, steps, 'filter.noise.reduceNoise', { strength: denoise })
+    await step(client, steps, 'filter.sharpen.unsharpMask', { amount: sharpen })
     if (params.autoColor !== false) await step(client, steps, 'image.autoColor', {})
-    return { steps, notes: ['降噪和锐化都作用在像素层上，想保留原图可以先复制一层'] }
+    return { steps, notes: ['降噪和锐化作用在像素层上，想保留原图可以先复制一层'] }
   },
 }
 
@@ -320,7 +502,7 @@ const POSTER: Recipe = {
       ? params.variants.split(',').map(value => value.trim()).filter(value => value !== '')
       : []
     if (variants.length === 0 || titleId === undefined) {
-      return { steps, notes: ['只做了排版；要批量出图请再给 variants'] }
+      return { steps, notes: ['只做了这一张的排版'] }
     }
     await step(client, steps, 'image.variables.define', {
       defs: [{ name: 'headline', layer: titleId, type: 'textReplacement' }],
@@ -358,27 +540,38 @@ const COMPOSITE: Recipe = {
   },
   async run(client, params) {
     const steps: StepResult[] = []
-    const background = await step(client, steps, 'layer.select', { layer: 'Background' })
+    // The bottom layer is the one to hide, whatever the file calls it: a PNG
+    // opens as "Layer 0", a photo as "Background", and naming either one breaks
+    // the other.
+    const background = await step(client, steps, 'layer.selectBottom', {})
     const original = selectedLayer(background)
-    await step(client, steps, 'select.subject', {})
-    const refined = await step(client, steps, 'select.refineEdge', {
-      radius: 1,
-      smooth: 20,
-      feather: 0.4,
-      shiftEdge: Number(params.shift ?? -25),
-      decontaminate: true,
-    })
-    const subject = layerId(refined)
+    const subject = await step(client, steps, 'select.subject', {})
+    // Nothing to detect means there is no subject to keep: the material simply
+    // becomes the picture.
+    const refined = subjectFound(subject)
+      ? layerId(await step(client, steps, 'select.refineEdge', {
+        radius: 1,
+        smooth: 20,
+        feather: 0.4,
+        shiftEdge: Number(params.shift ?? -25),
+        decontaminate: true,
+      }))
+      : undefined
     const placed = await client.call('doc_place', { path: String(params.asset) })
     steps.push({ command: 'doc_place', result: placed })
     const placedLayer = layerId(placed)
-    if (subject !== undefined && placedLayer !== undefined) {
-      await step(client, steps, 'layer.moveTo', { layer: placedLayer, target: subject, position: 'below' })
+    if (refined !== undefined && placedLayer !== undefined) {
+      await step(client, steps, 'layer.moveTo', { layer: placedLayer, target: refined, position: 'below' })
     }
     if (original !== undefined) {
       await step(client, steps, 'layer.setProps', { layer: original, visible: false })
     }
-    return { steps, notes: ['原背景层被隐藏而不是删除，想反悔就把它显示回来'] }
+    return {
+      steps,
+      notes: [refined === undefined
+        ? '这张图没有可识别的主体，整张换成了素材'
+        : '原背景层被隐藏而不是删除，想反悔就把它显示回来'],
+    }
   },
 }
 

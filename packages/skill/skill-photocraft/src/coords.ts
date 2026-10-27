@@ -50,6 +50,29 @@ export function normalizeRegion(region: Region): Region {
 }
 
 /**
+ * The largest centred part of a piece that has the target's proportions.
+ *
+ * A pasted piece must fill its box without being stretched, and the engine only
+ * resamples to the size it is given: cropping to the box's proportions first is
+ * what turns "scale by a percentage and hope" into an exact fit.
+ * @param source - pixel size of the piece.
+ * @param target - pixel size the piece must end up at.
+ * @returns the crop rectangle in the piece's own pixels.
+ */
+export function centreCrop(source: { width: number; height: number }, target: { width: number; height: number }): PixelBox {
+  const width = Math.max(1, Math.round(source.width))
+  const height = Math.max(1, Math.round(source.height))
+  const wanted = target.width > 0 && target.height > 0 ? target.width / target.height : width / height
+  if (width / height > wanted) {
+    // Wider than the box: keep the full height and take the middle columns.
+    const kept = Math.max(1, Math.min(width, Math.round(height * wanted)))
+    return { x: Math.round((width - kept) / 2), y: 0, width: kept, height }
+  }
+  const kept = Math.max(1, Math.min(height, Math.round(width / wanted)))
+  return { x: 0, y: Math.round((height - kept) / 2), width, height: kept }
+}
+
+/**
  * Turn fractions into the pixel rectangle a selection command takes.
  * @param region - fractions of the document.
  * @param size - document size in pixels.

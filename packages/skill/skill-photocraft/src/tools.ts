@@ -16,15 +16,15 @@ import { extname, join, resolve } from 'node:path'
 import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
-import { AlbumClient, McpClient, type FileBridge } from './client.ts'
-import { normalizeRegion, toPixels, type Region } from './coords.ts'
-import { RECIPES } from './recipes.ts'
+import { CommandIndex } from './capability.ts'
+import type { BridgeClient, EngineClient } from './client.ts'
+import { centreCrop, normalizeRegion, toPixels, type PixelBox } from './coords.ts'
+import { recipeFor as recipeById } from './recipes.ts'
 
-/** Everything the tools need to reach the two capabilities. */
+/** Everything the tools need to reach the capability. */
 export interface PhotocraftToolsRuntime {
-  readonly mcp: McpClient
-  readonly bridge: FileBridge
-  readonly album: AlbumClient
+  readonly mcp: EngineClient
+  readonly bridge: BridgeClient
   /** Long edge of the preview handed back with a result. */
   readonly previewSide: number
 }
@@ -34,6 +34,10 @@ export interface PhotocraftToolsRuntime {
  * by the agent's own shell — which is why the bytes are read here.
  */
 const ATTACHMENT_ROOT = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'attachments')
+
+/** Long-edge bounds of a preview, shared with the plugin config's own range. */
+export const PREVIEW_SIDE_MIN = 64
+export const PREVIEW_SIDE_MAX = 2048
 
 /** The preview a result carries. */
 interface Preview {
@@ -106,16 +110,41 @@ const previewSchema = {
  *
  * Deliberately a keyword table over four fixed recipes: a caller never chooses a
  * recipe, and an unknown wish gets the closest one rather than an error.
+ *
+ * Order is the meaning. A wish that names what should disappear (水印, 路人,
+ * 这行字) removes pixels; a wish that names where the subject is going
+ * (背景, 白底, 证件照) cuts it out. "把背景去掉" names a destination, so the
+ * bare verb 去掉 must not be enough to reach content-aware fill.
  * @param instruction - the user's own words.
+ * @param hasAsset - whether the caller supplied a second picture.
  * @returns the recipe id.
  */
-function recipeFor(instruction: string, hasAsset: boolean): string {
+function recipeFor(
+  instruction: string,
+  hasAsset: boolean,
+  named: { look?: unknown; text?: unknown; regions?: unknown; strokes?: unknown; denoise?: unknown; sharpen?: unknown },
+): string {
   const text = instruction.toLowerCase()
   if (hasAsset) return 'composite'
-  if (/海报|标题|加字|文案|poster|title/.test(text)) return 'poster'
-  if (/水印|杂物|路人|去掉|抹掉|remove/.test(text)) return 'remove'
-  if (/抠|换底|白底|背景|证件照|cutout/.test(text)) return 'cutout'
-  if (/模糊|噪点|清晰|锐化|偏色|画质|enhance/.test(text)) return 'enhance'
+  // A knob the caller filled in states the intent more reliably than any
+  // wording, so it wins over the keyword table below.
+  if (named.text !== undefined && named.text !== '') return 'poster'
+  if (named.look !== undefined) return 'film'
+  // A box or a stroke on a colour wish means "grade this picture", because this
+  // version has no per-region grading; only a removal wish is box-scoped.
+  const grading = /色调|调色|调成|电影感|胶片|复古|老照片|日系|冷调|暖调|变暗|压暗|调暗|调亮|提亮|曝光|氛围感/u.test(text)
+  if (!grading && (named.regions !== undefined || named.strokes !== undefined)) return 'remove'
+  // A removable object is a noun; "去掉灰雾" names a fault, and that is a
+  // quality repair rather than a fill.
+  if (/水印|杂物|路人|瑕疵|污点|贴纸|文字|字幕|文本|logo|标识/u.test(text)) return 'remove'
+  if (grading) return 'film'
+  if (/模糊|噪点|清晰|锐化|锐度|偏色|发黄|发蓝|发灰|通透|画质|糊|雾|朦胧|暗沉|发闷|enhance/u.test(text)) return 'enhance'
+  if (named.denoise !== undefined || named.sharpen !== undefined) return 'enhance'
+  // A headline is a poster, even when the caller forgot to pass one: the recipe
+  // then refuses with "需要一句文案" instead of silently grading the picture.
+  if (/海报|标题|排版|poster/u.test(text)) return 'poster'
+  if (/抠|换底|底色|白底|蓝底|红底|灰底|黑底|透明底|背景|证件照|cutout|(?:换|改|做)[^，。；]{0,6}底/u.test(text)) return 'cutout'
+  if (/去掉|抹掉|擦掉|擦除|p掉|删除|remove/u.test(text)) return 'remove'
   return 'film'
 }
 
@@ -139,6 +168,15 @@ function backgroundOf(instruction: string): string | undefined {
 }
 
 
+/**
+ * Where the engine's copies live inside the caller's own directory.
+ *
+ * Every round trip through the engine needs a file (`doc_save`, `doc_place`), and
+ * the capability has no delete, so they go in one hidden folder the user can
+ * drop as a whole instead of finding `wish-*` between their photos.
+ */
+const SCRATCH_DIR = 'photocraft-tmp'
+
 /** Disambiguates two imports that land in the same millisecond. */
 let uploaded = 0
 
@@ -157,11 +195,8 @@ const MAX_IMPORT_BYTES = 30 * 1024 * 1024
  * @returns absolute path to read, or undefined when the engine owns the name.
  */
 function localFileOf(source: string): string | undefined {
-  const digest = /^sha256:([0-9a-f]{64})$/u.exec(source)
-  if (digest !== null) {
-    const hex = digest[1] ?? ''
-    return join(ATTACHMENT_ROOT, 'v1', 'objects', hex.slice(0, 2), hex)
-  }
+  const hex = /^sha256:([0-9a-f]{64})$/u.exec(source)?.[1]
+  if (hex !== undefined) return join(ATTACHMENT_ROOT, 'v1', 'objects', hex.slice(0, 2), hex)
   return source.startsWith('/') ? resolve(source) : undefined
 }
 
@@ -171,7 +206,7 @@ function localFileOf(source: string): string | undefined {
  * @param source - attachment id, absolute path, or workspace file name.
  * @returns the workspace file name to open.
  */
-async function importSource(bridge: FileBridge, source: string): Promise<string> {
+async function importSource(bridge: BridgeClient, source: string): Promise<string> {
   const absolute = localFileOf(source)
   if (absolute === undefined) return source
   // A picture may arrive as a chat attachment or as a file the agent already
@@ -188,35 +223,46 @@ async function importSource(bridge: FileBridge, source: string): Promise<string>
   }
   uploaded += 1
   const name = `wish-${String(Date.now())}-${String(uploaded)}.png`
-  await bridge.upload(name, await readFile(absolute))
-  return name
+  await bridge.upload(name, await readFile(absolute), SCRATCH_DIR)
+  return `${SCRATCH_DIR}/${name}`
 }
 
 /**
- * Cut one rectangle out of the opened picture into its own transparent file.
- * @param client - MCP client with a document open.
- * @param name - output file name.
- * @param region - fractions of the picture.
- * @param file - name of the file to save.
- * @returns the file name holding the piece.
+ * Make sure the scratch folder exists; a second call finding it already there is
+ * the normal case, not an error.
+ * @param bridge - file bridge of the capability.
  */
-async function cutPiece(
-  client: McpClient,
-  name: string,
-  region: Region,
+async function ensureScratch(bridge: BridgeClient): Promise<void> {
+  try {
+    await bridge.mkdir(SCRATCH_DIR)
+  } catch {
+    // "already exists": every call after the first one.
+  }
+}
+
+/**
+ * Resize the open document to the box's exact pixels and save it as a piece.
+ *
+ * @param client - MCP client with the piece document open.
+ * @param file - file name to save under the scratch folder.
+ * @param size - pixel size of the box the piece must fill.
+ * @param current - the piece's size right now, as the command that made it reported.
+ * @returns the path the piece was saved to.
+ */
+async function fitPiece(
+  client: EngineClient,
   file: string,
-): Promise<{ file: string; width: number; height: number }> {
-  const document = await client.call('doc_inspect', {}) as { width?: number; height?: number }
-  const box = toPixels(region, { width: document.width ?? 0, height: document.height ?? 0 })
-  await client.run('select.rect', { ...box })
-  await client.run('select.modify.feather', { radius: 2 })
-  await client.run('edit.copy', {})
-  // A fresh transparent canvas keeps the piece free of its old neighbours.
-  await client.call('doc_new', { width: box.width, height: box.height, background: 'transparent' })
-  await client.run('edit.paste', { center: [box.width / 2, box.height / 2] })
-  await client.call('doc_save', { path: file, format: 'png' })
-  void name
-  return { file, width: box.width, height: box.height }
+  size: { width: number; height: number },
+  current: { width: number; height: number },
+): Promise<string> {
+  await client.run('image.crop', {
+    ...centreCrop(current, size),
+    targetWidth: size.width,
+    targetHeight: size.height,
+  })
+  const path = `${SCRATCH_DIR}/${file}`
+  await client.call('doc_save', { path, format: 'png' })
+  return path
 }
 
 /**
@@ -243,29 +289,135 @@ async function cutPiece(
  * @returns the same name, now resolvable from the session workspace.
  */
 async function saveDeliverable(ctx: Context, exec: ToolExecution, name: string, bytes: Buffer): Promise<string> {
+  // PTC sub-dispatches carry no agent, and without one there is no session
+  // workspace to deliver into — fail loud instead of writing to a cwd the
+  // agent cannot see.
+  if (exec.agent === undefined) throw new Error('photocraft: 没有可写入的工作区（无会话代理）')
   const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
   await writeFile(join(cwd, name), bytes)
   return name
 }
 
+/**
+ * How far a placed piece should fade into its material.
+ *
+ * Defaults to 2% of the box's short edge and never reaches past its middle: a
+ * fade wider than the piece would erase what was just pasted.
+ * @param requested - the caller's own radius, when it named one.
+ * @param box - the rectangle the piece fills, in document pixels.
+ * @returns the radius in pixels, or 0 for a hard edge.
+ */
+function featherOf(requested: number | undefined, box: PixelBox): number {
+  const wanted = requested ?? Math.min(box.width, box.height) * 0.02
+  const ceiling = Math.max(0, Math.floor((Math.min(box.width, box.height) - 1) / 2))
+  return Math.min(ceiling, Math.max(0, Math.round(wanted)))
+}
+
+/**
+ * The rectangle a placed layer actually occupies.
+ *
+ * `doc_place` reports where it put the layer; trusting that over the request is
+ * what makes a wrong placement visible instead of silently accepted.
+ * @param placed - the engine's reply.
+ * @param requested - the box the caller asked for.
+ * @returns the measured rectangle, or the request when the reply carries none.
+ */
+function placedBox(placed: unknown, requested: PixelBox): PixelBox {
+  const bounds = (placed as { bounds?: unknown }).bounds
+  if (!Array.isArray(bounds) || bounds.length !== 4) return requested
+  // Four corners, as the engine reports them; the length check above is what the
+  // tuple type says out loud.
+  const [x0, y0, x1, y1] = bounds as [number, number, number, number]
+  const width = Math.round(x1 - x0)
+  const height = Math.round(y1 - y0)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return requested
+  return { x: Math.round(x0), y: Math.round(y0), width, height }
+}
+
+/**
+ * Drop prepared pieces into their boxes and fade their edges.
+ * @param client - MCP client with the target document open.
+ * @param pieces - piece file, centre, and the box size it must fill.
+ * @param feather - the caller's own edge radius, when it named one.
+ * @returns what the engine reported that the caller should know about.
+ */
+async function placeAll(
+  client: EngineClient,
+  pieces: readonly { file: string; centre: [number, number]; size: { width: number; height: number } }[],
+  feather: number | undefined,
+): Promise<string[]> {
+  const notes: string[] = []
+  for (const piece of pieces) {
+    const requested: PixelBox = {
+      x: Math.round(piece.centre[0] - piece.size.width / 2),
+      y: Math.round(piece.centre[1] - piece.size.height / 2),
+      ...piece.size,
+    }
+    // The piece was made the box's exact pixels, so it is placed as it is: no
+    // percentage stands between the measurement and the result.
+    const placed = await client.call('doc_place', { path: piece.file, center: piece.centre, scale: 100 })
+    const box = placedBox(placed, requested)
+    const off = Math.max(Math.abs(box.width - piece.size.width), Math.abs(box.height - piece.size.height))
+    if (off > 1) {
+      notes.push(`贴图实际 ${String(box.width)}×${String(box.height)}，框 ${String(piece.size.width)}×${String(piece.size.height)}`)
+    }
+    const radius = featherOf(feather, box)
+    if (radius === 0) continue
+    // A selection inset by its own radius puts the fade inside the layer:
+    // feathering right up to the canvas edge is measured to do nothing.
+    await client.run('select.rect', {
+      x: box.x + radius,
+      y: box.y + radius,
+      width: box.width - radius * 2,
+      height: box.height - radius * 2,
+      feather: radius,
+    })
+    await client.run('layer.layerMask.revealSelection', {})
+  }
+  return notes
+}
+
+/**
+ * Keep one call's preview inside the range the plugin config declares.
+ * @param requested - the long edge the caller asked for, when it asked.
+ * @param fallback - the plugin's configured default.
+ * @returns the long edge to render at.
+ */
+function previewSideOf(requested: number | undefined, fallback: number): number {
+  if (requested === undefined) return fallback
+  return Math.min(PREVIEW_SIDE_MAX, Math.max(PREVIEW_SIDE_MIN, Math.round(requested)))
+}
+
 async function finish(
   ctx: Context,
-  client: McpClient,
-  bridge: FileBridge,
+  client: EngineClient,
+  bridge: BridgeClient,
   side: number,
   applied: string,
   verb: string,
   exec: ToolExecution,
-): Promise<{ file: string; bytes: number; applied: string; preview: Preview }> {
-  const file = `wish-${String(Date.now())}.png`
-  await client.call('doc_save', { path: file, format: 'png' })
-  const bytes = await bridge.download(file)
+  notes: string[],
+): Promise<{ file: string; source: string; bytes: number; applied: string; notes: string[]; preview: Preview }> {
+  const stamp = String(Date.now())
+  const file = `wish-${stamp}.png`
+  const source = `wish-${stamp}.psd`
+  // Two files, because one cannot do both jobs: the PSD keeps the adjustment
+  // layers the recipe built, while only a PNG can be shown in a chat — a PSD
+  // has no inline preview, whatever its extension promises.
+  const layered = await client.call('doc_save', { path: `${SCRATCH_DIR}/${source}`, format: 'psd' }) as { warnings?: readonly string[] }
+  for (const warning of layered.warnings ?? []) notes.push(warning)
+  await saveDeliverable(ctx, exec, source, await bridge.download(`${SCRATCH_DIR}/${source}`))
+  // Flattening is the whole point of this copy: it exists to be looked at.
+  await client.call('doc_save', { path: `${SCRATCH_DIR}/${file}`, format: 'png' })
+  const bytes = await bridge.download(`${SCRATCH_DIR}/${file}`)
   await saveDeliverable(ctx, exec, file, bytes)
   return {
     file,
+    source,
     bytes: bytes.length,
     applied: `${verb}: ${applied}`,
-    preview: await keep(ctx, await client.preview(side), `${file}-preview.png`),
+    notes,
+    preview: await keep(ctx, await client.preview(side), `wish-${stamp}-preview.png`),
   }
 }
 
@@ -274,21 +426,263 @@ async function finish(
  * @param ctx - context carrying tools and the attachment store.
  * @param runtime - capability clients and the preview budget.
  */
+/**
+ * The engine's session tools, as opposed to its 918 drawing commands.
+ *
+ * A workflow mixes both — open the file, draw, export — so a step list is walked
+ * in order and only the drawing commands are batched.
+ */
+const SESSION_TOOLS = new Set([
+  'command_batch',
+  'command_list',
+  'command_run',
+  'control_call',
+  'doc_close',
+  'doc_export',
+  'doc_export_data_sets',
+  'doc_export_layers',
+  'doc_import_data_sets',
+  'doc_inspect',
+  'doc_new',
+  'doc_open',
+  'doc_place',
+  'doc_render_preview',
+  'doc_save',
+  'doc_select',
+  'jobs_cancel',
+  'jobs_list',
+  'render_preview',
+  'session_list',
+  'ui_inspect',
+  'ui_menu_invoke',
+  'ui_pointer',
+  'ui_screenshot',
+  'ui_set',
+])
+
 export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRuntime): void {
   const { mcp, bridge, previewSide } = runtime
+  // The engine's 918 commands, indexed once and searched locally.
+  const index = new CommandIndex(mcp)
+
+  // The capability as the engine publishes it: 918 commands, searched rather
+  // than pre-selected. A recipe is a shortcut through this, never a fence.
+  ctx.tools.register(defineTool({
+    name: 'photocraft_search',
+    description: 'Search all 918 engine commands by what the user wants done, in Chinese or English. Returns each match with its full parameter list and menu path. Use it for anything beyond a plain grade or cutout — local edits, colour ranges, masks, paths, type, actions, batch — instead of assuming the engine cannot do it.',
+    parameters: {
+      query: { type: 'string', required: true, description: '想做的事：用户原话或英文关键词，例如「只把天空调蓝」「按颜色选区域」「加暗角」' },
+      limit: { type: 'number', description: '返回条数 1..20，默认 8' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          total: { type: 'number', required: true },
+          matches: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                label: { type: 'string', required: true },
+                params: { type: 'string', required: true },
+                menu: { type: 'string', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.matches.length === 0
+          ? `没有匹配（共 ${String(value.total)} 条命令，换个说法再搜）`
+          : value.matches.map(m => `\`${m.id}\` ${m.label}${m.menu === '' ? '' : ` · ${m.menu}`}\n    ${m.params}`).join('\n'),
+      }],
+    },
+    async execute(args) {
+      const limit = Math.min(20, Math.max(1, Math.round(args.limit ?? 8)))
+      const matches = await index.search(args.query, limit)
+      return {
+        total: (await index.all()).length,
+        matches: matches.map(spec => ({
+          id: spec.id,
+          label: spec.label,
+          params: spec.params,
+          menu: spec.menu.slice(1).join(' › '),
+        })),
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'photocraft_describe',
+    description: 'Show one command\'s parameters, menu path, and whether it can run right now — with the reason when it cannot. Call it when a command failed, when a parameter is unclear, or before a multi-step edit.',
+    parameters: {
+      id: { type: 'string', required: true, description: '命令 id，例如 select.colorRange' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          label: { type: 'string', required: true },
+          params: { type: 'string', required: true },
+          menu: { type: 'string', required: true },
+          blocked: { type: 'string' },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `\`${value.id}\` ${value.label}${value.menu === '' ? '' : ` · ${value.menu}`}\n    ${value.params}${value.blocked === undefined ? '' : `\n    当前不可用：${value.blocked}`}`,
+      }],
+    },
+    async execute(args) {
+      const doc = await index.describe(args.id)
+      const menu = doc.menu.slice(1).join(' › ')
+      return doc.blocked === undefined
+        ? { id: doc.id, label: doc.label, params: doc.params, menu }
+        : { id: doc.id, label: doc.label, params: doc.params, menu, blocked: doc.blocked }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'photocraft_run',
+    description: 'Run engine commands on the open document. Pass `steps` to run a whole workflow in one call — doc_open, then the drawing commands, then doc_export — or `id` + `params` for a single command. Parameters are checked against the engine\'s own declaration first, so a misspelt field is refused instead of silently ignored.',
+    parameters: {
+      id: { type: 'string', description: '单条命令 id（来自 photocraft_search）；用 steps 时不要传' },
+      params: {
+        type: 'object',
+        additionalProperties: true,
+        description: '该命令的参数对象，形状见 photocraft_describe 返回的 params',
+      },
+      steps: {
+        type: 'array',
+        description: '整个工作流：按顺序执行的 {id, params} 列表。doc_open、引擎命令、doc_export 可以混在一起，一次调用跑完',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string', required: true },
+            params: { type: 'object', additionalProperties: true },
+          },
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          result: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: `\`${value.id}\` → ${value.result}` }],
+    },
+    async execute(args, exec) {
+      const steps = args.steps as readonly { id?: unknown; params?: unknown }[] | undefined
+      if (Array.isArray(steps) && steps.length > 0) {
+        const report: string[] = []
+        let batch: { id: string; params: Record<string, unknown> }[] = []
+        const flush = async (): Promise<void> => {
+          if (batch.length === 0) return
+          const outcome = await mcp.call('command_batch', { steps: batch }) as { completed?: unknown; failed?: unknown }
+          report.push(`命令 ${String(batch.length)} 条：完成 ${String(outcome.completed ?? '?')}，失败 ${String(outcome.failed ?? '?')}`)
+          batch = []
+        }
+        for (const step of steps) {
+          const id = String(step.id ?? '')
+          if (id === '') throw new Error('photocraft: every step needs an `id`')
+          const params = (step.params ?? {}) as Record<string, unknown>
+          if (SESSION_TOOLS.has(id)) {
+            await flush()
+            // An export step is the delivery point of the workflow: without an
+            // explicit path it writes to scratch and comes back as a file the
+            // user can open, instead of a path inside the engine's volume.
+            if ((id === 'doc_export' || id === 'doc_save') && typeof params.path !== 'string') {
+              await ensureScratch(bridge)
+              const format = String(params.format ?? 'png').toLowerCase()
+              const name = `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
+              await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${name}`, format: format === 'jpeg' ? 'jpg' : format })
+              const bytes = await bridge.download(`${SCRATCH_DIR}/${name}`)
+              report.push(`已交付 ${await saveDeliverable(ctx, exec, name, bytes)}`)
+              continue
+            }
+            // A local picture has to reach the engine's own volume first; the
+            // engine refuses absolute paths outside its automation root.
+            const call = id === 'doc_open' && typeof params.path === 'string'
+              ? { ...params, path: await importSource(bridge, params.path) }
+              : params
+            await mcp.call(id, call)
+            report.push(id)
+            continue
+          }
+          const { problems } = await index.check(id, params)
+          if (problems.length > 0) throw new Error(`photocraft: ${problems.join('; ')}`)
+          batch.push({ id, params })
+        }
+        await flush()
+        return { id: `${String(steps.length)} 步`, result: report.join('；') }
+      }
+      const id = args.id
+      if (typeof id !== 'string' || id === '') throw new Error('photocraft: 传 `steps` 跑工作流，或传 `id` 跑单条命令')
+      const params = (args.params ?? {}) as Record<string, unknown>
+      const { problems } = await index.check(id, params)
+      if (problems.length > 0) throw new Error(`photocraft: ${problems.join('; ')}`)
+      const result = await mcp.run(id, params)
+      return { id, result: JSON.stringify(result ?? null).slice(0, 1200) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'photocraft_inspect',
+    description: 'Read the open document: size, depth, the layer tree with kinds and visibility, the current selection, the active layer and history. Call it before a command whose effect depends on what is selected, and after one to confirm it changed something.',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          state: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: value.state }],
+    },
+    async execute() {
+      const state = await mcp.call('doc_inspect')
+      return { state: JSON.stringify(state ?? null).slice(0, 2400) }
+    },
+  }))
 
   ctx.tools.register(defineTool({
     name: 'photocraft_edit',
-    description: 'Change a photo and get the result back as an image. Pass the instruction in the user\'s words and, when the user drew a box, that box as fractions of the image. Handles grading, cutouts, watermark/object removal, and quality repair in one call.',
+    description: 'Change a photo and get the result back as an image. Pass the instruction in the user\'s words, any adjustment the user named (strength, shift, margin, previewSide…), each box the user drew as fractions of the image, and any material picture as `assets`. With a box, a material replaces what the box covers; without one it goes behind the subject. Handles grading, cutouts, watermark/object removal, quality repair, and poster titles in one call.',
     parameters: {
       instruction: { type: 'string', required: true, description: '用户的要求，原话即可，例如「把这块水印去掉」' },
       source: { type: 'string', description: '要改的图：聊天附件的绝对路径，或工作区里的文件名' },
       assets: {
         type: 'array',
-        description: '用户额外提供的图（背景/天空/素材），按顺序贴上；给了就走合成',
+        description: '用户额外提供的图（素材/背景/天空）。有红框时按序号填进红框（第 i 个框用第 i 张，不够就用第一张）；没有框时贴到主体后面',
         items: { type: 'string' },
       },
       text: { type: 'string', description: '海报上要写的字；做海报时必须给' },
+      subline: { type: 'string', description: '海报副标题；不写就不加' },
+      look: { type: 'string', enum: ['cool', 'warm', 'bleach'], description: '调色风格：cool 冷调（默认）、warm 暖调、bleach 漂白' },
+      strength: { type: 'number', description: '调色力度 1..100，默认 60；30 是轻提示，90 是明显风格' },
+      vignette: { type: 'number', description: '暗角 0..100，默认 40；0 表示不要暗角' },
+      grain: { type: 'number', description: '颗粒 0..100，默认 0' },
+      shift: { type: 'number', description: '抠图/合成的收边 -100..100，默认 -25；主体边缘带一圈原背景时调小' },
+      soften: { type: 'number', description: '抠图边缘平滑 0..100，默认 20' },
+      margin: { type: 'number', description: '去水印/去杂物向外扩的余量 0..0.1，默认 0.01' },
+      denoise: { type: 'number', description: '降噪 0..10，默认 4' },
+      sharpen: { type: 'number', description: '锐化 0..500，默认 120' },
+      previewSide: { type: 'number', description: '本次预览的长边 64..2048，默认取插件配置；反复迭代时给 448' },
+      feather: { type: 'number', description: '红框裁下来的边缘羽化像素，默认取碎片短边的 2%（至少 1px）；0 表示硬边' },
       regions: {
         type: 'array',
         description: '红框：用户框出的各处位置，按编号顺序，0..1 的比例；同一个动作会对每个框各做一次',
@@ -303,17 +697,16 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           },
         },
       },
-      places: {
+      strokes: {
         type: 'array',
-        description: '绿框：结果落点，按序号与 regions 一一对应；只有和红框一起用才有效',
+        description: '画笔：用户涂过的轨迹，比框精确。每笔 {points: [[x,y],…] 0..1 比例, size?: 笔宽占短边百分比, mode?: add|subtract}；第一笔建立选区，后续 add/subtract',
         items: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            x: { type: 'number', required: true },
-            y: { type: 'number', required: true },
-            w: { type: 'number', required: true },
-            h: { type: 'number', required: true },
+            points: { type: 'array', required: true, items: { type: 'array', items: { type: 'number' } } },
+            size: { type: 'number' },
+            mode: { type: 'string', enum: ['add', 'subtract'] },
           },
         },
       },
@@ -324,79 +717,117 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         additionalProperties: false,
         properties: {
           file: { type: 'string', required: true },
+          source: { type: 'string', required: true },
           bytes: { type: 'number', required: true },
           applied: { type: 'string', required: true },
+          notes: { type: 'array', items: { type: 'string' } },
           preview: previewSchema,
         },
       },
       presentationMeta: (_args, value) => ({ kind: 'photocraft.edit', ...value }),
       render: (_args, value) => [
-        { type: 'text', text: `已按「${value.applied}」处理，结果 ${value.file}（${String(Math.round(value.bytes / 1024))}KB）` },
+        { type: 'text', text: `已按「${value.applied}」处理：${value.file}（${String(Math.round(value.bytes / 1024))}KB，可直接查看）；可编辑源文件 ${value.source}，图层保留可再调` },
+        ...value.notes === undefined || value.notes.length === 0 ? [] : [{ type: 'text' as const, text: value.notes.join('\n') }],
         ...(value.preview === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.preview) }]),
       ],
     },
     async execute(args, exec) {
       const source = (args.source ?? '').trim()
       if (source === '') throw new Error('photocraft: 需要一张图（聊天附件路径或工作区文件名）')
+      await ensureScratch(bridge)
       // Materials are attachments as well, so they take the same upload bridge:
       // the engine only opens files that live in its own workspace.
       const assets: string[] = []
       for (const asset of args.assets ?? []) assets.push(await importSource(bridge, asset))
       const regions = args.regions ?? []
-      const places = args.places ?? []
+      const side = previewSideOf(args.previewSide, previewSide)
       const main = await importSource(bridge, source)
 
-      // Green boxes present: cut each paired red box out and drop it on the
-      // material. One loop, no per-region special cases.
-      if (places.length > 0) {
-        const [target] = assets
-        if (target === undefined) throw new Error('photocraft: 有绿框但没有素材图')
-        const pieces: { file: string; width: number; height: number }[] = []
-        for (const [index, region] of regions.entries()) {
-          if (index >= places.length) break
-          // Each piece starts from the untouched source: cutting one piece
-          // replaces the active document, so the next one reopens it.
-          await mcp.open(main)
-          pieces.push(await cutPiece(mcp, main, normalizeRegion(region), `piece-${String(index)}-${String(Date.now())}.png`))
-        }
-        if (pieces.length === 0) throw new Error('photocraft: 绿框需要配一个红框')
-        await mcp.open(target)
+      // A red box plus a material is a replacement: the material goes into the
+      // box, paired by number, on the picture the box was drawn on. Without a
+      // box, a material is a background swap instead.
+      const [fallback] = assets
+      if (regions.length > 0 && fallback !== undefined) {
+        await mcp.open(main)
         const canvas = await mcp.call('doc_inspect', {}) as { width?: number; height?: number }
-        for (const [index, piece] of pieces.entries()) {
-          const place = normalizeRegion(places[index] as Region)
-          // The green box decides the size on the canvas, so the scale is the
-          // ratio between that width and the piece's own pixels — not the box
-          // width itself.
-          const targetWidth = place.w * (canvas.width ?? 0)
-          const scale = piece.width === 0 ? 100 : Number(((targetWidth / piece.width) * 100).toFixed(2))
-          await mcp.call('doc_place', {
-            path: piece.file,
-            center: [
-              Math.round((place.x + place.w / 2) * (canvas.width ?? 0)),
-              Math.round((place.y + place.h / 2) * (canvas.height ?? 0)),
-            ],
-            scale,
+        const canvasSize = { width: canvas.width ?? 0, height: canvas.height ?? 0 }
+        if (canvasSize.width === 0 || canvasSize.height === 0) throw new Error('photocraft: 量不出主图的尺寸')
+        const pieces: { file: string; centre: [number, number]; size: { width: number; height: number } }[] = []
+        for (const [index, region] of regions.entries()) {
+          const box = toPixels(normalizeRegion(region), canvasSize)
+          // Boxes pair with materials by number; a caller that supplies one
+          // material for several boxes gets it in all of them.
+          const opened = await mcp.open(assets[index] ?? fallback)
+          pieces.push({
+            file: await fitPiece(
+              mcp,
+              `piece-${String(index)}-${String(Date.now())}.png`,
+              box,
+              { width: opened.width, height: opened.height },
+            ),
+            centre: [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)],
+            size: { width: box.width, height: box.height },
           })
         }
-        return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'placed', exec)
+        await mcp.open(main)
+        return await finish(
+          ctx, mcp, bridge, side, args.instruction, 'replaced', exec,
+          await placeAll(mcp, pieces, args.feather),
+        )
       }
 
       await mcp.open(main)
-      const id = recipeFor(args.instruction, assets.length > 0)
+      const id = recipeFor(args.instruction, assets.length > 0, args)
       if (id === 'poster' && (args.text ?? '') === '') throw new Error('photocraft: 做海报需要一句文案（text）')
-      const recipe = RECIPES.find(candidate => candidate.id === id)
-      if (recipe === undefined) throw new Error(`photocraft: 缺少配方 ${id}`)
-      const background = id === 'cutout' ? backgroundOf(args.instruction) : undefined
-      const base: Record<string, unknown> = {
-        ...background === undefined ? {} : { background },
-        ...assets.length === 0 || assets[0] === undefined ? {} : { asset: assets[0] },
-        ...args.text === undefined ? {} : { headline: args.text },
+      const recipe = recipeById(id)
+      // A backdrop has to cover the picture: a material smaller than the canvas
+      // would leave the corners empty, so it is scaled to the canvas first.
+      let backdrop = assets[0]
+      if (id === 'composite' && backdrop !== undefined) {
+        const canvas = await mcp.call('doc_inspect', {}) as { width?: number; height?: number }
+        const canvasSize = { width: canvas.width ?? 0, height: canvas.height ?? 0 }
+        if (canvasSize.width > 0 && canvasSize.height > 0) {
+          const opened = await mcp.open(backdrop)
+          backdrop = await fitPiece(
+            mcp,
+            `backdrop-${String(Date.now())}.png`,
+            canvasSize,
+            { width: opened.width, height: opened.height },
+          )
+          // The recipe edits the picture, and opening the material made it active.
+          await mcp.open(main)
+        }
+      }
+      // Every knob the caller may name, in the recipes' own parameter spelling.
+      // A recipe reads only what it knows, so an unused one is ignored rather
+      // than refused — the wish stays one call.
+      const params: Record<string, unknown> = {
+        strokes: args.strokes,
+        headline: args.text,
+        subline: args.subline,
+        background: id === 'cutout' ? backgroundOf(args.instruction) : undefined,
+        asset: backdrop,
+        look: args.look,
+        strength: args.strength,
+        vignette: args.vignette,
+        grain: args.grain,
+        shift: args.shift,
+        soften: args.soften,
+        margin: args.margin,
+        denoise: args.denoise,
+        sharpen: args.sharpen,
       }
       // No red box: the wish applies to the whole picture. With red boxes, the
       // same wish is repeated at each of them, in order.
       const boxes = regions.length === 0 ? [undefined] : regions.map(region => normalizeRegion(region))
-      for (const region of boxes) await recipe.run(mcp, { ...base, ...region ?? {} }, bridge)
-      return await finish(ctx, mcp, bridge, previewSide, args.instruction, 'edited', exec)
+      const notes: string[] = []
+      for (const region of boxes) {
+        const run = await recipe.run(mcp, { ...params, ...region ?? {} }, bridge)
+        // The recipes carry the fixes a model gets wrong on its own ("shift 调到
+        // -25 再跑一次"); dropping them here is how that knowledge used to die.
+        for (const note of run.notes) if (!notes.includes(note)) notes.push(note)
+      }
+      return await finish(ctx, mcp, bridge, side, args.instruction, 'edited', exec, notes)
     },
   }))
 
@@ -424,8 +855,9 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
     async execute(args, exec) {
       const format = (args.format ?? 'psd').toLowerCase()
       const name = args.file ?? `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
-      await mcp.call('doc_save', { path: name, format: format === 'jpeg' ? 'jpg' : format })
-      const bytes = await bridge.download(name)
+      await ensureScratch(bridge)
+      await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${name}`, format: format === 'jpeg' ? 'jpg' : format })
+      const bytes = await bridge.download(`${SCRATCH_DIR}/${name}`)
       return { file: await saveDeliverable(ctx, exec, name, bytes), bytes: bytes.length }
     },
   }))

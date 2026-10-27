@@ -1,15 +1,13 @@
 /**
  * Wire client for the per-tenant PhotoCraft capability socket.
  *
- * The capability speaks three things and this module wraps all of them:
+ * The capability speaks two things and this module wraps both of them:
  *
  * * **MCP over Streamable HTTP** on `/mcp` — one session per client instance,
  *   so the documents it opens stay alive across tool calls. Replies may arrive
  *   as `application/json` or as a `text/event-stream`; both are read here.
  * * **The file bridge** on `/volumes`, `/index`, `/download`, `/upload` — the
  *   only way bytes enter or leave the engine.
- * * **The AI-album capability** on its own socket, used to pull a source photo
- *   and to store a finished image back.
  *
  * A capability socket is a unix socket owned by the tenant user; an `http(s)`
  * endpoint is accepted for local development against the dev server.
@@ -17,9 +15,7 @@
  * @module @deepseek-ai/dsh-skill-photocraft/client
  */
 
-import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
-import { basename } from 'node:path'
 
 /** Where one capability endpoint lives. */
 export interface Endpoint {
@@ -49,15 +45,20 @@ export interface StepResult {
   readonly result: unknown
 }
 
+/** Where one request goes: a tenant socket, or an http origin with a path prefix. */
+type Target =
+  | { readonly kind: 'socket'; readonly socketPath: string }
+  | { readonly kind: 'url'; readonly base: URL }
+
 /** Split `unix:/x.sock` and `http://host/prefix` into what `http.request` wants. */
-function parseEndpoint(endpoint: Endpoint): { socketPath?: string; base?: URL } {
+function parseEndpoint(endpoint: Endpoint): Target {
   const { url } = endpoint
-  if (url.startsWith('unix:')) return { socketPath: url.slice('unix:'.length) }
+  if (url.startsWith('unix:')) return { kind: 'socket', socketPath: url.slice('unix:'.length) }
   const base = new URL(url)
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
     throw new Error(`photocraft: endpoint must be unix: or http(s):, got ${url}`)
   }
-  return { base }
+  return { kind: 'url', base }
 }
 
 /**
@@ -74,26 +75,30 @@ export async function send(
   path: string,
   options: { headers?: Record<string, string>; body?: Buffer | string; timeoutMs?: number } = {},
 ): Promise<Reply> {
-  const { socketPath, base } = parseEndpoint(endpoint)
+  const target = parseEndpoint(endpoint)
   const body = options.body === undefined
     ? undefined
     : typeof options.body === 'string' ? Buffer.from(options.body, 'utf8') : options.body
   const headers: Record<string, string | number> = { ...options.headers }
   if (body !== undefined) headers['content-length'] = body.byteLength
+  // Node reads an empty port as "the protocol default", so the URL's own value
+  // needs no normalising here.
+  const connection = target.kind === 'socket'
+    ? { socketPath: target.socketPath }
+    : { protocol: target.base.protocol, hostname: target.base.hostname, port: target.base.port }
 
   return await new Promise<Reply>((resolve, reject) => {
     const request = httpRequest({
-      ...socketPath === undefined
-        ? { protocol: base?.protocol, hostname: base?.hostname, port: base?.port || undefined }
-        : { socketPath },
+      ...connection,
       method,
-      path: socketPath === undefined ? `${base?.pathname.replace(/\/+$/u, '') ?? ''}${path}` : path,
+      path: target.kind === 'socket' ? path : `${target.base.pathname.replace(/\/+$/u, '')}${path}`,
       headers,
     }, (response) => {
       const chunks: Buffer[] = []
       response.on('data', (chunk: Buffer) => { chunks.push(chunk) })
       response.on('end', () => {
         resolve({
+          /* v8 ignore next -- Node sets statusCode on every completed response; the fallback only satisfies the type. */
           status: response.statusCode ?? 0,
           headers: response.headers as Record<string, string | undefined>,
           body: Buffer.concat(chunks),
@@ -153,6 +158,19 @@ function parseRpc(reply: Reply, id: number): RpcFrame {
     return frame
   }
   throw new Error('photocraft MCP: the reply carried no matching frame')
+}
+
+/**
+ * What a recipe or a tool needs from the engine.
+ *
+ * The concrete provider is `McpClient`; the recipes and tools only see this face,
+ * which is what lets their tests run without a socket.
+ */
+export interface EngineClient {
+  call(name: string, args?: Record<string, unknown>): Promise<unknown>
+  run(command: string, params?: Record<string, unknown>): Promise<unknown>
+  open(path: string): Promise<OpenedDocument>
+  preview(maxSide?: number): Promise<Buffer>
 }
 
 /** One MCP session against the capability. */
@@ -265,6 +283,18 @@ export interface Volume {
   readonly name: string
 }
 
+/**
+ * What a recipe or a tool needs from the file bridge.
+ *
+ * The concrete provider is `FileBridge`; keeping the face separate lets a test
+ * assert the bytes that cross it without standing up a socket.
+ */
+export interface BridgeClient {
+  upload(name: string, data: Buffer, folder?: string): Promise<string>
+  download(name: string): Promise<Buffer>
+  mkdir(name: string): Promise<void>
+}
+
 /** The file bridge of the same capability. */
 export class FileBridge {
   constructor(private readonly endpoint: Endpoint, private readonly timeoutMs = 300_000) {}
@@ -284,10 +314,11 @@ export class FileBridge {
     return mine
   }
 
-  /** Write bytes into the caller's own directory. */
-  async upload(name: string, data: Buffer): Promise<string> {
+  /** Write bytes into the caller's own directory, or one folder inside it. */
+  async upload(name: string, data: Buffer, folder?: string): Promise<string> {
     const volume = await this.personal()
-    const query = new URLSearchParams({ adapter: volume.adapter, path: `${volume.adapter}://`, name })
+    const parent = `${volume.adapter}://${folder === undefined ? '' : `${folder}/`}`
+    const query = new URLSearchParams({ adapter: volume.adapter, path: parent, name })
     const reply = await send(this.endpoint, 'POST', `/upload?${query.toString()}`, {
       headers: { 'content-type': 'application/octet-stream' },
       body: data,
@@ -323,68 +354,5 @@ export class FileBridge {
     const reply = jsonReply(await send(this.endpoint, 'GET', `/index?${query.toString()}`, { timeoutMs: this.timeoutMs }), 'index')
     const data = reply.data as { files?: { basename: string; path: string; file_size: number }[] } | undefined
     return data?.files ?? []
-  }
-}
-
-/** The AI-album capability, used as a source and a sink for finished images. */
-export class AlbumClient {
-  constructor(private readonly endpoint: Endpoint, private readonly timeoutMs = 300_000) {}
-
-  /**
-   * Fetch one asset's original bytes.
-   * @param id - the album asset id.
-   * @returns the stored image bytes.
-   */
-  async original(id: string): Promise<Buffer> {
-    const reply = await send(this.endpoint, 'GET', `/assets/${encodeURIComponent(id)}/original`, {
-      headers: { accept: 'application/octet-stream' },
-      timeoutMs: this.timeoutMs,
-    })
-    if (reply.status !== 200) {
-      throw new Error(`album asset ${id} unavailable: HTTP ${String(reply.status)} ${reply.body.toString('utf8').slice(0, 200)}`)
-    }
-    return reply.body
-  }
-
-  /**
-   * Store finished bytes back into the album.
-   *
-   * Same contract as `skills/album upload`: SHA-1 bytes are deduplicated by the
-   * service, so re-exporting an identical image never creates a second asset.
-   * @param name - file name shown in the album.
-   * @param data - encoded image bytes.
-   * @returns the new (or deduplicated) asset id.
-   */
-  async upload(name: string, data: Buffer): Promise<{ id: string; duplicate: boolean }> {
-    const checksum = createHash('sha1').update(data).digest('base64')
-    const boundary = `----dsh-photocraft-${createHash('sha1').update(`${name}:${String(data.length)}`).digest('hex')}`
-    const now = new Date().toISOString()
-    const fields: [string, string][] = [
-      ['deviceAssetId', `dsh-${checksum.slice(0, 16)}`],
-      ['deviceId', 'v-harness'],
-      ['fileCreatedAt', now],
-      ['fileModifiedAt', now],
-      ['fileSize', String(data.length)],
-    ]
-    const parts: Buffer[] = []
-    for (const [field, value] of fields) {
-      parts.push(Buffer.from(`--${boundary}\r\ncontent-disposition: form-data; name="${field}"\r\n\r\n${value}\r\n`))
-    }
-    parts.push(
-      Buffer.from(`--${boundary}\r\ncontent-disposition: form-data; name="assetData"; filename="${basename(name)}"\r\ncontent-type: application/octet-stream\r\n\r\n`),
-      data,
-      Buffer.from(`\r\n--${boundary}--\r\n`),
-    )
-    const body = Buffer.concat(parts)
-    const reply = await send(this.endpoint, 'POST', '/assets', {
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, accept: 'application/json' },
-      body,
-      timeoutMs: this.timeoutMs,
-    })
-    const payload = jsonReply(reply, 'album upload')
-    const record = Array.isArray(payload) ? payload[0] as Record<string, unknown> : payload
-    const id = typeof record.id === 'string' ? record.id : ''
-    if (id === '') throw new Error('photocraft: the album accepted the upload but returned no asset id')
-    return { id, duplicate: record.duplicate === true }
   }
 }
