@@ -9,6 +9,7 @@
  */
 
 import type { Root } from 'mdast'
+import { recoverHtmlAnchors } from './html-anchor.ts'
 import { recoverLocalImages } from './local-image-syntax.ts'
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import { gfmFromMarkdown } from 'mdast-util-gfm'
@@ -25,10 +26,10 @@ import { mathCompatibility } from './mathCompatibility.ts'
  * @returns The mdast root.
  */
 export function parseGfm(text: string): Root {
-  return recoverLocalImages(fromMarkdown(text, {
+  return recoverHtmlAnchors(recoverLocalImages(fromMarkdown(text, {
     extensions: [gfm(), cjkFriendlyStrong()],
     mdastExtensions: [gfmFromMarkdown()],
-  }), text)
+  }), text))
 }
 
 /**
@@ -38,8 +39,8 @@ export function parseGfm(text: string): Root {
  * @returns The mdast root.
  */
 export function parseGfmWithMath(text: string): Root {
-  return recoverLocalImages(fromMarkdown(text, {
+  return recoverHtmlAnchors(recoverLocalImages(fromMarkdown(text, {
     extensions: [gfm(), cjkFriendlyStrong(), mathCompatibility(), math()],
     mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
-  }), text)
+  }), text))
 }
