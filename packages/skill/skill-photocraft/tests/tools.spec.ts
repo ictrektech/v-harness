@@ -1,0 +1,506 @@
+/**
+ * The two tools: what reaches the engine, what reaches the workspace, and what
+ * the model is told when either refuses.
+ */
+
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type { ToolDefinition, ToolExecutionToken, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { BridgeClient, EngineClient, OpenedDocument } from '../src/client.ts'
+
+/** The attachment digests this suite publishes under `$DSH_HOME/attachments`. */
+const DIGEST = `ab${'c'.repeat(62)}`
+const SUPPLY_DIGEST = `cd${'e'.repeat(62)}`
+const EXTRA_DIGEST = `ef${'a'.repeat(62)}`
+const SOURCE = `sha256:${DIGEST}`
+const SUPPLY = `sha256:${SUPPLY_DIGEST}`
+const EXTRA = `sha256:${EXTRA_DIGEST}`
+const PNG = Buffer.from('PNGDATA')
+const SUPPLY_PNG = Buffer.from('SKYDATA')
+const EXTRA_PNG = Buffer.from('STONEDATA')
+
+let root: string
+let workspace: string
+let tools: typeof import('../src/tools.ts')
+
+/** One recorded engine call. */
+interface Call {
+  readonly name: string
+  readonly args: Record<string, unknown>
+}
+
+/** The engine, the bridge, and what they were asked to do. */
+interface Stage {
+  readonly engine: EngineClient
+  readonly bridge: BridgeClient
+  readonly calls: Call[]
+  readonly uploads: { name: string; data: Buffer }[]
+  readonly downloads: string[]
+  readonly previews: number[]
+  readonly folders: string[]
+}
+
+/** The answers a recipe expects when a test does not care about them. */
+function defaultAnswer(name: string): unknown {
+  if (name === 'doc_inspect') return { width: 100, height: 50, activeLayer: 1, layers: [{ id: 1, kind: 'Pixel' }] }
+  if (name === 'select.subject') return { selected: true, changed: true }
+  return {}
+}
+
+/**
+ * Build one recording stage.
+ * @param answer - per-call answers; unlisted calls answer `{}`.
+ * @returns the stage.
+ */
+function stageOf(answer: (name: string) => unknown = defaultAnswer): Stage {
+  const calls: Call[] = []
+  const uploads: { name: string; data: Buffer }[] = []
+  const downloads: string[] = []
+  const previews: number[] = []
+  const folders: string[] = []
+  const engine: EngineClient = {
+    call: async (name, args = {}) => {
+      calls.push({ name, args })
+      return answer(name)
+    },
+    run: async (command, params = {}) => {
+      calls.push({ name: command, args: params })
+      return answer(command)
+    },
+    open: async (path: string): Promise<OpenedDocument> => {
+      calls.push({ name: 'open', args: { path } })
+      return { index: 0, name: path, width: 100, height: 50, layers: 1 }
+    },
+    preview: async (maxSide = 768) => {
+      previews.push(maxSide)
+      return PNG
+    },
+  }
+  const bridge: BridgeClient = {
+    upload: async (name, data) => {
+      uploads.push({ name, data })
+      return name
+    },
+    download: async (name) => {
+      downloads.push(name)
+      return PNG
+    },
+    mkdir: async (name) => { folders.push(name) },
+  }
+  return { engine, bridge, calls, uploads, downloads, previews, folders }
+}
+
+/** What the plugin registers against, with the two services it reads stubbed. */
+function hostOf(stage: Stage, options: { keepImages?: boolean } = {}): { ctx: Context; definitions: ToolDefinition[] } {
+  const definitions: ToolDefinition[] = []
+  const ctx = new Context()
+  ctx.provide('tools', {
+    register: (definition: ToolDefinition) => {
+      definitions.push(definition)
+      return () => {}
+    },
+  } as never)
+  ctx.provide('attachments', {
+    saveImages: async (images: SaveImageAttachment[]): Promise<ImageAttachmentRef[]> => options.keepImages === false
+      ? []
+      : images.map(image => ({
+        attachmentId: AttachmentId(SOURCE),
+        mediaType: 'image/png' as const,
+        bytes: image.data.byteLength,
+        width: 64,
+        height: 48,
+        name: image.name ?? 'preview.png',
+      })),
+  } as never)
+  ctx.provide('workingDirectory', { ensure: async () => workspace } as never)
+  tools.registerPhotocraftTools(ctx, { mcp: stage.engine, bridge: stage.bridge, previewSide: 700 })
+  return { ctx, definitions }
+}
+
+/**
+ * One execution identity, as the registry would hand it to the tool.
+ * @param agent - whether a session agent owns the call.
+ * @returns the execution.
+ */
+function execOf(agent = true): ToolRunContext {
+  const token = Symbol('photocraft-exec') as ToolExecutionToken
+  return {
+    callId: ToolCallId('call-1'),
+    rootCallId: ToolCallId('call-1'),
+    name: 'photocraft_edit',
+    arguments: {},
+    signal: new AbortController().signal,
+    token,
+    ...agent ? { agent: { id: SessionId('agent-1') } as Agent } : {},
+    deferContext: () => {},
+    concludeTurn: () => {},
+  }
+}
+
+/** One registered tool by name. */
+function toolOf(definitions: ToolDefinition[], name: string): ToolDefinition {
+  const definition = definitions.find(candidate => candidate.name === name)
+  if (definition === undefined) throw new Error(`${name} was not registered`)
+  return definition
+}
+
+/** Run `photocraft_edit` against a fresh stage. */
+async function edit(
+  args: Record<string, unknown>,
+  options: { answer?: (name: string) => unknown; agent?: boolean; keepImages?: boolean } = {},
+): Promise<{ value: Record<string, unknown>; stage: Stage }> {
+  const stage = stageOf(options.answer)
+  const definition = toolOf(hostOf(stage, { keepImages: options.keepImages }).definitions, 'photocraft_edit')
+  const value = await definition.execute(args, execOf(options.agent ?? true))
+  return { value: value as Record<string, unknown>, stage }
+}
+
+beforeAll(async () => {
+  root = await mkdtemp(join(tmpdir(), 'photocraft-tools-'))
+  workspace = join(root, 'workspace')
+  await mkdir(workspace, { recursive: true })
+  for (const [digest, bytes] of [[DIGEST, PNG], [SUPPLY_DIGEST, SUPPLY_PNG], [EXTRA_DIGEST, EXTRA_PNG]] as const) {
+    const bucket = join(root, 'attachments', 'v1', 'objects', digest.slice(0, 2))
+    await mkdir(bucket, { recursive: true })
+    await writeFile(join(bucket, digest), bytes)
+  }
+  // The attachment root is fixed when the module is first evaluated.
+  process.env.DSH_HOME = root
+  tools = await import('../src/tools.ts')
+})
+
+afterAll(async () => {
+  // A second evaluation without DSH_HOME covers the homedir() fallback.
+  delete process.env.DSH_HOME
+  vi.resetModules()
+  await import('../src/tools.ts')
+  process.env.DSH_HOME = root
+  await rm(root, { recursive: true, force: true })
+})
+
+describe('photocraft_edit', () => {
+  it('imports the picture the attachment id names and saves the result', async () => {
+    const { value, stage } = await edit({ instruction: '调成电影感', source: SOURCE })
+    expect(stage.uploads).toHaveLength(1)
+    expect(stage.uploads[0]?.data).toEqual(PNG)
+    expect(stage.uploads[0]?.name).toMatch(/^wish-\d+-\d+\.png$/u)
+    // Two deliverables: a flattened PNG to look at, a PSD to keep editing.
+    expect(stage.downloads).toHaveLength(2)
+    expect(value.source).toMatch(/^wish-\d+\.psd$/u)
+    expect(value.bytes).toBe(PNG.length)
+    expect(value.applied).toBe('edited: 调成电影感')
+    expect(await readFile(join(workspace, String(value.file)))).toEqual(PNG)
+    expect(value.preview).toMatchObject({ mediaType: 'image/png', width: 64, height: 48 })
+  })
+
+  it('shows the preview at the configured side, or at the one the call names', async () => {
+    expect((await edit({ instruction: '调成电影感', source: SOURCE })).stage.previews).toEqual([700])
+    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 448 })).stage.previews).toEqual([448])
+    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 1 })).stage.previews).toEqual([64])
+    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 9000 })).stage.previews).toEqual([2048])
+    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 500.6 })).stage.previews).toEqual([501])
+  })
+
+  it('hands the named knobs to the recipe that reads them', async () => {
+    const { stage } = await edit({
+      instruction: '调成胶片感',
+      source: SOURCE,
+      look: 'warm',
+      strength: 90,
+      vignette: 0,
+      grain: 30,
+      shift: -40,
+      margin: 0.02,
+    })
+    const curves = stage.calls.find(call => call.name === 'layer.newAdjustmentLayer.curves')
+    // A warm look at 90% bends red up and blue down by 36 levels.
+    expect(curves?.args.red).toEqual([[0, 0], [128, 164], [255, 255]])
+    expect(curves?.args.blue).toEqual([[0, 0], [128, 92], [255, 255]])
+    expect(stage.calls.map(call => call.name)).not.toContain('filter.lensCorrection')
+    expect(stage.calls.find(call => call.name === 'filter.noise.addNoise')?.args.amount).toBe(120)
+  })
+
+  it('puts a supplied picture behind the subject when no box says where', async () => {
+    const { stage } = await edit({ instruction: '换成这张天空', source: SOURCE, assets: [SUPPLY] }, {
+      answer: name => (name === 'doc_inspect' ? { width: 100, height: 50 }
+        : name === 'layer.selectBottom' ? { selected: [1] }
+          : name === 'select.subject' ? { selected: true } : { layer: 2 }),
+    })
+    // The backdrop is fitted to the canvas before the recipe runs, so the list
+    // opens with the material being measured.
+    expect(stage.calls.map(call => call.name)).toEqual([
+      'open',
+      'doc_inspect',
+      'open',
+      'image.crop',
+      'doc_save',
+      'open',
+      'layer.selectBottom',
+      'select.subject',
+      'select.refineEdge',
+      'doc_place',
+      'layer.moveTo',
+      'layer.setProps',
+      'doc_save',
+      'doc_save',
+    ])
+    // The backdrop is the canvas-sized copy, not the raw upload.
+    expect(stage.calls.find(call => call.name === 'doc_place')?.args.path).toMatch(/^photocraft-tmp\/backdrop-\d+\.png$/u)
+  })
+
+  it('routes each wish to the recipe it names', async () => {
+    const routed = async (instruction: string, extra: Record<string, unknown> = {}): Promise<Call[]> => {
+      const { stage } = await edit({ instruction, source: SOURCE, ...extra })
+      return stage.calls
+    }
+    const filled = (calls: Call[]): unknown => calls.find(call => call.name === 'layer.newFillLayer.solidColor')?.args.color
+    const box = { regions: [{ x: 0.1, y: 0.1, w: 0.1, h: 0.1 }] }
+    expect((await routed('去掉这行字', box)).map(call => call.name)).toContain('edit.contentAwareFill')
+    expect((await routed('把这块抹掉', box)).map(call => call.name)).toContain('edit.contentAwareFill')
+    expect((await routed('太糊了，修一下')).map(call => call.name)).toContain('filter.noise.reduceNoise')
+    expect(filled(await routed('换成 #3388ff 底色'))).toBe('#3388ff')
+    expect(filled(await routed('换成浅蓝底'))).toBe('#438edb')
+    expect(filled(await routed('做成白底图'))).toBe('#ffffff')
+    expect(filled(await routed('红底'))).toBe('#e2445c')
+    expect(filled(await routed('灰底'))).toBe('#cccccc')
+    expect(filled(await routed('换成黑底'))).toBe('#111111')
+  })
+
+  it('repeats the wish once per red box', async () => {
+    const { stage } = await edit({
+      instruction: '把水印去掉',
+      source: SOURCE,
+      regions: [
+        { x: 0.1, y: 0.1, w: 0.2, h: 0.1 },
+        { x: 0.6, y: 0.8, w: 0.2, h: 0.1 },
+      ],
+    })
+    expect(stage.calls.filter(call => call.name === 'select.rect')).toHaveLength(2)
+    expect(stage.calls.filter(call => call.name === 'edit.contentAwareFill')).toHaveLength(2)
+  })
+
+  it('keeps the box the user drew inside the picture', async () => {
+    const { stage } = await edit({
+      instruction: '把水印去掉',
+      source: SOURCE,
+      regions: [{ x: 0.9, y: 0.9, w: 0.9, h: 0.9 }],
+      margin: 0,
+    })
+    expect(stage.calls.find(call => call.name === 'select.rect')?.args).toEqual({ x: 90, y: 45, width: 10, height: 5 })
+  })
+
+  it('refuses a box with no area', async () => {
+    await expect(edit({ instruction: '把水印去掉', source: SOURCE, regions: [{ x: 0, y: 0, w: 0, h: 0 }] }))
+      .rejects.toThrow(/选区为空/u)
+  })
+
+  it('places the material as it is when the canvas cannot be measured', async () => {
+    const { stage } = await edit({ instruction: '换成这张天空', source: SOURCE, assets: [SUPPLY] }, {
+      answer: name => (name === 'doc_inspect' ? {}
+        : name === 'layer.selectBottom' ? { selected: [1] }
+          : name === 'select.subject' ? { selected: true } : { layer: 2 }),
+    })
+    expect(stage.calls.map(call => call.name)).not.toContain('image.crop')
+    expect(stage.calls.find(call => call.name === 'doc_place')?.args.path).toMatch(/^photocraft-tmp\/wish-/u)
+  })
+
+  it('puts a material into each red box, paired by number', async () => {
+    const { value, stage } = await edit({
+      instruction: '把这两块换成素材',
+      source: SOURCE,
+      assets: [SUPPLY, EXTRA],
+      regions: [
+        { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        { x: 0.5, y: 0.4, w: 0.2, h: 0.2 },
+      ],
+    })
+    // The picture opens to measure its boxes, then each material is opened and
+    // fitted, then the picture opens again to receive them.
+    expect(stage.calls.filter(call => call.name === 'open')).toHaveLength(4)
+    expect(stage.calls.filter(call => call.name === 'image.crop').map(call => call.args))
+      .toEqual([
+        { x: 0, y: 0, width: 100, height: 50, targetWidth: 20, targetHeight: 10 },
+        { x: 0, y: 0, width: 100, height: 50, targetWidth: 20, targetHeight: 10 },
+      ])
+    const placed = stage.calls.filter(call => call.name === 'doc_place')
+    expect(placed.map(call => call.args.center)).toEqual([[20, 10], [60, 25]])
+    expect(placed.map(call => call.args.scale)).toEqual([100, 100])
+    expect(value.applied).toBe('replaced: 把这两块换成素材')
+    expect(stage.uploads.map(upload => upload.data)).toEqual([SUPPLY_PNG, EXTRA_PNG, PNG])
+  })
+
+  it('reuses the first material when there are fewer materials than boxes', async () => {
+    const { stage } = await edit({
+      instruction: '把这两块换成素材',
+      source: SOURCE,
+      assets: [SUPPLY],
+      regions: [
+        { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        { x: 0.5, y: 0.4, w: 0.2, h: 0.2 },
+      ],
+    })
+    // The picture, the single material twice, then the picture again.
+    expect(stage.calls.filter(call => call.name === 'open')).toHaveLength(4)
+    expect(stage.calls.filter(call => call.name === 'doc_place')).toHaveLength(2)
+    expect(stage.uploads.map(upload => upload.data)).toEqual([SUPPLY_PNG, PNG])
+  })
+
+  it('refuses a material box it cannot measure', async () => {
+    await expect(edit({
+      instruction: '换成素材',
+      source: SOURCE,
+      assets: [SUPPLY],
+      regions: [{ x: 0.1, y: 0.1, w: 0.2, h: 0.2 }],
+    }, { answer: () => ({}) })).rejects.toThrow(/量不出主图的尺寸/u)
+  })
+
+  it('cuts a poster only when the caller names the words', async () => {
+    await expect(edit({ instruction: '做张海报', source: SOURCE })).rejects.toThrow(/需要一句文案/u)
+    const { value, stage } = await edit({ instruction: '做张海报', source: SOURCE, text: '秋日', subline: '京都' })
+    expect(stage.calls.filter(call => call.name === 'type.create')).toHaveLength(2)
+    expect(value.notes).toEqual(['只做了这一张的排版'])
+  })
+
+  it('returns the recipe notes it was told to keep', async () => {
+    const { value } = await edit({ instruction: '把背景去掉', source: SOURCE })
+    expect(value.notes).toEqual([
+      '结果层带蒙版，导出 PNG 即为透明底',
+      '没给框也没画笔，这版按画面里最显著的区域抠；回复时可以顺带说一句「框一下或涂一下会更准」',
+      '主体边缘如果还带一圈原背景，把 shift 调到 -30 再跑一次',
+    ])
+  })
+
+  it('needs a picture to work on', async () => {
+    await expect(edit({ instruction: '调成电影感' })).rejects.toThrow(/需要一张图/u)
+    await expect(edit({ instruction: '调成电影感', source: '   ' })).rejects.toThrow(/需要一张图/u)
+  })
+
+  it('reads a file the agent already has by absolute path', async () => {
+    const copy = join(root, 'copy.png')
+    await writeFile(copy, PNG)
+    const { stage } = await edit({ instruction: '调成电影感', source: copy })
+    expect(stage.uploads[0]?.data).toEqual(PNG)
+  })
+
+  it('refuses anything that is not an image', async () => {
+    const text = join(root, 'notes.txt')
+    await writeFile(text, 'hello')
+    await expect(edit({ instruction: '调成电影感', source: text })).rejects.toThrow(/只能导入图片文件/u)
+  })
+
+  it('refuses a picture that is not there', async () => {
+    await expect(edit({ instruction: '调成电影感', source: join(root, 'missing.png') })).rejects.toThrow(/找不到图片/u)
+  })
+
+  it('refuses a picture over the import limit', async () => {
+    const huge = join(root, 'huge.png')
+    const handle = await open(huge, 'w')
+    await handle.truncate(31 * 1024 * 1024)
+    await handle.close()
+    await expect(edit({ instruction: '调成电影感', source: huge })).rejects.toThrow(/图片超过 30MB/u)
+  })
+
+  it('leaves a workspace file name to the engine', async () => {
+    const { stage } = await edit({ instruction: '调成电影感', source: 'in-the-workspace.png' })
+    expect(stage.uploads).toHaveLength(0)
+    expect(stage.calls[0]).toEqual({ name: 'open', args: { path: 'in-the-workspace.png' } })
+  })
+
+  it('refuses to report a result it could not store', async () => {
+    await expect(edit({ instruction: '调成电影感', source: SOURCE }, { keepImages: false }))
+      .rejects.toThrow(/结果图保存失败/u)
+  })
+
+  it('refuses to write into a workspace it does not have', async () => {
+    await expect(edit({ instruction: '调成电影感', source: SOURCE }, { agent: false }))
+      .rejects.toThrow(/没有可写入的工作区/u)
+  })
+})
+
+describe('photocraft_export', () => {
+  /** Run the export tool with one argument set. */
+  async function exportAs(args: Record<string, unknown>): Promise<{ value: Record<string, unknown>; stage: Stage }> {
+    const stage = stageOf()
+    const definition = toolOf(hostOf(stage).definitions, 'photocraft_export')
+    const value = await definition.execute(args, execOf())
+    return { value: value as Record<string, unknown>, stage }
+  }
+
+  it('keeps layers as PSD by default', async () => {
+    const { value, stage } = await exportAs({})
+    expect(stage.calls[0]?.args).toMatchObject({ format: 'psd' })
+    expect(String(value.file)).toMatch(/^wish-\d+\.psd$/u)
+    expect(await readFile(join(workspace, String(value.file)))).toEqual(PNG)
+  })
+
+  it('writes a named jpeg', async () => {
+    const { value, stage } = await exportAs({ format: 'jpeg', file: 'final.jpg' })
+    expect(stage.calls[0]?.args).toEqual({ path: 'photocraft-tmp/final.jpg', format: 'jpg' })
+    expect(value).toEqual({ file: 'final.jpg', bytes: PNG.length })
+  })
+
+  it('names an unnamed jpeg with the extension the engine writes', async () => {
+    const { value } = await exportAs({ format: 'jpeg' })
+    expect(String(value.file)).toMatch(/^wish-\d+\.jpg$/u)
+  })
+
+  it('renders its own caption', () => {
+    const definition = toolOf(hostOf(stageOf()).definitions, 'photocraft_export')
+    expect(definition.output.render({}, { file: 'final.psd', bytes: 2048 })).toEqual([
+      { type: 'text', text: '已导出 final.psd（2KB）' },
+    ])
+  })
+})
+
+describe('presentation', () => {
+  /** The edit tool's pure projections. */
+  function editTool(): ToolDefinition {
+    return toolOf(hostOf(stageOf()).definitions, 'photocraft_edit')
+  }
+
+  /** One canonical result value. */
+  function valueOf(extra: Record<string, unknown>): Record<string, unknown> {
+    return { file: 'wish-1.png', source: 'wish-1.psd', bytes: 2048, applied: 'edited: 调成电影感', ...extra }
+  }
+
+  const preview = {
+    attachmentId: SOURCE,
+    mediaType: 'image/png',
+    bytes: 12,
+    width: 64,
+    height: 48,
+    name: 'p.png',
+  }
+
+  it('renders the caption, the notes, and the preview as an image block', () => {
+    const blocks = editTool().output.render(
+      { instruction: '调成电影感' },
+      valueOf({ notes: ['只做了这一张的排版'], preview }),
+    )
+    expect(blocks).toHaveLength(3)
+    expect(blocks[0]).toEqual({
+      type: 'text',
+      text: '已按「edited: 调成电影感」处理：wish-1.png（2KB，可直接查看）；可编辑源文件 wish-1.psd，图层保留可再调',
+    })
+    expect(blocks[1]).toEqual({ type: 'text', text: '只做了这一张的排版' })
+    expect(blocks[2]).toMatchObject({ type: 'image' })
+  })
+
+  it('renders a bare caption when there is nothing else to say', () => {
+    expect(editTool().output.render({}, valueOf({}))).toHaveLength(1)
+    expect(editTool().output.render({}, valueOf({ notes: [] }))).toHaveLength(1)
+    expect(editTool().output.render({}, valueOf({ notes: ['a'] }))).toHaveLength(2)
+  })
+
+  it('carries the edit kind and value for the transcript', () => {
+    expect(editTool().output.presentationMeta?.({}, valueOf({ preview })))
+      .toMatchObject({ kind: 'photocraft.edit', file: 'wish-1.png' })
+  })
+})
