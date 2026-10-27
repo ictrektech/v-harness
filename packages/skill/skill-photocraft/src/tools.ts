@@ -19,7 +19,7 @@ import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import { CommandIndex } from './capability.ts'
 import type { BridgeClient, EngineClient } from './client.ts'
 import { centreCrop, normalizeRegion, toPixels, type PixelBox } from './coords.ts'
-import { recipeFor as recipeById } from './recipes.ts'
+import { RECIPES, recipeFor as recipeById } from './recipes.ts'
 
 /** Everything the tools need to reach the capability. */
 export interface PhotocraftToolsRuntime {
@@ -106,67 +106,32 @@ const previewSchema = {
 } as const
 
 /**
- * Pick the recipe an instruction is asking for.
+ * Resolve the recipe for one edit call.
  *
- * Deliberately a keyword table over four fixed recipes: a caller never chooses a
- * recipe, and an unknown wish gets the closest one rather than an error.
- *
- * Order is the meaning. A wish that names what should disappear (水印, 路人,
- * 这行字) removes pixels; a wish that names where the subject is going
- * (背景, 白底, 证件照) cuts it out. "把背景去掉" names a destination, so the
- * bare verb 去掉 must not be enough to reach content-aware fill.
- * @param instruction - the user's own words.
+ * Language understanding belongs to the caller: the model reads the wish and
+ * names the card in `intent`, and this function only validates the choice.
+ * Structural knobs decide without any wording — a supplied picture is a
+ * composite, a headline is a poster, a named look is a grade — because those
+ * are typed parameters, not text to parse. Everything else refuses loud with
+ * the card list rather than guessing from keywords.
+ * @param intent - the caller's chosen card, or undefined.
  * @param hasAsset - whether the caller supplied a second picture.
+ * @param named - knobs the caller filled in.
  * @returns the recipe id.
  */
 function recipeFor(
-  instruction: string,
+  intent: string | undefined,
   hasAsset: boolean,
-  named: { look?: unknown; text?: unknown; regions?: unknown; strokes?: unknown; denoise?: unknown; sharpen?: unknown },
+  named: { text?: unknown; look?: unknown },
 ): string {
-  const text = instruction.toLowerCase()
+  if (intent !== undefined && intent !== 'auto' && RECIPES.some(recipe => recipe.id === intent)) return intent
   if (hasAsset) return 'composite'
-  // A knob the caller filled in states the intent more reliably than any
-  // wording, so it wins over the keyword table below.
   if (named.text !== undefined && named.text !== '') return 'poster'
   if (named.look !== undefined) return 'film'
-  // A box or a stroke on a colour wish means "grade this picture", because this
-  // version has no per-region grading; only a removal wish is box-scoped.
-  const grading = /色调|调色|调成|电影感|胶片|复古|老照片|日系|冷调|暖调|变暗|压暗|调暗|调亮|提亮|曝光|氛围感/u.test(text)
-  if (!grading && (named.regions !== undefined || named.strokes !== undefined)) return 'remove'
-  // A removable object is a noun; "去掉灰雾" names a fault, and that is a
-  // quality repair rather than a fill.
-  if (/水印|杂物|路人|瑕疵|污点|贴纸|文字|字幕|文本|logo|标识/u.test(text)) return 'remove'
-  if (grading) return 'film'
-  if (/模糊|噪点|清晰|锐化|锐度|偏色|发黄|发蓝|发灰|通透|画质|糊|雾|朦胧|暗沉|发闷|enhance/u.test(text)) return 'enhance'
-  if (named.denoise !== undefined || named.sharpen !== undefined) return 'enhance'
-  // A headline is a poster, even when the caller forgot to pass one: the recipe
-  // then refuses with "需要一句文案" instead of silently grading the picture.
-  if (/海报|标题|排版|poster/u.test(text)) return 'poster'
-  if (/抠|换底|底色|白底|蓝底|红底|灰底|黑底|透明底|背景|证件照|cutout|(?:换|改|做)[^，。；]{0,6}底/u.test(text)) return 'cutout'
-  if (/去掉|抹掉|擦掉|擦除|p掉|删除|remove/u.test(text)) return 'remove'
-  return 'film'
+  throw new Error(
+    'photocraft: 请选择 intent——film 调色 | cutout 抠图换底 | remove 擦除去物 | enhance 画质修复 | poster 海报文字 | composite 贴素材',
+  )
 }
-
-/**
- * Read a background colour out of the instruction, when one is named.
- *
- * "换成浅蓝底" has to reach the engine as a colour; asking the caller for a hex
- * value would push our vocabulary back onto it.
- * @param instruction - the user's own words.
- * @returns a `#rrggbb` value, or `undefined` when no colour was named.
- */
-function backgroundOf(instruction: string): string | undefined {
-  const explicit = /#([0-9a-f]{6})\b/iu.exec(instruction)
-  if (explicit !== null) return `#${explicit[1]}`
-  if (/浅?蓝|blue/iu.test(instruction)) return '#438edb'
-  if (/白|white/iu.test(instruction)) return '#ffffff'
-  if (/红|red/iu.test(instruction)) return '#e2445c'
-  if (/灰|gray|grey/iu.test(instruction)) return '#cccccc'
-  if (/黑|black/iu.test(instruction)) return '#111111'
-  return undefined
-}
-
 
 /**
  * Where the engine's copies live inside the caller's own directory.
@@ -661,9 +626,21 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
 
   ctx.tools.register(defineTool({
     name: 'photocraft_edit',
-    description: 'Change a photo and get the result back as an image. Pass the instruction in the user\'s words, any adjustment the user named (strength, shift, margin, previewSide…), each box the user drew as fractions of the image, and any material picture as `assets`. With a box, a material replaces what the box covers; without one it goes behind the subject. Handles grading, cutouts, watermark/object removal, quality repair, and poster titles in one call.',
+    description: 'Change a photo and get the result back as an image. Decide what pixel result the user wants and say it in `intent`, pass the instruction in the user\'s words, any adjustment the user named (strength, shift, margin, previewSide…), each box the user drew as fractions of the image, and any material picture as `assets`. With a box, a material replaces what the box covers; without one it goes behind the subject. Handles grading, cutouts, watermark/object removal, quality repair, and poster titles in one call.',
     parameters: {
       instruction: { type: 'string', required: true, description: '用户的要求，原话即可，例如「把这块水印去掉」' },
+      intent: {
+        type: 'string',
+        enum: ['film', 'cutout', 'remove', 'enhance', 'poster', 'composite', 'brush', 'retouch', 'fill', 'transform', 'gray', 'text'],
+        description: [
+          '意图卡——由你判断用户想要的像素结果后选择：',
+          'film 整图调色风格；cutout 把主体从背景抠出/换底色；remove 让某块东西消失（水印/路人/字迹/魔术橡皮擦）；',
+          'enhance 降噪锐化修画质；poster 海报排版；composite 把另一张图贴进来；',
+          'brush 画笔/橡皮擦涂画；retouch 修图笔刷（tool 选：dodge 加深 burn 减淡 sponge 海绵 blur 涂糊 sharpen 锐化涂抹 smudge clone 仿制图章 spotHeal 污点修复 heal 修复画笔 patch 修补）；',
+          'fill 填充（tool 选 bucket 油漆桶 / gradient 渐变）；transform 几何（action 选 crop/rotate/flipH/flipV/trim/resize）；gray 转黑白；text 加一段文字。',
+          '留空时仅在提供了 assets/text/look 的场景自动判定，否则拒绝',
+        ].join(''),
+      },
       source: { type: 'string', description: '要改的图：聊天附件的绝对路径，或工作区里的文件名' },
       assets: {
         type: 'array',
@@ -673,14 +650,28 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       text: { type: 'string', description: '海报上要写的字；做海报时必须给' },
       subline: { type: 'string', description: '海报副标题；不写就不加' },
       look: { type: 'string', enum: ['cool', 'warm', 'bleach'], description: '调色风格：cool 冷调（默认）、warm 暖调、bleach 漂白' },
-      strength: { type: 'number', description: '调色力度 1..100，默认 60；30 是轻提示，90 是明显风格' },
-      vignette: { type: 'number', description: '暗角 0..100，默认 40；0 表示不要暗角' },
+      strength: { type: 'number', description: '调色力度 1..100，默认 50；25 轻、75 明显、100 满量程' },
+      vignette: { type: 'number', description: '暗角 0..100，默认 30；0 表示不要暗角' },
       grain: { type: 'number', description: '颗粒 0..100，默认 0' },
       shift: { type: 'number', description: '抠图/合成的收边 -100..100，默认 -25；主体边缘带一圈原背景时调小' },
       soften: { type: 'number', description: '抠图边缘平滑 0..100，默认 20' },
       margin: { type: 'number', description: '去水印/去杂物向外扩的余量 0..0.1，默认 0.01' },
       denoise: { type: 'number', description: '降噪 0..10，默认 4' },
-      sharpen: { type: 'number', description: '锐化 0..500，默认 120' },
+      sharpen: { type: 'number', description: '锐化 1..500（unsharpMask.amount），默认 50' },
+      autoColor: { type: 'boolean', description: '自动校正偏色（会改写白平衡）；仅当用户抱怨发黄/发蓝/偏色时给 true，默认不做' },
+      background: { type: 'string', description: '换底目标色 #rrggbb；用户要换底色时由你把颜色翻译成色值，留空表示只要透明底' },
+      tool: { type: 'string', description: 'retouch/fill 卡内部的具体工具，取值见 intent 描述' },
+      action: { type: 'string', description: 'transform 卡的具体动作：crop | rotate | flipH | flipV | trim | resize' },
+      x: { type: 'number', description: 'fill=bucket 的落点 x，0..1 比例' },
+      y: { type: 'number', description: 'fill=bucket 的落点 y，0..1 比例' },
+      color: { type: 'string', description: '#rrggbb：画笔/填充/文字的颜色，由你把用户说的颜色翻译成色值' },
+      size: { type: 'number', description: '笔刷直径 px；用户没说就别传' },
+      opacity: { type: 'number', description: '1..100，画笔/填充的不透明度；用户没说就别传' },
+      erase: { type: 'boolean', description: 'brush 卡：true 表示橡皮擦' },
+      from: { type: 'array', description: '仿制图章取样点 [x, y] 或渐变起点，0..1 比例', items: { type: 'number' } },
+      to: { type: 'array', description: '渐变终点 [x, y]，0..1 比例', items: { type: 'number' } },
+      angle: { type: 'number', description: 'transform=rotate 的角度，度，顺时针为正' },
+      width: { type: 'number', description: 'transform=resize 的目标宽 px，高按比例跟随' },
       previewSide: { type: 'number', description: '本次预览的长边 64..2048，默认取插件配置；反复迭代时给 448' },
       feather: { type: 'number', description: '红框裁下来的边缘羽化像素，默认取碎片短边的 2%（至少 1px）；0 表示硬边' },
       regions: {
@@ -777,7 +768,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       }
 
       await mcp.open(main)
-      const id = recipeFor(args.instruction, assets.length > 0, args)
+      const id = recipeFor(args.intent, assets.length > 0, args)
       if (id === 'poster' && (args.text ?? '') === '') throw new Error('photocraft: 做海报需要一句文案（text）')
       const recipe = recipeById(id)
       // A backdrop has to cover the picture: a material smaller than the canvas
@@ -805,7 +796,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         strokes: args.strokes,
         headline: args.text,
         subline: args.subline,
-        background: id === 'cutout' ? backgroundOf(args.instruction) : undefined,
+        background: args.background,
         asset: backdrop,
         look: args.look,
         strength: args.strength,
@@ -816,6 +807,20 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         margin: args.margin,
         denoise: args.denoise,
         sharpen: args.sharpen,
+        autoColor: args.autoColor,
+        tool: args.tool,
+        action: args.action,
+        color: args.color,
+        size: args.size,
+        opacity: args.opacity,
+        erase: args.erase,
+        from: args.from,
+        to: args.to,
+        angle: args.angle,
+        width: args.width,
+        text: args.text,
+        x: args.x,
+        y: args.y,
       }
       // No red box: the wish applies to the whole picture. With red boxes, the
       // same wish is repeated at each of them, in order.

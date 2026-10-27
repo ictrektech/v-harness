@@ -187,7 +187,7 @@ afterAll(async () => {
 
 describe('photocraft_edit', () => {
   it('imports the picture the attachment id names and saves the result', async () => {
-    const { value, stage } = await edit({ instruction: '调成电影感', source: SOURCE })
+    const { value, stage } = await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE })
     expect(stage.uploads).toHaveLength(1)
     expect(stage.uploads[0]?.data).toEqual(PNG)
     expect(stage.uploads[0]?.name).toMatch(/^wish-\d+-\d+\.png$/u)
@@ -201,11 +201,11 @@ describe('photocraft_edit', () => {
   })
 
   it('shows the preview at the configured side, or at the one the call names', async () => {
-    expect((await edit({ instruction: '调成电影感', source: SOURCE })).stage.previews).toEqual([700])
-    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 448 })).stage.previews).toEqual([448])
-    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 1 })).stage.previews).toEqual([64])
-    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 9000 })).stage.previews).toEqual([2048])
-    expect((await edit({ instruction: '调成电影感', source: SOURCE, previewSide: 500.6 })).stage.previews).toEqual([501])
+    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE })).stage.previews).toEqual([700])
+    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 448 })).stage.previews).toEqual([448])
+    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 1 })).stage.previews).toEqual([64])
+    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 9000 })).stage.previews).toEqual([2048])
+    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 500.6 })).stage.previews).toEqual([501])
   })
 
   it('hands the named knobs to the recipe that reads them', async () => {
@@ -220,9 +220,9 @@ describe('photocraft_edit', () => {
       margin: 0.02,
     })
     const curves = stage.calls.find(call => call.name === 'layer.newAdjustmentLayer.curves')
-    // A warm look at 90% bends red up and blue down by 36 levels.
-    expect(curves?.args.red).toEqual([[0, 0], [128, 164], [255, 255]])
-    expect(curves?.args.blue).toEqual([[0, 0], [128, 92], [255, 255]])
+    // A warm look at 90% bends red up and blue down by 58 levels (64 at full strength).
+    expect(curves?.args.red).toEqual([[0, 0], [128, 186], [255, 255]])
+    expect(curves?.args.blue).toEqual([[0, 0], [128, 70], [255, 255]])
     expect(stage.calls.map(call => call.name)).not.toContain('filter.lensCorrection')
     expect(stage.calls.find(call => call.name === 'filter.noise.addNoise')?.args.amount).toBe(120)
   })
@@ -255,27 +255,26 @@ describe('photocraft_edit', () => {
     expect(stage.calls.find(call => call.name === 'doc_place')?.args.path).toMatch(/^photocraft-tmp\/backdrop-\d+\.png$/u)
   })
 
-  it('routes each wish to the recipe it names', async () => {
-    const routed = async (instruction: string, extra: Record<string, unknown> = {}): Promise<Call[]> => {
-      const { stage } = await edit({ instruction, source: SOURCE, ...extra })
+  it('routes the caller\'s intent card, and takes the colour the caller names', async () => {
+    const routed = async (intent: string, extra: Record<string, unknown> = {}): Promise<Call[]> => {
+      const { stage } = await edit({ instruction: '随意的原话', intent, source: SOURCE, ...extra })
       return stage.calls
     }
     const filled = (calls: Call[]): unknown => calls.find(call => call.name === 'layer.newFillLayer.solidColor')?.args.color
     const box = { regions: [{ x: 0.1, y: 0.1, w: 0.1, h: 0.1 }] }
-    expect((await routed('去掉这行字', box)).map(call => call.name)).toContain('edit.contentAwareFill')
-    expect((await routed('把这块抹掉', box)).map(call => call.name)).toContain('edit.contentAwareFill')
-    expect((await routed('太糊了，修一下')).map(call => call.name)).toContain('filter.noise.reduceNoise')
-    expect(filled(await routed('换成 #3388ff 底色'))).toBe('#3388ff')
-    expect(filled(await routed('换成浅蓝底'))).toBe('#438edb')
-    expect(filled(await routed('做成白底图'))).toBe('#ffffff')
-    expect(filled(await routed('红底'))).toBe('#e2445c')
-    expect(filled(await routed('灰底'))).toBe('#cccccc')
-    expect(filled(await routed('换成黑底'))).toBe('#111111')
+    expect((await routed('remove', box)).map(call => call.name)).toContain('edit.contentAwareFill')
+    expect((await routed('enhance')).map(call => call.name)).toContain('filter.noise.reduceNoise')
+    expect(filled(await routed('cutout', { background: '#3388ff' }))).toBe('#3388ff')
+  })
+
+  it('refuses a wish it cannot route without an intent card', async () => {
+    await expect(edit({ instruction: '帮我弄好看点', source: SOURCE })).rejects.toThrow(/请选择 intent/u)
   })
 
   it('repeats the wish once per red box', async () => {
     const { stage } = await edit({
       instruction: '把水印去掉',
+      intent: 'remove',
       source: SOURCE,
       regions: [
         { x: 0.1, y: 0.1, w: 0.2, h: 0.1 },
@@ -289,6 +288,7 @@ describe('photocraft_edit', () => {
   it('keeps the box the user drew inside the picture', async () => {
     const { stage } = await edit({
       instruction: '把水印去掉',
+      intent: 'remove',
       source: SOURCE,
       regions: [{ x: 0.9, y: 0.9, w: 0.9, h: 0.9 }],
       margin: 0,
@@ -297,7 +297,7 @@ describe('photocraft_edit', () => {
   })
 
   it('refuses a box with no area', async () => {
-    await expect(edit({ instruction: '把水印去掉', source: SOURCE, regions: [{ x: 0, y: 0, w: 0, h: 0 }] }))
+    await expect(edit({ instruction: '把水印去掉', intent: 'remove', source: SOURCE, regions: [{ x: 0, y: 0, w: 0, h: 0 }] }))
       .rejects.toThrow(/选区为空/u)
   })
 
@@ -361,15 +361,15 @@ describe('photocraft_edit', () => {
     }, { answer: () => ({}) })).rejects.toThrow(/量不出主图的尺寸/u)
   })
 
-  it('cuts a poster only when the caller names the words', async () => {
-    await expect(edit({ instruction: '做张海报', source: SOURCE })).rejects.toThrow(/需要一句文案/u)
-    const { value, stage } = await edit({ instruction: '做张海报', source: SOURCE, text: '秋日', subline: '京都' })
+  it('cuts a poster only when the caller named the words', async () => {
+    await expect(edit({ instruction: '做张海报', intent: 'poster', source: SOURCE })).rejects.toThrow(/需要一句文案/u)
+    const { value, stage } = await edit({ instruction: '做张海报', intent: 'poster', source: SOURCE, text: '秋日', subline: '京都' })
     expect(stage.calls.filter(call => call.name === 'type.create')).toHaveLength(2)
     expect(value.notes).toEqual(['只做了这一张的排版'])
   })
 
   it('returns the recipe notes it was told to keep', async () => {
-    const { value } = await edit({ instruction: '把背景去掉', source: SOURCE })
+    const { value } = await edit({ instruction: '把背景去掉', intent: 'cutout', source: SOURCE })
     expect(value.notes).toEqual([
       '结果层带蒙版，导出 PNG 即为透明底',
       '没给框也没画笔，这版按画面里最显著的区域抠；回复时可以顺带说一句「框一下或涂一下会更准」',
@@ -385,18 +385,18 @@ describe('photocraft_edit', () => {
   it('reads a file the agent already has by absolute path', async () => {
     const copy = join(root, 'copy.png')
     await writeFile(copy, PNG)
-    const { stage } = await edit({ instruction: '调成电影感', source: copy })
+    const { stage } = await edit({ instruction: '调成电影感', intent: 'film', source: copy })
     expect(stage.uploads[0]?.data).toEqual(PNG)
   })
 
   it('refuses anything that is not an image', async () => {
     const text = join(root, 'notes.txt')
     await writeFile(text, 'hello')
-    await expect(edit({ instruction: '调成电影感', source: text })).rejects.toThrow(/只能导入图片文件/u)
+    await expect(edit({ instruction: '调成电影感', intent: 'film', source: text })).rejects.toThrow(/只能导入图片文件/u)
   })
 
   it('refuses a picture that is not there', async () => {
-    await expect(edit({ instruction: '调成电影感', source: join(root, 'missing.png') })).rejects.toThrow(/找不到图片/u)
+    await expect(edit({ instruction: '调成电影感', intent: 'film', source: join(root, 'missing.png') })).rejects.toThrow(/找不到图片/u)
   })
 
   it('refuses a picture over the import limit', async () => {
@@ -404,23 +404,98 @@ describe('photocraft_edit', () => {
     const handle = await open(huge, 'w')
     await handle.truncate(31 * 1024 * 1024)
     await handle.close()
-    await expect(edit({ instruction: '调成电影感', source: huge })).rejects.toThrow(/图片超过 30MB/u)
+    await expect(edit({ instruction: '调成电影感', intent: 'film', source: huge })).rejects.toThrow(/图片超过 30MB/u)
   })
 
   it('leaves a workspace file name to the engine', async () => {
-    const { stage } = await edit({ instruction: '调成电影感', source: 'in-the-workspace.png' })
+    const { stage } = await edit({ instruction: '调成电影感', intent: 'film', source: 'in-the-workspace.png' })
     expect(stage.uploads).toHaveLength(0)
     expect(stage.calls[0]).toEqual({ name: 'open', args: { path: 'in-the-workspace.png' } })
   })
 
   it('refuses to report a result it could not store', async () => {
-    await expect(edit({ instruction: '调成电影感', source: SOURCE }, { keepImages: false }))
+    await expect(edit({ instruction: '调成电影感', intent: 'film', source: SOURCE }, { keepImages: false }))
       .rejects.toThrow(/结果图保存失败/u)
   })
 
   it('refuses to write into a workspace it does not have', async () => {
-    await expect(edit({ instruction: '调成电影感', source: SOURCE }, { agent: false }))
+    await expect(edit({ instruction: '调成电影感', intent: 'film', source: SOURCE }, { agent: false }))
       .rejects.toThrow(/没有可写入的工作区/u)
+  })
+})
+
+describe('toolbox cards', () => {
+  it('brush paints the strokes the caller sent', async () => {
+    const { stage } = await edit({
+      instruction: '涂个腮红',
+      intent: 'brush',
+      source: SOURCE,
+      strokes: [{ points: [[0.5, 0.5], [0.6, 0.5]] }],
+      color: '#ff8888',
+      size: 40,
+    })
+    const stroke = stage.calls.find(call => call.name === 'paint.stroke')
+    expect(stroke?.args).toMatchObject({ points: [[50, 25], [60, 25]], size: 40, color: '#ff8888' })
+  })
+
+  it('brush erases when the caller says so', async () => {
+    const { stage } = await edit({
+      instruction: '擦掉这块',
+      intent: 'brush',
+      source: SOURCE,
+      strokes: [{ points: [[0.5, 0.5]] }],
+      erase: true,
+    })
+    expect(stage.calls.find(call => call.name === 'paint.stroke')?.args).toMatchObject({ erase: true })
+  })
+
+  it('retouch picks the tool the caller named and maps its strength', async () => {
+    const { stage } = await edit({
+      instruction: '这边加深一点',
+      intent: 'retouch',
+      source: SOURCE,
+      tool: 'burn',
+      strength: 30,
+      strokes: [{ points: [[0.2, 0.2]] }],
+    })
+    expect(stage.calls.find(call => call.name === 'paint.burn')?.args).toMatchObject({ points: [[20, 10]], flow: 30 })
+  })
+
+  it('refuses a retouch call without a tool', async () => {
+    await expect(edit({ instruction: '修一下', intent: 'retouch', source: SOURCE, strokes: [{ points: [[0.5, 0.5]] }] }))
+      .rejects.toThrow(/retouch 需要 tool/u)
+  })
+
+  it('fill draws a gradient between the points', async () => {
+    const { stage } = await edit({
+      instruction: '从上往下拉个渐变',
+      intent: 'fill',
+      source: SOURCE,
+      tool: 'gradient',
+      from: [0.5, 0],
+      to: [0.5, 1],
+      color: '#3366ff',
+    })
+    const gradient = stage.calls.find(call => call.name === 'paint.gradient')
+    expect(gradient?.args.from).toEqual([50, 0])
+    expect(gradient?.args.to).toEqual([50, 50])
+    expect(gradient?.args.colors).toEqual(['#ffffff', '#3366ff'])
+  })
+
+  it('transform rotates by quarter turns and resizes', async () => {
+    const { stage } = await edit({ instruction: '转 90 度', intent: 'transform', source: SOURCE, action: 'rotate', angle: 90 })
+    expect(stage.calls.find(call => call.name === 'edit.transform.rotate90Cw')).toBeDefined()
+    await expect(edit({ instruction: '转 37 度', intent: 'transform', source: SOURCE, action: 'rotate', angle: 37 }))
+      .rejects.toThrow(/旋转只支持/u)
+    const { stage: resized } = await edit({ instruction: '宽 200', intent: 'transform', source: SOURCE, action: 'resize', width: 200 })
+    expect(resized.calls.find(call => call.name === 'image.imageSize')?.args).toEqual({ width: 200, height: 100 })
+  })
+
+  it('gray desaturates and text writes the words', async () => {
+    const { stage } = await edit({ instruction: '转黑白', intent: 'gray', source: SOURCE })
+    expect(stage.calls.map(call => call.name)).toContain('image.adjustments.desaturate')
+    const { stage: typed } = await edit({ instruction: '加字', intent: 'text', source: SOURCE, text: '你好' })
+    expect(typed.calls.find(call => call.name === 'type.create')?.args).toMatchObject({ text: '你好', color: '#ffffff' })
   })
 })
 

@@ -213,10 +213,11 @@ const LOOKS = {
  * stays true at any strength instead of being tuned to one sample.
  */
 const ENGINE = {
-  /** `colorBalance` axes are -100..100; a full strength spends a quarter. */
-  balance: 25,
-  /** `curves` spans 0..255; a full strength moves a midtone by 40 levels. */
-  curves: 40,
+  /** `colorBalance` axes are -100..100; a full strength spends two fifths —
+   * a quarter of the range was measured invisible on real photos. */
+  balance: 40,
+  /** `curves` spans 0..255; a full strength moves a midtone by ~64 levels. */
+  curves: 64,
   /** `addNoise.amount` is 0.1..400, so the tool's 0..100 is this factor. */
   grain: 4,
 } as const
@@ -228,8 +229,12 @@ const FILM: Recipe = {
   parameters: {
     look: 'cool（冷调、青蓝）| warm（暖调、红黄）| bleach（褪色胶片、低饱和、提黑位），默认 cool',
     strength: '1..100，默认 50；这是唯一的力度来源，三个 look 都用它换算',
-    vignette: '0..100，默认 30；直接对应引擎 -100..100 的 vignetteAmount',
-    grain: '0..100，默认 0；映射到引擎 0.1..400 的 amount（×4）',
+    vignette: '0..100，默认 30；直接对应引擎 -100..100 的 vignetteAmount（整图调色时生效）',
+    grain: '0..100，默认 0；映射到引擎 0.1..400 的 amount（×4，整图调色时生效）',
+    x: '局部调色：选区左边界 0..1 比例（模型看图量出）',
+    y: '局部调色：选区上边界 0..1 比例',
+    w: '局部调色：选区宽度比例；给了 x/y/w/h 调整层只落在这个区域（带羽化蒙版）',
+    h: '局部调色：选区高度比例',
   },
   async run(client, params) {
     const steps: StepResult[] = []
@@ -241,9 +246,40 @@ const FILM: Recipe = {
     const axis = Math.round((strength / 100) * ENGINE.balance)
     const curve = Math.round((strength / 100) * ENGINE.curves)
 
-    // Filters need a pixel layer. A grade leaves an adjustment layer selected,
+    // A region turns the grade into a masked local grade: the engine turns a
+    // selection into the adjustment layers' mask. 选区机制按调用者给的信息选，
+    // 不猜：笔迹点生长 > 颜色范围 > 矩形羽化；什么都没有就是全图。
+    const regional = Number(params.w ?? 0) > 0 && Number(params.h ?? 0) > 0
+      || Array.isArray(params.strokes) || typeof params.color === 'string'
+    if (regional) {
+      const size = await documentSize(client)
+      const painted = strokesOf(params, size)
+      if (painted.length > 0) {
+        for (const [index, stroke] of painted.entries()) {
+          await step(client, steps, 'select.quick', {
+            points: stroke.points,
+            size: stroke.size,
+            mode: index === 0 ? 'replace' : stroke.mode,
+          })
+        }
+      } else if (typeof params.color === 'string') {
+        await step(client, steps, 'select.colorRange', { color: params.color })
+      } else {
+        const box = toPixels(
+          { x: Number(params.x ?? 0), y: Number(params.y ?? 0), w: Number(params.w), h: Number(params.h) },
+          size,
+        )
+        const feather = Math.max(1, Math.round(Math.min(size.width, size.height) * 0.03))
+        await step(client, steps, 'select.rect', {
+          x: box.x, y: box.y, width: box.width, height: box.height, feather,
+        })
+      }
+    }
+
+    // Filters need a pixel layer and only make sense on the whole picture, so a
+    // regional grade skips them. A grade leaves an adjustment layer selected,
     // so the target is read back from the document rather than remembered.
-    const grain = Math.min(100, Math.max(0, Number(params.grain ?? 0)))
+    const grain = regional ? 0 : Math.min(100, Math.max(0, Number(params.grain ?? 0)))
     if (grain > 0 && await ensurePixelLayer(client, steps)) {
       const ok = await attempt(client, steps, 'filter.noise.addNoise', {
         amount: Math.round(grain * ENGINE.grain * 10) / 10,
@@ -252,7 +288,7 @@ const FILM: Recipe = {
       })
       if (!ok) notes.push('颗粒没加上：文档里没有可用的像素层')
     }
-    const vignette = Math.min(100, Math.max(0, Number(params.vignette ?? 30)))
+    const vignette = regional ? 0 : Math.min(100, Math.max(0, Number(params.vignette ?? 30)))
     if (vignette > 0 && await ensurePixelLayer(client, steps)) {
       const ok = await attempt(client, steps, 'filter.lensCorrection', {
         correctDistortion: false,
@@ -283,6 +319,10 @@ const FILM: Recipe = {
     const saturation = Math.round(table.saturation * axis)
     if (vibrance !== 0 || saturation !== 0) {
       await step(client, steps, 'layer.newAdjustmentLayer.vibrance', { vibrance, saturation })
+    }
+    if (regional) {
+      await step(client, steps, 'select.deselect', {}).catch(() => {})
+      notes.push('局部调色：调整层带羽化蒙版，只落在选区里')
     }
 
     notes.push(look === 'bleach'
@@ -359,7 +399,7 @@ const CUTOUT: Recipe = {
       smartRadius: true,
       smooth: Number(params.soften ?? 20),
       feather: 0.6,
-      shiftEdge: Number(params.shift ?? -20),
+      shiftEdge: Number(params.shift ?? -25),
       decontaminate: true,
       output: 'newLayerWithMask',
       ...painted.length === 0 ? {} : {
@@ -390,8 +430,8 @@ const CUTOUT: Recipe = {
 
 const REMOVE: Recipe = {
   id: 'remove',
-  title: '去水印 / 去杂物',
-  when: '用户说“把水印去掉 / 把这个人去掉 / 把这里的字抹掉”并给出位置（或先框选）',
+  title: '擦除 / 去物',
+  when: '用户要某块东西从画面里消失：水印、路人、杂物、字迹，或点名橡皮擦/魔术橡皮擦；位置来自框或笔迹',
   parameters: {
     x: '0..1，选区左边界占文档宽度的比例',
     y: '0..1，选区上边界占文档高度的比例',
@@ -401,21 +441,36 @@ const REMOVE: Recipe = {
   },
   async run(client, params) {
     const steps: StepResult[] = []
-    const region: Region = {
-      x: Number(params.x ?? 0),
-      y: Number(params.y ?? 0),
-      w: Number(params.w ?? 0),
-      h: Number(params.h ?? 0),
-    }
     const margin = Math.min(0.1, Math.max(0, Number(params.margin ?? 0.01)))
     const document = await client.call('doc_inspect', {}) as { width?: number; height?: number }
     const size = { width: document.width ?? 0, height: document.height ?? 0 }
     if (size.width === 0 || size.height === 0) throw new Error('photocraft: 当前没有打开的文档')
-    const box = toPixels(
-      { x: region.x - margin, y: region.y - margin, w: region.w + margin * 2, h: region.h + margin * 2 },
-      size,
-    )
-    await step(client, steps, 'select.rect', { ...box })
+    // Strokes say "exactly this", a box says "about here": strokes seed a quick
+    // selection so the fill follows the target's own outline, a rect fills the
+    // rectangle as drawn. Either way the fill itself is content-aware.
+    const painted = strokesOf(params, size)
+    if (painted.length > 0) {
+      for (const [index, stroke] of painted.entries()) {
+        await step(client, steps, 'select.quick', {
+          points: stroke.points,
+          size: stroke.size,
+          mode: index === 0 ? 'replace' : stroke.mode,
+          enhanceEdge: true,
+        })
+      }
+    } else {
+      const region: Region = {
+        x: Number(params.x ?? 0),
+        y: Number(params.y ?? 0),
+        w: Number(params.w ?? 0),
+        h: Number(params.h ?? 0),
+      }
+      const box = toPixels(
+        { x: region.x - margin, y: region.y - margin, w: region.w + margin * 2, h: region.h + margin * 2 },
+        size,
+      )
+      await step(client, steps, 'select.rect', { ...box })
+    }
     await step(client, steps, 'edit.contentAwareFill', {
       sampling: 'auto',
       colorAdaptation: 'high',
@@ -451,7 +506,9 @@ const ENHANCE: Recipe = {
     }
     if (denoise > 0) await step(client, steps, 'filter.noise.reduceNoise', { strength: denoise })
     await step(client, steps, 'filter.sharpen.unsharpMask', { amount: sharpen })
-    if (params.autoColor !== false) await step(client, steps, 'image.autoColor', {})
+    // Auto color rewrites white balance; on a photo that is already neutral it
+    // is a regression, so it runs only when the caller asked for it.
+    if (params.autoColor === true) await step(client, steps, 'image.autoColor', {})
     return { steps, notes: ['降噪和锐化作用在像素层上，想保留原图可以先复制一层'] }
   },
 }
@@ -575,8 +632,250 @@ const COMPOSITE: Recipe = {
   },
 }
 
+/** The stroke-driven toolbox tools: which engine command each one is. */
+const RETOUCH_TOOLS = {
+  dodge: 'paint.dodge',
+  burn: 'paint.burn',
+  sponge: 'paint.sponge',
+  blur: 'paint.blur',
+  sharpen: 'paint.sharpen',
+  smudge: 'paint.smudge',
+  clone: 'paint.cloneStamp',
+  spotHeal: 'paint.spotHealing',
+  heal: 'paint.healingBrush',
+} as const
+
+/** The size a stroke-driven tool paints at: the caller's px override when given. */
+function strokeSizes(painted: Painted[], params: Record<string, unknown>): Painted[] {
+  const requested = Number(params.size ?? 0)
+  if (!Number.isFinite(requested) || requested <= 0) return painted
+  const px = Math.round(requested)
+  return painted.map(stroke => ({ ...stroke, size: px }))
+}
+
+/** Read the document size or refuse: the stroke cards need it for coordinates. */
+async function documentSize(client: EngineClient): Promise<{ width: number; height: number }> {
+  const document = await client.call('doc_inspect', {}) as { width?: number; height?: number }
+  const size = { width: document.width ?? 0, height: document.height ?? 0 }
+  if (size.width === 0 || size.height === 0) throw new Error('photocraft: 当前没有打开的文档')
+  return size
+}
+
+/** A fraction 0..1 turned into document pixels along one axis. */
+function toPixel(value: unknown, span: number): number {
+  const fraction = Number(value ?? 0)
+  return Math.round((Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0) * span)
+}
+
+const BRUSH: Recipe = {
+  id: 'brush',
+  title: '画笔 / 铅笔 / 橡皮擦',
+  when: '用户要在画面上涂画或擦除：腮红、口红、涂色、遮盖、擦掉一块，或点名画笔/橡皮擦',
+  parameters: {
+    color: '#rrggbb，画笔颜色，默认 #ff0000；橡皮擦不用',
+    size: '笔刷直径 px，默认画布短边的 5%',
+    opacity: '1..100，默认 100',
+    erase: 'true 表示橡皮擦',
+  },
+  async run(client, params) {
+    const steps: StepResult[] = []
+    const size = await documentSize(client)
+    const painted = strokeSizes(strokesOf(params, size), params)
+    if (painted.length === 0) throw new Error('photocraft: 画笔需要笔迹（strokes）')
+    const erase = params.erase === true
+    const opacity = Number(params.opacity ?? 100)
+    for (const stroke of painted) {
+      await step(client, steps, 'paint.stroke', {
+        points: stroke.points,
+        size: stroke.size,
+        ...(erase ? { erase: true } : { color: typeof params.color === 'string' ? params.color : '#ff0000' }),
+        ...(Number.isFinite(opacity) && opacity < 100 ? { opacity: Math.min(100, Math.max(1, opacity)) / 100 } : {}),
+      })
+    }
+    return {
+      steps,
+      notes: [erase ? '橡皮擦把涂过的地方擦成透明' : '画笔直接改写像素；不满意就 edit.undo 再来一次'],
+    }
+  },
+}
+
+const RETOUCH: Recipe = {
+  id: 'retouch',
+  title: '修图笔刷（减淡/加深/海绵/模糊/锐化/涂抹/仿制/修复）',
+  when: '用户点名工具箱里的修图笔刷，或描述的效果正对应它们：提亮/压暗某处、去色加色、把这里涂糊、锐一点、仿制图章、修斑点痘印',
+  parameters: {
+    tool: 'dodge | burn | sponge | blur | sharpen | smudge | clone | spotHeal | heal，必填',
+    size: '笔刷直径 px，默认画布短边的 5%',
+    strength: '该工具的力度 1..100（引擎的 flow），默认 50',
+    from: '仿制图章的取样点 [x, y]，0..1 比例，只有 tool=clone 需要',
+  },
+  async run(client, params) {
+    const steps: StepResult[] = []
+    const tool = typeof params.tool === 'string' ? params.tool : ''
+    const command = RETOUCH_TOOLS[tool as keyof typeof RETOUCH_TOOLS]
+    if (command === undefined) {
+      throw new Error(`photocraft: retouch 需要 tool——${Object.keys(RETOUCH_TOOLS).join(' | ')}`)
+    }
+    const size = await documentSize(client)
+    const painted = strokeSizes(strokesOf(params, size), params)
+    if (painted.length === 0) throw new Error('photocraft: 修图工具需要笔迹（strokes）')
+    const strength = Math.min(100, Math.max(1, Number(params.strength ?? 50)))
+    const from = Array.isArray(params.from) && params.from.length >= 2
+      ? [toPixel(params.from[0], size.width), toPixel(params.from[1], size.height)]
+      : undefined
+    for (const stroke of painted) {
+      await step(client, steps, command, {
+        points: stroke.points,
+        size: stroke.size,
+        flow: strength,
+        ...(from === undefined || tool !== 'clone' ? {} : { source: from }),
+      })
+    }
+    return { steps, notes: ['笔刷直接改写像素；不满意就 edit.undo 调力度重来'] }
+  },
+}
+
+const FILL: Recipe = {
+  id: 'fill',
+  title: '渐变 / 油漆桶',
+  when: '用户要拉一条渐变，或把某个区域/背景填成一个颜色',
+  parameters: {
+    tool: 'bucket | gradient，必填',
+    color: '#rrggbb；油漆桶的填充色，渐变只有一档颜色时是终点色',
+    x: '油漆桶落点 x，0..1 比例',
+    y: '油漆桶落点 y，0..1 比例',
+    from: '渐变起点 [x, y]，0..1 比例',
+    to: '渐变终点 [x, y]，0..1 比例',
+    opacity: '1..100，默认 100',
+  },
+  async run(client, params) {
+    const steps: StepResult[] = []
+    const tool = typeof params.tool === 'string' ? params.tool : ''
+    const size = await documentSize(client)
+    const opacity = Number(params.opacity ?? 100)
+    const fade = Number.isFinite(opacity) && opacity < 100 ? Math.min(100, Math.max(1, opacity)) : 100
+    if (tool === 'bucket') {
+      await step(client, steps, 'paint.bucket', {
+        x: toPixel(params.x, size.width),
+        y: toPixel(params.y, size.height),
+        color: typeof params.color === 'string' ? params.color : '#000000',
+        opacity: fade,
+      })
+    } else if (tool === 'gradient') {
+      const from = params.from as unknown[] | undefined
+      const to = params.to as unknown[] | undefined
+      await step(client, steps, 'paint.gradient', {
+        from: [toPixel(from?.[0], size.width), toPixel(from?.[1], size.height)],
+        to: [toPixel(to?.[0], size.width), toPixel(to?.[1], size.height)],
+        ...(typeof params.color === 'string'
+          ? { colors: ['#ffffff', params.color] }
+          : {}),
+        opacity: fade,
+      })
+    } else {
+      throw new Error('photocraft: fill 需要 tool——bucket | gradient')
+    }
+    return { steps, notes: ['填充直接改写像素；不满意就 edit.undo 再来'] }
+  },
+}
+
+/** The whole-picture geometry actions: which engine command each one is. */
+const TRANSFORM_ACTIONS = {
+  crop: 'image.crop',
+  flipH: 'edit.transform.flipHorizontal',
+  flipV: 'edit.transform.flipVertical',
+  trim: 'image.trim',
+  resize: 'image.imageSize',
+} as const
+
+/** The engine only rotates by quarter turns; an arbitrary angle refuses loud. */
+const ROTATE_ANGLES = { 90: 'edit.transform.rotate90Cw', 180: 'edit.transform.rotate180', 270: 'edit.transform.rotate90Ccw' } as const
+
+const TRANSFORM: Recipe = {
+  id: 'transform',
+  title: '裁剪 / 旋转 / 翻转 / 修剪 / 改尺寸',
+  when: '用户要裁掉一部分、转个方向、镜像、去白边，或放大缩小画布',
+  parameters: {
+    action: 'crop | rotate | flipH | flipV | trim | resize，必填',
+    x: 'crop 左边界，0..1 比例',
+    y: 'crop 上边界，0..1 比例',
+    w: 'crop 宽度比例',
+    h: 'crop 高度比例',
+    angle: 'rotate 的角度：90 | 180 | 270（顺时针）；其他角度引擎不支持',
+    width: 'resize 的目标宽 px；高按比例跟随',
+  },
+  async run(client, params) {
+    const steps: StepResult[] = []
+    const action = typeof params.action === 'string' ? params.action : ''
+    const command = TRANSFORM_ACTIONS[action as keyof typeof TRANSFORM_ACTIONS]
+    if (command === undefined && action !== 'rotate') {
+      throw new Error(`photocraft: transform 需要 action——rotate | ${Object.keys(TRANSFORM_ACTIONS).join(' | ')}`)
+    }
+    const size = await documentSize(client)
+    if (action === 'crop') {
+      const box = toPixels(
+        { x: Number(params.x ?? 0), y: Number(params.y ?? 0), w: Number(params.w ?? 1), h: Number(params.h ?? 1) },
+        size,
+      )
+      await step(client, steps, command, { x: box.x, y: box.y, width: box.width, height: box.height })
+    } else if (action === 'rotate') {
+      const angle = Number(params.angle ?? 90)
+      const rotate = ROTATE_ANGLES[angle as keyof typeof ROTATE_ANGLES]
+      if (rotate === undefined) {
+        throw new Error('photocraft: 旋转只支持 90 | 180 | 270（顺时针），其他角度请告诉用户引擎暂不支持')
+      }
+      await step(client, steps, rotate, {})
+    } else if (action === 'resize') {
+      const width = Math.max(1, Math.round(Number(params.width ?? size.width)))
+      await step(client, steps, command, { width, height: Math.max(1, Math.round(width * size.height / size.width)) })
+    } else {
+      await step(client, steps, command, {})
+    }
+    return { steps, notes: ['几何操作直接作用于文档；edit.undo 可回退'] }
+  },
+}
+
+const GRAY: Recipe = {
+  id: 'gray',
+  title: '转黑白',
+  when: '用户要黑白照、去色',
+  parameters: {},
+  async run(client) {
+    const steps: StepResult[] = []
+    await step(client, steps, 'image.adjustments.desaturate', {})
+    return { steps, notes: ['黑白是整图操作；edit.undo 可回退'] }
+  },
+}
+
+const TEXT: Recipe = {
+  id: 'text',
+  title: '加一段文字',
+  when: '用户要在图上加几个字，但没有海报排版的要求',
+  parameters: {
+    text: '要写的字，必填',
+    x: '文字左上角 x，0..1 比例，默认 0.1',
+    y: '文字左上角 y，0..1 比例，默认 0.85',
+    size: '字号 px，默认画布高度的 8%',
+    color: '#rrggbb，默认 #ffffff',
+  },
+  async run(client, params) {
+    const steps: StepResult[] = []
+    if (typeof params.text !== 'string' || params.text === '') throw new Error('photocraft: 加字需要 text')
+    const size = await documentSize(client)
+    await step(client, steps, 'type.create', {
+      x: toPixel(params.x ?? 0.1, size.width),
+      y: toPixel(params.y ?? 0.85, size.height),
+      text: params.text,
+      size: Math.max(12, Math.round(Number(params.size ?? size.height * 0.08))),
+      color: typeof params.color === 'string' ? params.color : '#ffffff',
+    })
+    return { steps, notes: ['文字是独立图层，可再编辑'] }
+  },
+}
+
 /** Every recipe, in the order the skill presents them. */
-export const RECIPES: readonly Recipe[] = [FILM, CUTOUT, REMOVE, ENHANCE, POSTER, COMPOSITE]
+export const RECIPES: readonly Recipe[] =
+  [FILM, CUTOUT, REMOVE, ENHANCE, POSTER, COMPOSITE, BRUSH, RETOUCH, FILL, TRANSFORM, GRAY, TEXT]
 
 /**
  * Find one recipe by id.

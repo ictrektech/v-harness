@@ -72,12 +72,15 @@ function names(calls: Call[]): string[] {
 
 describe('recipeFor', () => {
   it('finds every published recipe by id', () => {
-    expect(RECIPES.map(recipe => recipe.id)).toEqual(['film', 'cutout', 'remove', 'enhance', 'poster', 'composite'])
+    expect(RECIPES.map(recipe => recipe.id)).toEqual([
+      'film', 'cutout', 'remove', 'enhance', 'poster', 'composite',
+      'brush', 'retouch', 'fill', 'transform', 'gray', 'text',
+    ])
     for (const recipe of RECIPES) expect(recipeFor(recipe.id)).toBe(recipe)
   })
 
   it('names the alternatives when an id is unknown', () => {
-    expect(() => recipeFor('sepia')).toThrow(/没有 sepia 这条 recipe，可选：film, cutout, remove, enhance, poster, composite/u)
+    expect(() => recipeFor('sepia')).toThrow(/没有 sepia 这条 recipe，可选：film, cutout, remove, enhance, poster, composite, brush, retouch, fill, transform, gray, text/u)
   })
 })
 
@@ -101,36 +104,54 @@ describe('film', () => {
       'layer.newAdjustmentLayer.curves',
       'layer.newAdjustmentLayer.colorBalance',
     ])
-    // Half strength of the cool look: ±20 levels on red and blue.
+    // Half strength of the cool look: ±32 levels on red and blue.
     expect(curvesOf(calls)).toMatchObject({
       points: [[0, 0], [255, 255]],
-      red: [[0, 0], [128, 108], [255, 255]],
-      blue: [[0, 0], [128, 148], [255, 255]],
+      red: [[0, 0], [128, 96], [255, 255]],
+      blue: [[0, 0], [128, 160], [255, 255]],
     })
     expect(calls[3]?.args).toEqual({
-      shadows: [-13, 0, -13],
-      midtones: [-10, 0, -10],
-      highlights: [-5, 0, -5],
+      shadows: [-20, 0, -20],
+      midtones: [-16, 0, -16],
+      highlights: [-8, 0, -8],
     })
     expect(calls[1]?.args.vignetteAmount).toBe(-30)
     expect(notes).toEqual(['调色是调整层，可以单独关掉某一步看对比'])
   })
 
+  it('masks a regional grade with a feathered selection', async () => {
+    const { calls, notes } = await run('film', { look: 'cool', vignette: 0, x: 0.2, y: 0.3, w: 0.2, h: 0.2 }, { answer: pixelDoc })
+    expect(names(calls)).not.toContain('filter.lensCorrection')
+    expect(names(calls)).not.toContain('filter.noise.addNoise')
+    expect(calls[1]?.args).toMatchObject({ x: 20, y: 15, width: 20, height: 10, feather: 2 })
+    expect(names(calls)).toContain('layer.newAdjustmentLayer.curves')
+    expect(names(calls)).toContain('select.deselect')
+    expect(notes).toContain('局部调色：调整层带羽化蒙版，只落在选区里')
+  })
+
+  it('grows a regional grade from a pointed stroke instead of a rectangle', async () => {
+    const { calls } = await run('film', { look: 'cool', vignette: 0, strokes: [{ points: [[0.3, 0.5]] }] }, { answer: pixelDoc })
+    expect(names(calls)).not.toContain('select.rect')
+    expect(calls[1]?.name).toBe('select.quick')
+    expect(calls[1]?.args).toMatchObject({ points: [[30, 25]], mode: 'replace' })
+    expect(names(calls)).toContain('layer.newAdjustmentLayer.curves')
+  })
+
   it('reads a look by name and clamps the strength', async () => {
     const warm = await run('film', { look: 'warm', strength: 100 }, { answer: pixelDoc })
-    expect(curvesOf(warm.calls)?.red?.[1]).toEqual([128, 168])
-    expect(curvesOf(warm.calls)?.blue?.[1]).toEqual([128, 88])
+    expect(curvesOf(warm.calls)?.red?.[1]).toEqual([128, 192])
+    expect(curvesOf(warm.calls)?.blue?.[1]).toEqual([128, 64])
     const bleach = await run('film', { look: 'bleach', strength: 100 }, { answer: pixelDoc })
-    expect(curvesOf(bleach.calls)?.points).toEqual([[0, 40], [255, 235]])
+    expect(curvesOf(bleach.calls)?.points).toEqual([[0, 64], [255, 223]])
     const unknown = await run('film', { look: 'sepia', strength: 100 }, { answer: pixelDoc })
-    expect(curvesOf(unknown.calls)?.red?.[1]).toEqual([128, 88])
+    expect(curvesOf(unknown.calls)?.red?.[1]).toEqual([128, 64])
     const notAString = await run('film', { look: 42, strength: 100 }, { answer: pixelDoc })
-    expect(curvesOf(notAString.calls)?.red?.[1]).toEqual([128, 88])
+    expect(curvesOf(notAString.calls)?.red?.[1]).toEqual([128, 64])
     // Both ends clamp: 0 becomes a 1% hint, 500 becomes the full look.
     const floor = await run('film', { strength: 0 }, { answer: pixelDoc })
-    expect(curvesOf(floor.calls)?.red?.[1]).toEqual([128, 128])
+    expect(curvesOf(floor.calls)?.red?.[1]).toEqual([128, 127])
     const ceiling = await run('film', { strength: 500 }, { answer: pixelDoc })
-    expect(curvesOf(ceiling.calls)?.red?.[1]).toEqual([128, 88])
+    expect(curvesOf(ceiling.calls)?.red?.[1]).toEqual([128, 64])
   })
 
   it('skips the vignette at 0 and adds grain when asked', async () => {
@@ -166,7 +187,7 @@ describe('cutout', () => {
       smartRadius: true,
       smooth: 20,
       feather: 0.6,
-      shiftEdge: -20,
+      shiftEdge: -25,
       decontaminate: true,
       output: 'newLayerWithMask',
     })
@@ -252,16 +273,17 @@ describe('remove', () => {
 })
 
 describe('enhance', () => {
-  it('denoises, sharpens, and repairs colour by default', async () => {
+  it('denoises and sharpens; colour repair only when asked', async () => {
     const { calls } = await run('enhance', {}, { answer: pixelDoc })
     expect(names(calls)).toEqual([
       'doc_inspect',
       'filter.noise.reduceNoise',
       'filter.sharpen.unsharpMask',
-      'image.autoColor',
     ])
     expect(calls[1]?.args).toEqual({ strength: 4 })
     expect(calls[2]?.args).toEqual({ amount: 50 })
+    const repaired = await run('enhance', { autoColor: true }, { answer: pixelDoc })
+    expect(names(repaired.calls)).toContain('image.autoColor')
   })
 
   it('honours explicit amounts and can skip the colour pass', async () => {
