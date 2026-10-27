@@ -223,6 +223,25 @@ export class CommandIndex {
   }
 
   /**
+   * The error for an id the engine does not have.
+   *
+   * `unknown command` alone leaves the model guessing again — it knows the name
+   * was wrong but not what the right name looks like, so it retries with another
+   * invented word. The engine can already filter its own list, so the nearest
+   * real ids go into the message and the next attempt has something to aim at.
+   * @param id - the id that was not found.
+   * @returns the message to throw.
+   */
+  async #unknown(id: string): Promise<string> {
+    const guesses = await this.search(id, 5).catch(() => [])
+    const known = guesses.map(entry => entry.id).filter(name => name !== id)
+    if (known.length === 0) {
+      return `unknown command \`${id}\` — call photocraft_describe with a plain-language query to find the real id`
+    }
+    return `unknown command \`${id}\` — nearest real ids: ${known.join(', ')}. Call photocraft_describe on one of them for its parameters`
+  }
+
+  /**
    * Check one call against the engine's own description.
    *
    * Rejects a field the command does not declare, and a number outside the range
@@ -230,7 +249,7 @@ export class CommandIndex {
    */
   async check(id: string, params: Record<string, unknown>): Promise<CommandCheck> {
     const spec = (await this.all()).find(entry => entry.id === id)
-    if (spec === undefined) throw new Error(`unknown command \`${id}\``)
+    if (spec === undefined) throw new Error(await this.#unknown(id))
     const problems: string[] = []
     const declared = fieldsOf(spec.params)
     const ranges = rangesOf(spec.params)
@@ -258,7 +277,7 @@ export class CommandIndex {
    */
   async describe(id: string): Promise<CommandDoc> {
     const spec = (await this.all()).find(entry => entry.id === id)
-    if (spec === undefined) throw new Error(`unknown command \`${id}\``)
+    if (spec === undefined) throw new Error(await this.#unknown(id))
     const blocked = spec.enabled
       ? undefined
       : spec.disabledReason

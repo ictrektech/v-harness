@@ -166,13 +166,32 @@ function localFileOf(source: string): string | undefined {
 }
 
 /**
+ * Resolve a bare workspace name against the agent's own directory.
+ *
+ * A model that just exported `wish-123.png` naturally writes that name back.
+ * The engine reads its own volume, so handing the bare name over makes every
+ * follow-up edit fail with NotFound; resolving it here first is what lets the
+ * same name work whether it points at the workspace or at the engine's scratch
+ * folder (a name that is not there is left for the engine to resolve).
+ * @param cwd - the agent's working directory.
+ * @param source - whatever the model wrote as `source`.
+ * @returns absolute path when the file is really in the workspace.
+ */
+async function workspaceFile(cwd: string | undefined, source: string): Promise<string | undefined> {
+  if (cwd === undefined || source.startsWith('/') || source.startsWith('sha256:')) return undefined
+  const candidate = resolve(cwd, source)
+  const info = await stat(candidate).catch(() => undefined)
+  return info?.isFile() === true ? candidate : undefined
+}
+
+/**
  * Bring a source into the engine's workspace.
  * @param bridge - file bridge of the capability.
  * @param source - attachment id, absolute path, or workspace file name.
  * @returns the workspace file name to open.
  */
-async function importSource(bridge: BridgeClient, source: string): Promise<string> {
-  const absolute = localFileOf(source)
+async function importSource(bridge: BridgeClient, source: string, cwd?: string): Promise<string> {
+  const absolute = localFileOf(source) ?? await workspaceFile(cwd, source)
   if (absolute === undefined) return source
   // A picture may arrive as a chat attachment or as a file the agent already
   // copied into the workspace, so either root is accepted — but only for image
@@ -551,6 +570,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
     },
     async execute(args, exec) {
       const steps = args.steps as readonly { id?: unknown; params?: unknown }[] | undefined
+      const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
       if (Array.isArray(steps) && steps.length > 0) {
         const report: string[] = []
         let batch: { id: string; params: Record<string, unknown> }[] = []
@@ -581,7 +601,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
             // A local picture has to reach the engine's own volume first; the
             // engine refuses absolute paths outside its automation root.
             const call = id === 'doc_open' && typeof params.path === 'string'
-              ? { ...params, path: await importSource(bridge, params.path) }
+              ? { ...params, path: await importSource(bridge, params.path, cwd) }
               : params
             await mcp.call(id, call)
             report.push(id)
@@ -726,13 +746,14 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       const source = (args.source ?? '').trim()
       if (source === '') throw new Error('photocraft: 需要一张图（聊天附件路径或工作区文件名）')
       await ensureScratch(bridge)
+      const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
       // Materials are attachments as well, so they take the same upload bridge:
       // the engine only opens files that live in its own workspace.
       const assets: string[] = []
-      for (const asset of args.assets ?? []) assets.push(await importSource(bridge, asset))
+      for (const asset of args.assets ?? []) assets.push(await importSource(bridge, asset, cwd))
       const regions = args.regions ?? []
       const side = previewSideOf(args.previewSide, previewSide)
-      const main = await importSource(bridge, source)
+      const main = await importSource(bridge, source, cwd)
 
       // A red box plus a material is a replacement: the material goes into the
       // box, paired by number, on the picture the box was drawn on. Without a
