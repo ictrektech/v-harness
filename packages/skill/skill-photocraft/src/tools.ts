@@ -492,6 +492,86 @@ interface MarkArgs {
 }
 
 /**
+ * Pixel bounds of whatever a step list touched.
+ *
+ * A workflow names coordinates in engine pixels (`{x,y,width,height}` or a
+ * `box`), so the closeup can be aimed without asking the caller twice. Steps
+ * without coordinates (grading, flips) contribute nothing, and a workflow that
+ * touched nothing in particular gets no closeup rather than a centred guess.
+ * @param steps - the workflow's steps.
+ * @returns the union of the marked boxes, in pixels, or undefined.
+ */
+function marksOfSteps(steps: readonly { params?: unknown }[]): { x: number; y: number; w: number; h: number } | undefined {
+  const xs: number[] = []
+  const ys: number[] = []
+  const number = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  for (const step of steps) {
+    const params = (step.params ?? {}) as Record<string, unknown>
+    const box = (typeof params.box === 'object' && params.box !== null ? params.box : {}) as Record<string, unknown>
+    const x = number(box.x) ?? number(params.x)
+    const y = number(box.y) ?? number(params.y)
+    if (x === undefined || y === undefined) continue
+    const width = number(box.w) ?? number(box.width) ?? number(params.width)
+    const height = number(box.h) ?? number(box.height) ?? number(params.height)
+    xs.push(x, x + (width ?? 0))
+    ys.push(y, y + (height ?? 0))
+  }
+  if (xs.length === 0) return undefined
+  const left = Math.min(...xs)
+  const right = Math.max(...xs)
+  const top = Math.min(...ys)
+  const bottom = Math.max(...ys)
+  return { x: left, y: top, w: Math.max(right - left, 1), h: Math.max(bottom - top, 1) }
+}
+
+/**
+ * Crop, enlarge and rule the region a workflow touched.
+ *
+ * `photocraft_run` had no way to look closely at what it just did, and the
+ * edits that run through it — liquify, selection fill — are exactly the ones
+ * where an edge or a leftover is the only way to tell success from damage.
+ * @param ctx - context carrying the attachment store.
+ * @param cwd - workspace the export landed in.
+ * @param file - the delivered file name.
+ * @param steps - the workflow, for its coordinates.
+ * @returns the attachment plus the target in pixels, or undefined when there is
+ *   nothing to aim at.
+ */
+async function closeupOf(
+  ctx: Context,
+  cwd: string,
+  file: string,
+  steps: readonly { params?: unknown }[],
+): Promise<{ preview: Preview; target: string } | undefined> {
+  const box = marksOfSteps(steps)
+  if (box === undefined) return undefined
+  const bytes = await readFile(join(cwd, file)).catch(() => undefined)
+  if (bytes === undefined) return undefined
+  const size = pngSize(bytes)
+  if (size === undefined || size.width === 0 || size.height === 0) return undefined
+  const fraction = {
+    x: box.x / size.width,
+    y: box.y / size.height,
+    w: Math.max(box.w, 1) / size.width,
+    h: Math.max(box.h, 1) / size.height,
+  }
+  // 2.5x the target, the same rule the card uses, so both closeups read alike.
+  const window = {
+    x: fraction.x - Math.max(0.02, fraction.w * 0.75),
+    y: fraction.y - Math.max(0.02, fraction.h * 0.75),
+    w: fraction.w * 2.5,
+    h: fraction.h * 2.5,
+  }
+  const annotated = guidesPng(fitPng(cropPng(bytes, window), CLOSEUP_SIDE), GRID_PITCH)
+  return {
+    preview: await keep(ctx, annotated, `wish-${String(Date.now())}-closeup.png`),
+    target: `${String(Math.round(box.x))},${String(Math.round(box.y))} `
+      + `${String(Math.round(box.w))}×${String(Math.round(box.h))}px`,
+  }
+}
+
+/**
  * The tight box around every mark of one call.
  * @param args - boxes, strokes, or a single point.
  * @returns the box as fractions of the picture, or undefined when nothing was marked.
@@ -757,6 +837,11 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         additionalProperties: true,
         description: '该命令的参数对象，形状见 photocraft_describe 返回的 params',
       },
+      preview: {
+        type: 'string',
+        enum: ['both', 'off'],
+        description: 'both（默认）在导出后附一张目标区域的放大裁切（从工作流的坐标参数推算，红字十字是窗口中心）；off 只要文本回执',
+      },
       steps: {
         type: 'array',
         description: '整个工作流：按顺序执行的 {id, params} 列表。会话工具（doc_open、doc_save、doc_export、doc_inspect）和绘图命令可以混在一起，一次调用跑完。doc_open 的参数是 {path}：工作区文件名或 sha256:<hex> 附件 id，不是任意本地路径；doc_export 不给 path 就直接写进工作区并交付。',
@@ -777,13 +862,30 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         properties: {
           id: { type: 'string', required: true },
           result: { type: 'string', required: true },
+          metrics: {
+            type: 'object',
+            additionalProperties: false,
+            properties: { target: { type: 'string' } },
+          },
+          closeup: previewSchema,
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `\`${value.id}\` → ${value.result}` }],
+      render: (_args, value) => [
+        {
+          type: 'text',
+          text: `\`${value.id}\` → ${value.result}`
+            + (value.metrics?.target === undefined
+              ? ''
+              : `\n局部 ${value.metrics.target}（放大到 ${String(CLOSEUP_SIDE)} 长边，网格 ${String(GRID_PITCH)}px 一格，红字十字是窗口中心）`),
+        },
+        ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),
+      ],
     },
     async execute(args, exec) {
       const steps = args.steps as readonly { id?: unknown; params?: unknown }[] | undefined
       const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
+      // The last export is the picture a closeup would be taken from.
+      let delivered: string | undefined
       // One session tool behaves the same whether it arrives inside `steps` or
       // as the tool's single `id`: `doc_open` must place the picture inside the
       // engine's volume, and an export must come back as a deliverable.
@@ -801,6 +903,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           const scratch = `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
           await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${scratch}`, format: format === 'jpeg' ? 'jpg' : format })
           const bytes = await bridge.download(`${SCRATCH_DIR}/${scratch}`)
+          delivered = name
           return `已交付 ${await saveDeliverable(ctx, exec, name, bytes)}`
         }
         // A local picture has to reach the engine's own volume first; the
@@ -843,14 +946,31 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           batch.push({ id, params })
         }
         await flush()
-        return { id: `${String(steps.length)} 步`, result: report.join('；') }
+        const closeup = args.preview === 'off' || delivered === undefined
+          ? undefined
+          : await closeupOf(ctx, cwd, delivered, steps)
+        return {
+          id: `${String(steps.length)} 步`,
+          result: report.join('；'),
+          ...closeup === undefined ? {} : { closeup: closeup.preview, metrics: { target: closeup.target } },
+        }
       }
       const id = args.id
       if (typeof id !== 'string' || id === '') throw new Error('photocraft: 传 `steps` 跑工作流，或传 `id` 跑单条命令')
       const params = (args.params ?? {}) as Record<string, unknown>
       // A session tool named as the single `id` used to fall through to the
       // drawing-command path, where the engine answers "unknown command".
-      if (SESSION_TOOLS.has(id)) return { id, result: await runSessionStep(id, params) }
+      if (SESSION_TOOLS.has(id)) {
+        const result = await runSessionStep(id, params)
+        const closeup = args.preview === 'off' || delivered === undefined
+          ? undefined
+          : await closeupOf(ctx, cwd, delivered, [{ params }])
+        return {
+          id,
+          result,
+          ...closeup === undefined ? {} : { closeup: closeup.preview, metrics: { target: closeup.target } },
+        }
+      }
       const { problems } = await index.check(id, params)
       if (problems.length > 0) throw new Error(`photocraft: ${problems.join('; ')}`)
       const result = await mcp.run(id, params)

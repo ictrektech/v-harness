@@ -281,33 +281,30 @@ export function guidesPng(bytes: Buffer, pitch = 24): Buffer {
   const { width, height, bpp, colorType } = decoded
   const pixels = Buffer.from(decoded.pixels)
   const channels = colorType === 6 ? bpp : 3
-  const blend = (x: number, y: number, value: number, alpha: number): void => {
+  const blend = (x: number, y: number, colour: readonly [number, number, number], alpha: number): void => {
     if (x < 0 || y < 0 || x >= width || y >= height) return
     const index = (y * width + x) * bpp
     for (let channel = 0; channel < channels; channel += 1) {
       const base = pixels[index + channel] ?? 0
-      pixels[index + channel] = Math.round(base * (1 - alpha) + value * alpha) & 0xff
+      pixels[index + channel] = Math.round(base * (1 - alpha) + (colour[channel] ?? 0) * alpha) & 0xff
     }
   }
   const step = Math.max(8, Math.round(pitch))
   // A faint grid marks intervals without hiding the pixels being judged.
   for (let x = step; x < width; x += step) {
-    for (let y = 0; y < height; y += 1) blend(x, y, 255, 0.22)
+    for (let y = 0; y < height; y += 1) blend(x, y, [255, 255, 255], 0.22)
   }
   for (let y = step; y < height; y += step) {
-    for (let x = 0; x < width; x += 1) blend(x, y, 255, 0.22)
+    for (let x = 0; x < width; x += 1) blend(x, y, [255, 255, 255], 0.22)
   }
-  // The cross is two pixels wide and doubled (black over white) so it stays
-  // legible on both a bright sky and a dark shadow.
+  // The cross marks the window centre, so it must read as a marker rather than
+  // as one more grid line: solid red and three pixels wide, which survives both
+  // a bright sky and a dark shadow where a white line would vanish.
   const centreX = Math.round(width / 2)
   const centreY = Math.round(height / 2)
-  for (let y = 0; y < height; y += 1) {
-    blend(centreX, y, 255, 0.5)
-    blend(centreX + 1, y, 0, 0.5)
-  }
-  for (let x = 0; x < width; x += 1) {
-    blend(x, centreY, 255, 0.5)
-    blend(x, centreY + 1, 0, 0.5)
+  for (let offset = -1; offset <= 1; offset += 1) {
+    for (let y = 0; y < height; y += 1) blend(centreX + offset, y, [255, 59, 48], 0.9)
+    for (let x = 0; x < width; x += 1) blend(x, centreY + offset, [255, 59, 48], 0.9)
   }
   return encode(pixels, width, height, colorType)
 }

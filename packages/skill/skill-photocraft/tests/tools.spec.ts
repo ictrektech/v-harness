@@ -478,6 +478,22 @@ it('lands an export named by the caller in the workspace, not in the engine', as
   await rm(join(workspace, 'out'), { recursive: true, force: true })
 })
 
+it('adds a closeup of the region a workflow touched', async () => {
+  const stage = stageOf()
+  // The engine's export has to be a real PNG for the crop to have pixels.
+  stage.bridge.download = async () => Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAXElEQVR4nBXKMQEDQQgAsJPyUpCCFKQgBSk4acOQLe+9+n0ESdEMy3ufQJAUzbDfhRAIkqIZNi6kQJAUzbB5oQSCpGiGrQstECRFM2xfGIEgKZph58IKBEnRDMsf+pGXwQKipHUAAAAASUVORK5CYII=',
+    'base64',
+  )
+  const definition = toolOf(hostOf(stage).definitions, 'photocraft_run')
+  const value = await definition.execute({
+    steps: [{ id: 'doc_export', params: { path: 'out/x.png', x: 2, y: 2, width: 4, height: 4 } }],
+  }, execOf())
+  expect(value).toMatchObject({ metrics: { target: '2,2 4×4px' } })
+  expect(value).toHaveProperty('closeup')
+  await rm(join(workspace, 'out'), { recursive: true, force: true })
+})
+
 describe('toolbox cards', () => {
   it('brush paints the strokes the caller sent', async () => {
     const { stage } = await edit({
