@@ -25,7 +25,7 @@
  * Usage:
  *   node --import tsx/esm scripts/stage-agent-plugins.ts \
  *     --out /build/agent-plugins \
- *     --plugin packages/skill/skill-album [--plugin <package-dir> ...]
+ *     --plugin packages/skill/skill-image-studio [--plugin <package-dir> ...]
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'

@@ -8,9 +8,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import type { ToolResultNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import {
-  albumAlbums, albumPerson, albumPhotos, albumUpload, imageStudio,
-} from './meta.ts'
+import { imageStudio } from './meta.ts'
 import type { NS } from './locales.ts'
 import css from './Cards.module.css'
 
@@ -29,7 +27,7 @@ type CardProps = ToolCallViewProps & PropsLocale<typeof NS> & CardsInjected
 /** The settled block a result-side card renders. */
 type ResultProps = CardProps & { readonly block: ToolResultNode }
 
-/** One workspace thumbnail turned into an <img> through the file-read remote. */
+/** One workspace image turned into an <img> through the file-read remote. */
 function WorkspaceImage(props: {
   sessionId: CardProps['sessionId']
   cwd: CardProps['cwd']
@@ -51,7 +49,7 @@ function WorkspaceImage(props: {
       objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/jpeg' }))
       setUrl(objectUrl)
     }).catch(() => {
-      // A missing thumbnail degrades that cell to a plain button; the grid stays.
+      // A missing image degrades that cell to a plain button; the grid stays.
     })
     return () => {
       controller.abort()
@@ -138,79 +136,9 @@ function ImageStudioCard(props: ResultProps) {
   </CardShell>
 }
 
-/** `album_search` / `album_photos`: the photo grid with per-photo zoom. */
-function AlbumPhotosCard(props: ResultProps) {
-  const model = albumPhotos(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  const title = model.kind === 'album.search' ? props.t('album.searchTitle') : props.t('album.photosTitle')
-  const metaRecord = props.block.meta as Record<string, unknown>
-  const query = typeof metaRecord.query === 'string' && metaRecord.query !== ''
-    ? props.t('album.query', { query: metaRecord.query })
-    : undefined
-  return <CardShell toolName={props.toolName} title={title} meta={[query, props.t('album.total', { total: model.total })].filter(Boolean).join(' · ')}>
-    <div className={css.grid}>
-      {model.photos.map(photo => <WorkspaceImage key={photo.id}
-        sessionId={props.sessionId} cwd={props.cwd} path={photo.thumbPath}
-        workspaceFiles={props.workspaceFiles}
-        alt={photo.city === '' ? photo.filename : `${photo.filename} · ${photo.city}`}
-        onOpen={() => { props.openFile(photo.thumbPath) }} />)}
-    </div>
-    <div className={css.footer}>{props.t('album.viewHint')} {props.t('album.moreAfterGrid')}</div>
-  </CardShell>
-}
-
-/** `album_person`: resolved people with their photo counts. */
-function AlbumPersonCard(props: ResultProps) {
-  const model = albumPerson(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={props.t('album.personTitle')} meta={model.name}>
-    <div className={css.rows}>
-      {model.people.map(person => <div key={person.id} className={css.docRow}>
-        <span className={css.docBody}>
-          <span className={css.docName}>{person.name}</span>
-          <span className={css.docMeta}>{props.t('album.personAssets', { assets: person.assets })}</span>
-        </span>
-      </div>)}
-    </div>
-    <div className={css.footer}>{props.t('album.personHint', { name: model.name })}</div>
-  </CardShell>
-}
-
-/** `album_albums`: the album list. */
-function AlbumAlbumsCard(props: ResultProps) {
-  const model = albumAlbums(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={props.t('album.albumsTitle')}>
-    <div className={css.rows}>
-      {model.albums.map(album => <div key={album.id} className={css.docRow}>
-        <span className={css.docBody}>
-          <span className={css.docName}>{album.name}</span>
-          <span className={css.docMeta}>{props.t('album.albumsAssets', { assets: album.assets })}</span>
-        </span>
-      </div>)}
-    </div>
-    <div className={css.footer}>{props.t('album.albumsHint')}</div>
-  </CardShell>
-}
-
-/** `album_upload`: saved receipt, including the deduplicated case. */
-function AlbumUploadCard(props: ResultProps) {
-  const model = albumUpload(props.block.meta)
-  if (model === null) return <UnavailableCard {...props} />
-  return <CardShell toolName={props.toolName} title={props.t('album.uploadTitle')} meta={model.name}>
-    {model.duplicate ? <div className={css.warn}>{props.t('album.uploadDuplicate')}</div> : null}
-    <div className={css.footer}>{props.t('album.uploadHint')}</div>
-  </CardShell>
-}
-
 /** The tool name each card claims; unknown names never reach this component. */
 const CARDS: Readonly<Record<string, (props: ResultProps) => ReactNode>> = {
   image_studio_generate: ImageStudioCard,
-  album_search: AlbumPhotosCard,
-  album_photos: AlbumPhotosCard,
-  album_person: AlbumPersonCard,
-  album_albums: AlbumAlbumsCard,
-  album_upload: AlbumUploadCard,
 }
 
 /** The keyed card for every bundled product tool call. */

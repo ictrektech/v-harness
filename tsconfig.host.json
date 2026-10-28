@@ -263,7 +263,6 @@
     { "path": "./packages/boot/config-editor" },
     { "path": "./packages/client/connection/tsconfig.host.json" },
     { "path": "./packages/skill/skill-image-studio" },
-    { "path": "./packages/skill/skill-album" },
     { "path": "./packages/skill/skill-photocraft" },
     { "path": "./packages/skill/skill-office" },
     { "path": "./packages/skill/tool-workspace-dependencies" },

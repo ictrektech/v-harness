@@ -114,16 +114,6 @@
   overflow: hidden;
 }
 
-.warn {
-  margin: 0 14px 12px;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--dsw-alias-state-warn-label);
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent);
-  border-radius: 8px;
-  padding: 8px 10px;
-}
-
 .footer {
   padding: 8px 14px 12px;
   font-size: 11px;
@@ -131,8 +121,4 @@
   color: var(--dsw-alias-label-tertiary);
   border-top: 1px dashed var(--dsw-alias-border-l2);
   margin-top: 8px;
-}
-
-.error {
-  color: var(--dsw-alias-state-error-primary);
 }

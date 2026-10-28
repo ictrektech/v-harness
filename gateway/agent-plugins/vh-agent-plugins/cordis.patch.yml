@@ -24,14 +24,10 @@
       name: '@deepseek-ai/dsh-skill-photocraft'
       disabled: !!js "!!process.env.VH_PHOTOCRAFT_OFF"
 
-    # The interactive AI-album tools are retired: the album flow ships as a
-    # plain skill (skills/album) whose CLI the model runs and presents with,
-    # so there is no tool-call card to feed. Re-enable only together with a
-    # working presentationMeta path (tool cwd must be the session workspace).
-
-    - id: skill-album
-      name: '@deepseek-ai/dsh-skill-album'
-      disabled: true
+    # AI-album has no tool row: its photo grid only ever rendered inside the
+    # Turn's folded "thinking" process, while the output area is owned by
+    # `present` deliverables. The flow ships as a plain skill (skills/album)
+    # whose CLI the model runs and presents with — the channel a reader sees.
 
     # Fork-only browser plugins: the upstream dsh-web-app neither depends on
     # these packages nor mounts their rows, and gateway/plugins.mjs copies the

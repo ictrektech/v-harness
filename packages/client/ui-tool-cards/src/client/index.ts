@@ -3,10 +3,6 @@
  * bundled product tool. Each card derives its view purely from the call's
  * persisted arguments and `presentationMeta`, so replay reproduces it without
  * live state; a card that cannot narrow its metadata renders the generic row.
- *
- * The workspace-files remote is captured at registration and injected into
- * every card, which reads photo thumbnails through the session-authorized
- * file-read channel.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -29,11 +25,6 @@ export const inject = ['slots', 'locale', 'remote', 'remote.workspaceFiles']
 /** The tool names this plugin claims; every other name keeps the generic row. */
 const TOOL_KEYS = [
   'image_studio_generate',
-  'album_search',
-  'album_photos',
-  'album_person',
-  'album_albums',
-  'album_upload',
 ] as const
 
 /**

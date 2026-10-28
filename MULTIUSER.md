@@ -88,7 +88,7 @@ skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access t
 镜像在构建时编译两类本仓库新增、未发布到 npm 的插件，租户 profile 从 registry 装不到，由网关补齐：
 
 - **浏览器 bundle**（V-Office 卡片等）：构建产物在 `/opt/v-harness/plugins`。
-- **agent 侧工具插件**（`dsh-skill-album` / `dsh-skill-image-studio`）：`scripts/stage-agent-plugins.ts` 按发布流程同款构建（tsdown 出 `lib/index.js` 入口，`tsc -b` 按引用自动构建依赖闭包），payload 在 `/opt/v-harness/agent-plugins`。
+- **agent 侧工具插件**（`dsh-skill-image-studio` / `dsh-skill-photocraft`）：`scripts/stage-agent-plugins.ts` 按发布流程同款构建（tsdown 出 `lib/index.js` 入口，`tsc -b` 按引用自动构建依赖闭包），payload 在 `/opt/v-harness/agent-plugins`。
 
 `gateway/plugins.mjs` 在每次 dsh 启动前同步：浏览器 bundle 覆盖发布版（fork 独有的包缺失即创建）；agent 侧插件包覆盖、依赖包缺了才补（peer 依赖由 dsh 安装解析层供给，不打包），并把 carrier bundle（`gateway/agent-plugins/vh-agent-plugins`，声明挂载行）写进 profile 的 `dsh.profile.bundles`。profile 由网关在 dsh 首次启动前预创建，**新租户第一次登录即有全部工具**。完整开发教程（skill / 工具插件 / 交互卡片怎么做、怎么上线）见 [PLUGINS.md](PLUGINS.md)。
 
