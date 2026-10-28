@@ -513,7 +513,11 @@ async function handleControl(req, res, url) {
   if (url.pathname === '/__vh/session' && req.method === 'GET') {
     const session = authenticate(req);
     if (session) {
-      const user = { username: session.username, namespace: session.namespace };
+      // `locale` is the surface's own language as VOS reported it; the page
+      // reads the same value through the shell injection, so this is the
+      // diagnostic copy of it.
+      const locale = (await findUser(USERS_FILE, session.subject))?.locale ?? '';
+      const user = { username: session.username, namespace: session.namespace, locale };
       // The page calls this on every load, which makes it the one place that
       // reliably sees each tenant's real domain; recording it only on
       // capability routes left the map empty until the user opened a file.
@@ -605,11 +609,18 @@ async function handleControl(req, res, url) {
     }
     try {
       const body = await readJsonBody(req);
-      const identity = await verifyVosToken(body.access_token);
+      const identity = await verifyVosToken(body.access_token, {
+        acceptLanguage: String(req.headers['accept-language'] ?? ''),
+      });
       const { record, created } = await upsertUser(USERS_FILE, identity);
       if (created) {
         console.log(`user created namespace=${record.namespace} port=${String(record.port)}`);
       }
+      // The answer language is baked into the tenant's dsh process at launch.
+      // It is deliberately NOT restarted here: dsh closes gracefully over
+      // several seconds, and a relaunch racing that shutdown dies on the
+      // instance's own port (EADDRINUSE), which reads as a total sign-in
+      // failure. The stored language lands on the next natural start.
       const accessToken = String(body.access_token);
       console.log(`auth ${record.username}: refresh=${body.refresh_token ? 'yes' : 'no'}`);
       rememberTokens(record.namespace, {
@@ -738,6 +749,31 @@ async function instanceFor(session) {
 }
 
 /**
+ * Publish the tenant's language to the surface shell.
+ *
+ * The browser locale plugin reads the `preferences-locale` entry before it
+ * mounts, so writing it here opens the surface in the VOS language even when
+ * the platform injects no locale bridge into the page; a language the user
+ * chose in Settings is an explicit preference and still outranks it. The entry
+ * is rewritten on every load, so a VOS language change reaches the next visit
+ * instead of pinning the first one.
+ * @param {string} html - the document served by the tenant's dsh instance.
+ * @param {string | undefined} locale - stored tenant language (`zh` / `en`).
+ * @returns {string} the document, with the host-locale script when one applies.
+ */
+function injectHostLocale(html, locale) {
+  const tag = locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : '';
+  if (tag === '') return html;
+  const script = `<script>try{localStorage.setItem("preferences-locale",JSON.stringify({value:"${tag}"}))}catch(e){}</script>`;
+  const head = /<head[^>]*>/iu.exec(html);
+  // A document without a head still gets the entry: prepending keeps the rest
+  // of the markup untouched, and the browser hoists the script either way.
+  if (head === null) return `${script}${html}`;
+  const at = head.index + head[0].length;
+  return `${html.slice(0, at)}${script}${html.slice(at)}`;
+}
+
+/**
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
  * @returns {Promise<void>}
@@ -777,6 +813,14 @@ async function proxyRequest(req, res) {
 
   const path = stripPrefix(req.url ?? '/');
   const headers = upstreamHeaders(req, instance.port, instance.cookie);
+  // Only the document carries the shell injection; assets and RPC answers are
+  // streamed untouched. The shell is rewritten as text, so this one request
+  // must not come back compressed.
+  const documentRequest = isDocumentRequest(req);
+  if (documentRequest) delete headers['accept-encoding'];
+  const locale = documentRequest
+    ? (await findUser(USERS_FILE, session.subject))?.locale
+    : undefined;
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
@@ -794,14 +838,38 @@ async function proxyRequest(req, res) {
         responseHeaders[name] = value;
       }
       // dsh regenerates its SPA boot manifest on restart; a cached shell pins
-      // the browser to stale plugin bundles.
-      if (String(upstreamRes.headers['content-type'] ?? '').startsWith('text/html')) {
-        responseHeaders['cache-control'] = 'no-store';
+      // the browser to stale plugin bundles. A compressed body is passed
+      // through instead of being rewritten as text.
+      const injectable = String(upstreamRes.headers['content-type'] ?? '').startsWith('text/html')
+        && upstreamRes.headers['content-encoding'] === undefined;
+      if (!injectable) {
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+        upstreamRes.pipe(res);
+        upstreamRes.on('end', resolve);
+        upstreamRes.on('error', resolve);
+        return;
       }
-      res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
-      upstreamRes.pipe(res);
-      upstreamRes.on('end', resolve);
-      upstreamRes.on('error', resolve);
+      responseHeaders['cache-control'] = 'no-store';
+      // The shell is small and has to be rewritten before it is sent, so this
+      // one response is buffered instead of piped.
+      const chunks = [];
+      upstreamRes.on('data', (chunk) => { chunks.push(chunk); });
+      upstreamRes.on('error', () => {
+        if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('实例不可用');
+        resolve();
+      });
+      upstreamRes.on('end', () => {
+        const body = Buffer.from(
+          injectHostLocale(Buffer.concat(chunks).toString('utf8'), locale),
+          'utf8',
+        );
+        delete responseHeaders['content-length'];
+        responseHeaders['content-length'] = String(body.byteLength);
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+        res.end(body);
+        resolve();
+      });
     });
 
     upstream.on('error', (error) => {

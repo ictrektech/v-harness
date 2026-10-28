@@ -25,6 +25,7 @@ const FIRST_PORT = 3_101;
  * @property {number} port - loopback port of this user's dsh instance.
  * @property {number} createdAt - epoch milliseconds.
  * @property {number} [lastSeenAt] - epoch milliseconds.
+ * @property {string} [locale] - last known VOS interface language (`zh` / `en`).
  */
 
 /** Serializes read-modify-write cycles inside this process. */
@@ -100,10 +101,12 @@ function nextFree(table, field, first) {
  * Insert or refresh one user and return the stored record.
  *
  * Sign-in is the only writer: display names change, while subject, namespace,
- * uid, and port are immutable once allocated.
+ * uid, and port are immutable once allocated. A sign-in that names no language
+ * keeps the one already stored, so a gateway that cannot read VOS's locale
+ * never erases the answer of one that could.
  *
  * @param {string} path
- * @param {{ subject: string, namespace: string, username: string }} identity
+ * @param {{ subject: string, namespace: string, username: string, locale?: string }} identity
  * @param {number} [now]
  * @returns {Promise<{ record: UserRecord, created: boolean }>}
  */
@@ -115,6 +118,7 @@ export async function upsertUser(path, identity, now = Date.now()) {
       const updated = {
         ...existing,
         username: identity.username,
+        ...identity.locale ? { locale: identity.locale } : {},
         lastSeenAt: now,
       };
       table[identity.subject] = updated;
@@ -132,6 +136,7 @@ export async function upsertUser(path, identity, now = Date.now()) {
       port: nextFree(table, 'port', FIRST_PORT),
       createdAt: now,
       lastSeenAt: now,
+      ...identity.locale ? { locale: identity.locale } : {},
     };
     table[identity.subject] = record;
     await writeTable(path, table);

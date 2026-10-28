@@ -43,16 +43,51 @@ export function claim(claims, ...names) {
 }
 
 /**
+ * Narrow one BCP 47 tag to the languages the product ships.
+ *
+ * Traditional Chinese resolves to Simplified: the client ships no `zh-TW`
+ * texts, and a reader of either script reads the other better than English.
+ * @param {unknown} value - untrusted tag from a claim, a header, or storage.
+ * @returns {'zh' | 'en' | ''} the shipped language id, or '' when unsupported.
+ */
+export function normalizeLanguage(value) {
+  if (typeof value !== 'string') return '';
+  const tag = value.trim().replace(/_/g, '-').toLowerCase();
+  if (tag === 'zh' || tag.startsWith('zh-')) return 'zh';
+  if (tag === 'en' || tag.startsWith('en-')) return 'en';
+  return '';
+}
+
+/**
+ * Pick the first shipped language out of an ordered list of tags.
+ * @param {readonly string[]} tags - preference order, e.g. Accept-Language parts.
+ * @returns {'zh' | 'en' | ''}
+ */
+function firstLanguage(tags) {
+  for (const tag of tags) {
+    const language = normalizeLanguage(tag);
+    if (language !== '') return language;
+  }
+  return '';
+}
+
+/**
  * Normalize a VOS userinfo body into identity fields.
  *
  * VOS answers an invalid token with HTTP 200 and a ResultBody error envelope
  * (`{code: 10001, ...}`), so the status code alone is not a verdict. Success
  * is either flat OIDC claims or the same claims under `data`.
  *
+ * `locale` is the VOS interface language the person is reading the platform
+ * in; it decides both the surface copy and the language the agent answers in.
+ * A deployment whose userinfo carries no locale claim falls back to the
+ * ordered tags the caller passed (the browser's Accept-Language).
+ *
  * @param {unknown} payload - parsed JSON body.
- * @returns {{ subject: string, username: string, admin: boolean, namespace: string }}
+ * @param {readonly string[]} [languages] - fallback tags in preference order.
+ * @returns {{ subject: string, username: string, admin: boolean, namespace: string, locale: string }}
  */
-export function identityFromPayload(payload) {
+export function identityFromPayload(payload, languages = []) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new VosAuthError('vos-invalid-userinfo', 'VOS userinfo response is not an object');
   }
@@ -88,6 +123,7 @@ export function identityFromPayload(payload) {
     // Directory and uid derive from the immutable subject, never the display
     // name: two VOS accounts can resolve to the same username.
     namespace: createHash('sha256').update(`vos-oidc\0${subject}`).digest('hex').slice(0, 40),
+    locale: normalizeLanguage(claim(claims, 'locale', 'language', 'lang')) || firstLanguage(languages),
   });
 }
 
@@ -103,8 +139,12 @@ export function userinfoUrl(env = process.env) {
 /**
  * Verify one VOS access token and return its identity.
  * @param {string} accessToken - Fastpath access token from the client.
- * @param {{ fetchImpl?: typeof fetch, env?: NodeJS.ProcessEnv }} [options]
- * @returns {Promise<{ subject: string, username: string, admin: boolean, namespace: string }>}
+ * @param {{
+ *   fetchImpl?: typeof fetch,
+ *   env?: NodeJS.ProcessEnv,
+ *   acceptLanguage?: string,
+ * }} [options] - `acceptLanguage` is the fallback when userinfo names no locale.
+ * @returns {Promise<{ subject: string, username: string, admin: boolean, namespace: string, locale: string }>}
  * @throws {VosAuthError} when the token is missing, rejected, or the endpoint fails.
  */
 export async function verifyVosToken(accessToken, options = {}) {
@@ -134,5 +174,8 @@ export async function verifyVosToken(accessToken, options = {}) {
   } catch {
     throw new VosAuthError('vos-invalid-userinfo', 'VOS userinfo did not return JSON');
   }
-  return identityFromPayload(payload);
+  const accept = typeof options.acceptLanguage === 'string' ? options.acceptLanguage.split(',') : [];
+  // The preference weight (`;q=0.9`) is ordering noise here: the header is
+  // already ordered, and a q-value must not turn a tag into an unknown one.
+  return identityFromPayload(payload, accept.map((entry) => entry.split(';')[0]?.trim() ?? ''));
 }

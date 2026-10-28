@@ -264,6 +264,12 @@ async function launch(options) {
       DSH_BUNDLED_SKILL_DIR: BUNDLED_SKILL_DIR,
       // Same root under the name the Image Studio tool resolves its CLI by.
       VH_SKILLS_DIR: BUNDLED_SKILL_DIR,
+      // The tenant's VOS interface language: vos.patch.yml turns it into the
+      // persona's answer language, and the gateway publishes the same value to
+      // the browser as its host locale.
+      ...(record.locale === undefined || record.locale === ''
+        ? {}
+        : { VH_USER_LOCALE: record.locale }),
       // The generation tool stays off until a deployment names an endpoint;
       // the gateway forwards only what this environment actually sets.
       ...(process.env.IMAGE_STUDIO_BASE_URL === undefined
