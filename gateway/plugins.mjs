@@ -57,12 +57,6 @@ autoInstallPeers: false
 
 /** Plugins shipped from this repository, by package name. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
-// dsh-client-locale rides along because the VOS language following postdates
-// the published dsh the image installs; the profile copy is refreshed too.
-// dsh-client-ui-voffice is not part of the published dependency graph at all,
-// so its profile copy is created rather than replaced; the carrier bundle
-// mounts its row.
-const BUNDLED = ['dsh-client-ui-layout', 'dsh-client-ui-agent-preset', 'dsh-client-ui-brand-official', 'dsh-client-ui-chat', 'dsh-client-ui-conversation', 'dsh-client-ui-model-selection', 'dsh-client-ui-plugin-manager', 'dsh-client-ui-plugin-market', 'dsh-client-ui-settings-account', 'dsh-client-ui-sidebar-browser', 'dsh-client-ui-sidebar-documentpreview', 'dsh-client-locale', 'dsh-client-ui-knowledge', 'dsh-client-ui-user-questions', 'dsh-client-ui-tool-cards', 'dsh-client-ui-voffice', ...MANAGED]
 
 /**
  * Create the tenant's profile directory before dsh's first boot when it does
@@ -123,7 +117,12 @@ export async function syncPlugins(user) {
 }
 
 /**
- * Copy the image's build of each bundled plugin over one profile's copy.
+ * Copy the image's build of each deployed plugin over one profile's copy.
+ *
+ * The payload directory is the list: whatever the image built is what a tenant
+ * gets. A hand-maintained name list drifted from the source tree once and
+ * silently shipped the published copies of a forked browser plugin, so an
+ * added package now only has to reach the image to reach the profiles.
  * @param {{
  *   home: string,
  *   linuxName: string,
@@ -134,13 +133,15 @@ export async function syncPlugins(user) {
  */
 export async function syncClientPlugins(user) {
   const modules = join(user.home, '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai')
-  for (const name of BUNDLED) {
+  const deployed = (await readdir(PLUGIN_ROOT, { withFileTypes: true }).catch(() => []))
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+  for (const name of MANAGED) {
+    if (!deployed.includes(name)) throw new Error(`deployed plugin missing: ${name}`)
+  }
+  for (const name of deployed) {
     const source = join(PLUGIN_ROOT, name)
     const target = join(modules, name)
-    if (!(await exists(source))) {
-      if (MANAGED.includes(name)) throw new Error(`deployed plugin missing: ${name}`)
-      continue
-    }
     // Default profiles resolve bundled packages from the shared installation.
     // Docker installs the matching artifacts there before any tenant starts.
     // A package the published dependency graph never carried has no profile

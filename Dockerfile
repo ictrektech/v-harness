@@ -140,10 +140,11 @@ RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
 ENV DSH_CLIENT_BUILD_PROFILE=official DSH_CLIENT_TITLE=v-harness
 RUN pnpm run build:lib:client \
  && pnpm --filter @deepseek-ai/dsh-web-frontend build \
- && for name in locale ui-knowledge ui-tool-cards ui-user-questions ui-voffice ui-layout ui-agent-preset ui-brand-official ui-chat ui-conversation ui-model-selection ui-plugin-manager ui-plugin-market ui-settings-account ui-settings-models ui-sidebar-browser ui-sidebar-documentpreview; do \
-      source="packages/client/$name"; target="/build/plugins/dsh-client-$name"; \
-      mkdir -p "$target"; cp -R "$source/package.json" "$source/lib" "$target/"; \
-      if [ -d "$source/locale" ]; then cp -R "$source/locale" "$target/"; fi; \
+ && for dir in packages/client/*/; do \
+      [ -f "$dir/lib/client.js" ] || continue; \
+      name=$(basename "$dir"); target="/build/plugins/dsh-client-$name"; \
+      mkdir -p "$target"; cp -R "$dir/package.json" "$dir/lib" "$target/"; \
+      if [ -d "$dir/locale" ]; then cp -R "$dir/locale" "$target/"; fi; \
     done
 
 # Host-phase packages gain their browser half in the final Client pass.
@@ -232,10 +233,17 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-RUN set -eu; for name in dsh-client-ui-settings-models dsh-llm-pi-ai dsh-api-session-controller dsh-api-remotes dsh-client-locale dsh-client-ui-layout dsh-client-ui-agent-preset dsh-client-ui-brand-official dsh-client-ui-chat dsh-client-ui-conversation dsh-client-ui-model-selection dsh-client-ui-plugin-manager dsh-client-ui-plugin-market dsh-client-ui-settings-account dsh-client-ui-sidebar-browser dsh-client-ui-sidebar-documentpreview; do \
-      source="/opt/v-harness/plugins/$name"; \
-      target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$(basename "$source")"; \
-      test -f "$target/package.json"; \
+# The payload directory is the list: every browser package the image built
+# replaces its published counterpart. A hand-maintained name list drifted from
+# the source tree once and shipped the old attachment editor, so a plugin now
+# only has to be built above to reach the shared installation.
+RUN set -eu; for source in /opt/v-harness/plugins/*/; do \
+      name=$(basename "$source"); \
+      target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$name"; \
+      if [ ! -f "$target/package.json" ]; then \
+        echo "plugin $name has no shared installation copy"; \
+        continue; \
+      fi; \
       cp -R "$source/lib/." "$target/lib/"; \
       if [ -d "$source/locale" ]; then cp -R "$source/locale/." "$target/locale/"; fi; \
     done
