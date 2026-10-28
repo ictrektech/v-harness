@@ -608,34 +608,54 @@ async function closeupOf(
 /**
  * The overlay settings one closeup needs.
  *
- * The pitch is chosen so a grid cell lands near 50 output pixels whatever the
- * enlargement: a fixed value hides a 4px correction on an eye and turns a whole
- * colour grade into a white net. The target box is handed over in output pixels
- * so the marks sit exactly on what the caller touched.
+ * Two grids, because one pitch cannot do both jobs. The outer grid lands near
+ * 50 output pixels: coarse enough to locate a target in the frame, never denser
+ * than one line per ~15px (which reads as a screen door). The inner grid, drawn
+ * inside the box only, is a quarter of that or a quarter of the target —
+ * whichever is finer — which is the spacing a 4px correction can be counted
+ * against.
  * @param size - source picture size.
  * @param window - the crop window, as fractions.
  * @param target - the marks inside that window, as fractions.
- * @returns the pitch, the scale, and the box in output pixels.
+ * @param override - caller's own pitch, in source pixels.
+ * @returns the pitch, the scale, the box in output pixels, and both steps.
  */
 function guidesFor(
   size: { width: number; height: number },
   window: PngFraction,
   target?: PngFraction,
-): { options: GuideOptions; step: number } {
+  override?: number,
+): { options: GuideOptions; step: number; inner: number } {
   const crop = cropWindowOf(size.width, size.height, window)
   const scale = CLOSEUP_SIDE / Math.max(1, crop.width, crop.height)
-  const steps = [5, 10, 20, 25, 50]
-  const chosen = steps.reduce(
-    (best, step) => (Math.abs(step * scale - 50) < Math.abs(best * scale - 50) ? step : best),
-    steps[0] as number,
+  const steps = [2, 5, 10, 20, 25, 50, 100]
+  const pixelsOf = (step: number): number => step * scale
+  const floor = 15
+  const ceiling = 60
+  const inRange = steps.filter(step => pixelsOf(step) >= floor && pixelsOf(step) <= ceiling)
+  const pool = inRange.length > 0 ? inRange : steps
+  const wanted = Math.min(ceiling, Math.max(floor, override === undefined ? 50 : override * scale))
+  const chosen = pool.reduce(
+    (best, step) => (Math.abs(pixelsOf(step) - wanted) < Math.abs(pixelsOf(best) - wanted) ? step : best),
+    pool[0] as number,
   )
+  const pitch = pixelsOf(chosen)
+  const targetShortSide = target === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.min(target.w * size.width, target.h * size.height) * scale
+  // About twelve lines across the box: enough to count an 8px growth, few
+  // enough that the picture still reads. A target small enough to have made the
+  // outer grid fine already needs no second one.
+  const inner = Math.min(pitch, Math.max(12, targetShortSide / 12))
   return {
     step: chosen,
+    inner: Math.round(inner),
     options: {
-      pitch: chosen * scale,
+      pitch,
       scale,
       rulerPixels: 10,
       ...target === undefined ? {} : {
+        innerPitch: inner,
         target: {
           x: (target.x * size.width - crop.left) * scale,
           y: (target.y * size.height - crop.top) * scale,
@@ -1084,6 +1104,10 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         },
       },
       side: { type: 'number', description: '整图长边，默认 512' },
+      grid: {
+        type: 'number',
+        description: '主网格步长（原图像素），可选 5 / 10 / 20；省略时按目标大小自动选（目标越小越细）',
+      },
     },
     output: {
       schema: {
@@ -1094,6 +1118,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           canvas: { type: 'string', required: true },
           target: { type: 'string' },
           grid: { type: 'string' },
+          inner: { type: 'string' },
           view: previewSchema,
           closeup: previewSchema,
         },
@@ -1104,7 +1129,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           text: `查看 ${value.file}：画布 ${value.canvas}`
             + (value.target === undefined
               ? ''
-              : `；选中区域 ${value.target}（黄框标出，红十字是这个区域的中心，网格 ${value.grid ?? '—'}，左下青线 = 10px）`)
+              : `；选中区域 ${value.target}（黄框标出，红十字是这个区域的中心，主网格 ${value.grid ?? '—'}、框内细网格 ${value.inner ?? '—'}、左下青线 = 10px）`)
             + '\n这是侦察：工作区里的文件不会被改动（非 PNG 图会先由引擎转成 PNG）。'
             + '十字和框标的是**你传进来的区域**，不是识别出来的物体——两只眼睛同框时中心会落在鼻梁上，要精确就收窄 region 再看一次。'
             + '把量到的坐标换成 0..1 比例，再传给 photocraft_edit 的 regions / 落点。',
@@ -1150,7 +1175,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         w: box.w * 1.5,
         h: box.h * 1.5,
       }
-      const guides = guidesFor(size, window, box)
+      const guides = guidesFor(size, window, box, args.grid)
       const closeup = await keep(
         ctx,
         guidesPng(fitPng(cropPng(png, window), CLOSEUP_SIDE), guides.options),
@@ -1162,6 +1187,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         target: `${String(Math.round(box.x * size.width))},${String(Math.round(box.y * size.height))} `
           + `${String(Math.round(box.w * size.width))}×${String(Math.round(box.h * size.height))}px`,
         grid: `${String(guides.step)}px/格`,
+        inner: `${String(guides.inner)}px`,
         view,
         closeup,
       }

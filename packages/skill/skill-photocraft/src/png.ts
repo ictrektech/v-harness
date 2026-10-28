@@ -293,6 +293,14 @@ export interface GuideOptions {
   rulerPixels?: number
   /** The marks themselves, in output pixels: boxed, with the cross at its centre. */
   target?: { readonly x: number; readonly y: number; readonly w: number; readonly h: number } | undefined
+  /**
+   * Finer grid drawn inside the target box, in output pixels.
+   *
+   * One pitch cannot serve both jobs: lines coarse enough to place a target in
+   * the frame are too coarse to measure a 4px correction inside it. The inner
+   * grid measures; the outer one locates.
+   */
+  innerPitch?: number
 }
 
 /**
@@ -331,6 +339,22 @@ export function guidesPng(bytes: Buffer, options: GuideOptions): Buffer {
     for (let x = 0; x < width; x += 2) blend(x, y, grid, 0.3)
   }
   const target = options.target
+  const inner = options.innerPitch
+  if (target !== undefined && inner !== undefined && inner >= 3) {
+    // Clipped to the box: measuring lines across the whole frame would be the
+    // net this design is trying to avoid.
+    const left = Math.max(0, Math.round(target.x))
+    const top = Math.max(0, Math.round(target.y))
+    const right = Math.min(width - 1, Math.round(target.x + target.w))
+    const bottom = Math.min(height - 1, Math.round(target.y + target.h))
+    const fine: readonly [number, number, number] = [255, 255, 255]
+    for (let x = left + Math.round(inner); x < right; x += Math.max(3, Math.round(inner))) {
+      for (let y = top; y <= bottom; y += 1) blend(x, y, fine, 0.5)
+    }
+    for (let y = top + Math.round(inner); y < bottom; y += Math.max(3, Math.round(inner))) {
+      for (let x = left; x <= right; x += 1) blend(x, y, fine, 0.5)
+    }
+  }
   if (target !== undefined) {
     const colour: readonly [number, number, number] = [255, 204, 0]
     const left = Math.round(target.x)
