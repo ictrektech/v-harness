@@ -131,7 +131,9 @@ export function knowledgeSource(t: Translate): InputTriggerSource {
   return {
     trigger: '@',
     name: 'knowledge',
-    order: 10,
+    // Right under the V-Office section: both are the account's own services,
+    // while the file and session sources below are local to the workspace.
+    order: -5,
     showGroupTitle: false,
 
     async candidates(_session, { query, signal }) {

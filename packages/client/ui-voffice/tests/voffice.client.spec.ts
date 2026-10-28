@@ -45,7 +45,9 @@ describe('the folder level', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const rows = await vofficeSource(t).candidates(session, request(''))
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ name: FOLDER, icon: 'folder', drill: true })
+    expect(rows[0]).toMatchObject({
+      name: FOLDER, section: 'source.section', icon: 'folder', drill: true,
+    })
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
@@ -56,11 +58,19 @@ describe('the folder level', () => {
     expect(source.onPick(pick(row, 'drill'))).toEqual({ text: `@${FOLDER}/`, continue: true })
   })
 
-  it('carries a crumb back to the folder once descended', () => {
+  it('heads a descended menu with a back step naming the folder', () => {
     const source = vofficeSource(t)
     expect(source.header?.(session, { query: '', drilled: false })).toBeUndefined()
     expect(source.header?.(session, { query: `${FOLDER}/预算`, drilled: true }))
-      .toEqual([{ label: FOLDER, value: 'voffice-root' }])
+      .toEqual([
+        { label: 'source.back', value: 'voffice-back' },
+        { label: FOLDER, value: 'voffice-root', current: true },
+      ])
+  })
+
+  it('walks back to the bare trigger from the back step', () => {
+    const outcome = vofficeSource(t).onPick(pick({ name: 'source.back', value: 'voffice-back' }, 'drill'))
+    expect(outcome).toEqual({ text: '@', continue: true })
   })
 })
 

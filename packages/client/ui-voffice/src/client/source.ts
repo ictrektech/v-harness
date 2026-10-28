@@ -2,10 +2,12 @@
  * The `@` V-Office document source.
  *
  * One menu, two levels, the shape the knowledge source already uses: typing
- * after `@` offers one row naming the user's own folder, and opening that row
- * descends into the documents. The level lives in the text the user can see and
- * undo (`@我的文档/`), so backing out is ordinary editing rather than a hidden
- * mode, and the folder listing is fetched only once the menu descends.
+ * after `@` offers one `V-Office` section holding one row that names the user's
+ * own folder, and opening that row descends into the documents. The level lives
+ * in the text the user can see and undo (`@我的文档/`), so backing out is
+ * ordinary editing rather than a hidden mode, and the folder listing is fetched
+ * only once the menu descends. A descended menu carries `返回 › 我的文档` above
+ * the list: the trailing step is the current one, the leading step goes back.
  *
  * A settling pick inside the folder inserts an atomic reference, so the turn
  * carries the document as a fact rather than a name the run hopes to remember.
@@ -24,8 +26,11 @@ import { markerOf } from './markers.ts'
 /** Rows one menu may render; the listing itself is never truncated upstream. */
 const ROW_LIMIT = 100
 
-/** Menu value that returns a descended menu to the folder level. */
+/** Menu value that descends from the header row into the folder level. */
 const ROOT = 'voffice-root'
+
+/** Menu value that walks a descended menu back to the `@` level. */
+const BACK = 'voffice-back'
 
 /** Dictionary-bound translate. */
 export type Translate = (key: VofficeKey) => string
@@ -82,6 +87,9 @@ function folderRow(t: Translate): InputTriggerCandidate {
     name: t('source.root'),
     label: t('source.root'),
     description: t('source.rootHint'),
+    // The section heading sits above this row, the way the knowledge source
+    // heads its own rows; the group-title row stays off.
+    section: t('source.section'),
     icon: 'folder',
     value: ROOT,
     drill: true,
@@ -149,13 +157,19 @@ export function vofficeSource(t: Translate): InputTriggerSource {
       // Only a descent owes a way back; text the user typed carries its own
       // context in the draft.
       if (slash === -1) return undefined
-      return [{ label: t('source.root'), value: ROOT }]
+      return [
+        { label: t('source.back'), value: BACK },
+        { label: t('source.root'), value: ROOT, current: true },
+      ]
     },
 
     onPick({ candidate, action }) {
       const name = candidate.value
       // Notice rows carry no value: claiming one would insert an empty ref.
       if (name === undefined || name === '') return undefined
+      // The crumb walks back to the folder row, leaving the bare trigger in
+      // the draft: the menu reopens on the level it came from.
+      if (name === BACK) return { text: '@', continue: true }
       if (name === ROOT) {
         // The only thing the folder row can do is open the folder, whether the
         // user settled it or drilled into it.
