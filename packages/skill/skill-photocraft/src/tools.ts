@@ -272,12 +272,22 @@ async function fitPiece(
  * @param bytes - encoded picture.
  * @returns the same name, now resolvable from the session workspace.
  */
-async function saveDeliverable(ctx: Context, exec: ToolExecution, name: string, bytes: Buffer): Promise<string> {
-  // PTC sub-dispatches carry no agent, and without one there is no session
-  // workspace to deliver into — fail loud instead of writing to a cwd the
-  // agent cannot see.
+/**
+ * The agent a call runs under.
+ *
+ * PTC sub-dispatches carry no agent, and without one there is no session
+ * workspace to work in — fail loud instead of touching a cwd the agent cannot
+ * see.
+ * @param exec - the running call.
+ * @returns the agent the call belongs to.
+ */
+function agentOf(exec: ToolExecution): NonNullable<ToolExecution['agent']> {
   if (exec.agent === undefined) throw new Error('photocraft: 没有可写入的工作区（无会话代理）')
-  const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+  return exec.agent
+}
+
+async function saveDeliverable(ctx: Context, exec: ToolExecution, name: string, bytes: Buffer): Promise<string> {
+  const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
   await writeFile(join(cwd, name), bytes)
   return name
 }
@@ -570,7 +580,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
     },
     async execute(args, exec) {
       const steps = args.steps as readonly { id?: unknown; params?: unknown }[] | undefined
-      const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+      const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
       if (Array.isArray(steps) && steps.length > 0) {
         const report: string[] = []
         let batch: { id: string; params: Record<string, unknown> }[] = []
@@ -754,7 +764,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       const source = (args.source ?? '').trim()
       if (source === '') throw new Error('photocraft: 需要一张图（聊天附件路径或工作区文件名）')
       await ensureScratch(bridge)
-      const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+      const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
       // Materials are attachments as well, so they take the same upload bridge:
       // the engine only opens files that live in its own workspace.
       const assets: string[] = []
