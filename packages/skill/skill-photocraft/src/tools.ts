@@ -17,7 +17,10 @@ import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachme
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import { CommandIndex } from './capability.ts'
-import { cropPng, fitPng, guidesPng, pngSize, type PngFraction } from './png.ts'
+import {
+  cropPng, cropWindowOf, fitPng, guidesPng, pngSize,
+  type GuideOptions, type PngFraction,
+} from './png.ts'
 import type { BridgeClient, EngineClient } from './client.ts'
 import { centreCrop, normalizeRegion, toPixels, type PixelBox } from './coords.ts'
 import { RECIPES, recipeFor as recipeById } from './recipes.ts'
@@ -543,7 +546,7 @@ async function closeupOf(
   cwd: string,
   file: string,
   steps: readonly { params?: unknown }[],
-): Promise<{ preview: Preview; target: string } | undefined> {
+): Promise<{ preview: Preview; target: string; grid: string } | undefined> {
   const box = marksOfSteps(steps)
   if (box === undefined) return undefined
   const bytes = await readFile(join(cwd, file)).catch(() => undefined)
@@ -563,11 +566,55 @@ async function closeupOf(
     w: fraction.w * 2.5,
     h: fraction.h * 2.5,
   }
-  const annotated = guidesPng(fitPng(cropPng(bytes, window), CLOSEUP_SIDE), GRID_PITCH)
+  const guides = guidesFor(size, window, fraction)
+  const annotated = guidesPng(fitPng(cropPng(bytes, window), CLOSEUP_SIDE), guides.options)
   return {
     preview: await keep(ctx, annotated, `wish-${String(Date.now())}-closeup.png`),
     target: `${String(Math.round(box.x))},${String(Math.round(box.y))} `
       + `${String(Math.round(box.w))}×${String(Math.round(box.h))}px`,
+    grid: `${String(guides.step)}px/格`,
+  }
+}
+
+/**
+ * The overlay settings one closeup needs.
+ *
+ * The pitch is chosen so a grid cell lands near 50 output pixels whatever the
+ * enlargement: a fixed value hides a 4px correction on an eye and turns a whole
+ * colour grade into a white net. The target box is handed over in output pixels
+ * so the marks sit exactly on what the caller touched.
+ * @param size - source picture size.
+ * @param window - the crop window, as fractions.
+ * @param target - the marks inside that window, as fractions.
+ * @returns the pitch, the scale, and the box in output pixels.
+ */
+function guidesFor(
+  size: { width: number; height: number },
+  window: PngFraction,
+  target?: PngFraction,
+): { options: GuideOptions; step: number } {
+  const crop = cropWindowOf(size.width, size.height, window)
+  const scale = CLOSEUP_SIDE / Math.max(1, crop.width, crop.height)
+  const steps = [5, 10, 20, 25, 50]
+  const chosen = steps.reduce(
+    (best, step) => (Math.abs(step * scale - 50) < Math.abs(best * scale - 50) ? step : best),
+    steps[0] as number,
+  )
+  return {
+    step: chosen,
+    options: {
+      pitch: chosen * scale,
+      scale,
+      rulerPixels: 10,
+      ...target === undefined ? {} : {
+        target: {
+          x: (target.x * size.width - crop.left) * scale,
+          y: (target.y * size.height - crop.top) * scale,
+          w: target.w * size.width * scale,
+          h: target.h * size.height * scale,
+        },
+      },
+    },
   }
 }
 
@@ -641,7 +688,7 @@ async function finish(
   bytes: number
   applied: string
   notes: string[]
-  metrics: { canvas: string; focus?: string; target?: string }
+  metrics: { canvas: string; focus?: string; target?: string; grid?: string }
   preview?: Preview
   closeup?: Preview
 }> {
@@ -663,6 +710,7 @@ async function finish(
   const wantsCloseup = (view.mode === 'both' || view.mode === 'focus') && view.focus !== undefined
   let preview: Preview | undefined
   let closeup: Preview | undefined
+  let grid: string | undefined
   if (wantsFull || wantsCloseup) {
     // One render serves both: the closeup needs more pixels than the whole-frame
     // thumbnail, and scaling down locally costs nothing next to a second render.
@@ -672,7 +720,14 @@ async function finish(
     }
     if (wantsCloseup) {
       const box = view.focus as PngFraction
-      closeup = await keep(ctx, guidesPng(fitPng(cropPng(raw, box), CLOSEUP_SIDE), GRID_PITCH), `wish-${stamp}-closeup.png`)
+      const marks = view.target ?? box
+      const previewSize = pngSize(raw)
+      const sized = fitPng(cropPng(raw, box), CLOSEUP_SIDE)
+      const guides = previewSize === undefined
+        ? { options: { pitch: GRID_PITCH } satisfies GuideOptions, step: GRID_PITCH }
+        : guidesFor(previewSize, box, marks)
+      grid = `${String(guides.step)}px/格`
+      closeup = await keep(ctx, guidesPng(sized, guides.options), `wish-${stamp}-closeup.png`)
     }
   }
   const pixelsOf = (box: PngFraction | undefined): string | undefined =>
@@ -692,6 +747,7 @@ async function finish(
       canvas: size === undefined ? '' : `${String(size.width)}×${String(size.height)}`,
       ...focusText === undefined ? {} : { focus: focusText },
       ...targetText === undefined ? {} : { target: targetText },
+      ...grid === undefined ? {} : { grid },
     },
     ...preview === undefined ? {} : { preview },
     ...closeup === undefined ? {} : { closeup },
@@ -865,7 +921,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           metrics: {
             type: 'object',
             additionalProperties: false,
-            properties: { target: { type: 'string' } },
+            properties: { target: { type: 'string' }, grid: { type: 'string' } },
           },
           closeup: previewSchema,
         },
@@ -876,7 +932,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           text: `\`${value.id}\` → ${value.result}`
             + (value.metrics?.target === undefined
               ? ''
-              : `\n局部 ${value.metrics.target}（放大到 ${String(CLOSEUP_SIDE)} 长边，网格 ${String(GRID_PITCH)}px 一格，红字十字是窗口中心）`),
+              : `\n局部 ${value.metrics.target}（放大到 ${String(CLOSEUP_SIDE)} 长边，网格 ${value.metrics.grid ?? `${String(GRID_PITCH)}px`} 一格，黄框是目标、红十字是其中心、左下青线 = 10px）`),
         },
         ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),
       ],
@@ -952,7 +1008,9 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         return {
           id: `${String(steps.length)} 步`,
           result: report.join('；'),
-          ...closeup === undefined ? {} : { closeup: closeup.preview, metrics: { target: closeup.target } },
+          ...closeup === undefined
+            ? {}
+            : { closeup: closeup.preview, metrics: { target: closeup.target, grid: closeup.grid } },
         }
       }
       const id = args.id
@@ -968,13 +1026,97 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         return {
           id,
           result,
-          ...closeup === undefined ? {} : { closeup: closeup.preview, metrics: { target: closeup.target } },
+          ...closeup === undefined
+            ? {}
+            : { closeup: closeup.preview, metrics: { target: closeup.target, grid: closeup.grid } },
         }
       }
       const { problems } = await index.check(id, params)
       if (problems.length > 0) throw new Error(`photocraft: ${problems.join('; ')}`)
       const result = await mcp.run(id, params)
       return { id, result: JSON.stringify(result ?? null).slice(0, 1200) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'photocraft_look',
+    description: 'Look before editing: a whole-frame thumbnail plus an enlarged, ruled crop of one region, with that region reported in pixels. Call it when the target is named in words ("bigger eyes", "this mole") and no box was drawn — guessing coordinates is what turns one edit into four rounds. It only reads: nothing is opened in the engine and no file is written.',
+    parameters: {
+      source: { type: 'string', description: '要看的图：工作区文件名（wish-123.png）或附件 id sha256:<hex>' },
+      region: {
+        type: 'object',
+        additionalProperties: false,
+        description: '要放大的区域，0..1 比例；先用整图估个大概范围再调用。省略则只返回整图',
+        properties: {
+          x: { type: 'number', required: true },
+          y: { type: 'number', required: true },
+          w: { type: 'number', required: true },
+          h: { type: 'number', required: true },
+        },
+      },
+      side: { type: 'number', description: '整图长边，默认 512' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          file: { type: 'string', required: true },
+          canvas: { type: 'string', required: true },
+          target: { type: 'string' },
+          grid: { type: 'string' },
+          view: previewSchema,
+          closeup: previewSchema,
+        },
+      },
+      render: (_args, value) => [
+        {
+          type: 'text',
+          text: `查看 ${value.file}：画布 ${value.canvas}`
+            + (value.target === undefined
+              ? ''
+              : `；目标 ${value.target}（黄框内，红十字是其中心，网格 ${value.grid ?? '—'} 一格，左下青线 = 10px）`)
+            + '\n这是侦察，没有修改任何文件。把量到的坐标换成 0..1 比例，再传给 photocraft_edit 的 regions / 落点。',
+        },
+        ...(value.view === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.view) }]),
+        ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),
+      ],
+    },
+    async execute(args, exec) {
+      const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
+      const source = (args.source ?? '').trim()
+      if (source === '') throw new Error('photocraft: 需要一张图（工作区文件名或 sha256:<hex> 附件 id）')
+      const absolute = localFileOf(source) ?? await workspaceFile(cwd, source)
+      if (absolute === undefined) {
+        const available = await recentPictures(cwd)
+        throw new Error(`photocraft: 找不到图片 ${source}${available.length === 0 ? '' : `；工作区最近的图片：${available.join('、')}`}`)
+      }
+      const bytes = await readFile(absolute)
+      const size = pngSize(bytes)
+      if (size === undefined) throw new Error('photocraft: 只能查看 PNG 图片')
+      const side = Math.min(PREVIEW_SIDE_MAX, Math.max(PREVIEW_SIDE_MIN, Math.round(args.side ?? 512)))
+      const stamp = String(Date.now())
+      const view = await keep(ctx, fitPng(bytes, side), `wish-${stamp}-look.png`)
+      const region = args.region
+      if (region === undefined) {
+        return { file: basename(absolute), canvas: `${String(size.width)}×${String(size.height)}`, view }
+      }
+      const box = normalizeRegion(region)
+      const guides = guidesFor(size, box)
+      const closeup = await keep(
+        ctx,
+        guidesPng(fitPng(cropPng(bytes, box), CLOSEUP_SIDE), guides.options),
+        `wish-${stamp}-closeup.png`,
+      )
+      return {
+        file: basename(absolute),
+        canvas: `${String(size.width)}×${String(size.height)}`,
+        target: `${String(Math.round(box.x * size.width))},${String(Math.round(box.y * size.height))} `
+          + `${String(Math.round(box.w * size.width))}×${String(Math.round(box.h * size.height))}px`,
+        grid: `${String(guides.step)}px/格`,
+        view,
+        closeup,
+      }
     },
   }))
 
@@ -1104,6 +1246,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
               canvas: { type: 'string', required: true },
               focus: { type: 'string' },
               target: { type: 'string' },
+              grid: { type: 'string' },
             },
           },
           preview: previewSchema,
@@ -1128,7 +1271,9 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           type: 'text' as const,
           text: `画布 ${value.metrics.canvas}`
             + (value.metrics.target === undefined ? '' : `；目标 ${value.metrics.target}`)
-            + (value.metrics.focus === undefined ? '' : `；局部窗口 ${value.metrics.focus}（放大到 ${String(CLOSEUP_SIDE)} 长边，网格 ${String(GRID_PITCH)}px 一格，十字是窗口中心）`),
+            + (value.metrics.focus === undefined
+              ? ''
+              : `；局部窗口 ${value.metrics.focus}（放大到 ${String(CLOSEUP_SIDE)} 长边，网格 ${value.metrics.grid ?? `${String(GRID_PITCH)}px`} 一格，黄框是目标、红十字是其中心、左下青线 = 10px）`),
         }],
         ...(value.preview === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.preview) }]),
         ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),

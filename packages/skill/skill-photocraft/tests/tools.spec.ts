@@ -494,6 +494,31 @@ it('adds a closeup of the region a workflow touched', async () => {
   await rm(join(workspace, 'out'), { recursive: true, force: true })
 })
 
+describe('photocraft_look', () => {
+  const SAMPLE = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAXElEQVR4nBXKMQEDQQgAsJPyUpCCFKQgBSk4acOQLe+9+n0ESdEMy3ufQJAUzbDfhRAIkqIZNi6kQJAUzbB5oQSCpGiGrQstECRFM2xfGIEgKZph58IKBEnRDMsf+pGXwQKipHUAAAAASUVORK5CYII=',
+    'base64',
+  )
+
+  it('reports the canvas and the target, and changes nothing on disk', async () => {
+    await writeFile(join(workspace, 'wish-look.png'), SAMPLE)
+    try {
+      const stage = stageOf()
+      const definition = toolOf(hostOf(stage).definitions, 'photocraft_look')
+      const value = await definition.execute({
+        source: 'wish-look.png',
+        region: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+      }, execOf())
+      expect(value).toMatchObject({ canvas: '8×8', target: '2,2 4×4px' })
+      expect(value).toHaveProperty('closeup')
+      // A look is read-only: the engine is never asked to open anything.
+      expect(stage.calls).toHaveLength(0)
+    } finally {
+      await rm(join(workspace, 'wish-look.png'), { force: true })
+    }
+  })
+})
+
 describe('toolbox cards', () => {
   it('brush paints the strokes the caller sent', async () => {
     const { stage } = await edit({

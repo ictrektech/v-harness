@@ -33,8 +33,19 @@ describe('closeup cropping', () => {
     expect(pngSize(fitPng(SAMPLE, 4))).toEqual({ width: 4, height: 4 })
   })
 
-  it('draws the ruler without changing the size', () => {
-    const annotated = guidesPng(SAMPLE)
+  it('draws the grid, the target box, and the ruler without changing the size', () => {
+    const annotated = guidesPng(SAMPLE, {
+      pitch: 4,
+      scale: 2,
+      rulerPixels: 2,
+      target: { x: 2, y: 2, w: 4, h: 3 },
+    })
+    expect(pngSize(annotated)).toEqual({ width: 8, height: 8 })
+    expect(annotated.equals(SAMPLE)).toBe(false)
+  })
+
+  it('marks a closeup with no target by its centre', () => {
+    const annotated = guidesPng(SAMPLE, { pitch: 4 })
     expect(pngSize(annotated)).toEqual({ width: 8, height: 8 })
     expect(annotated.equals(SAMPLE)).toBe(false)
   })

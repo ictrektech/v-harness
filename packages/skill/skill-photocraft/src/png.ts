@@ -166,22 +166,30 @@ function encode(pixels: Buffer, width: number, height: number, colorType: 2 | 6)
 }
 
 /** The pixel window a fraction rectangle selects, clamped to the picture. */
-function windowOf(width: number, height: number, region: PngFraction): {
+export function cropWindowOf(width: number, height: number, region: PngFraction): {
   left: number
   top: number
   right: number
   bottom: number
+  width: number
+  height: number
 } {
   const clamp = (value: number): number => Math.min(1, Math.max(0, value))
   const left = Math.floor(clamp(region.x) * width)
   const top = Math.floor(clamp(region.y) * height)
   const right = Math.min(width, Math.ceil((clamp(region.x) + clamp(region.w)) * width))
   const bottom = Math.min(height, Math.ceil((clamp(region.y) + clamp(region.h)) * height))
+  const safeLeft = Math.min(left, Math.max(0, width - 1))
+  const safeTop = Math.min(top, Math.max(0, height - 1))
+  const safeRight = Math.max(right, safeLeft + 1)
+  const safeBottom = Math.max(bottom, safeTop + 1)
   return {
-    left: Math.min(left, Math.max(0, width - 1)),
-    top: Math.min(top, Math.max(0, height - 1)),
-    right: Math.max(right, left + 1),
-    bottom: Math.max(bottom, top + 1),
+    left: safeLeft,
+    top: safeTop,
+    right: safeRight,
+    bottom: safeBottom,
+    width: safeRight - safeLeft,
+    height: safeBottom - safeTop,
   }
 }
 
@@ -199,7 +207,7 @@ export function cropPng(bytes: Buffer, region: PngFraction): Buffer {
   const decoded = decode(bytes)
   if (decoded === undefined) return bytes
   const { width, height, bpp, colorType, pixels } = decoded
-  const box = windowOf(width, height, region)
+  const box = cropWindowOf(width, height, region)
   const cropWidth = box.right - box.left
   const cropHeight = box.bottom - box.top
   if (cropWidth >= width && cropHeight >= height) return bytes
@@ -275,7 +283,31 @@ export function fitPng(bytes: Buffer, longSide: number): Buffer {
  * @param pitch - spacing of the grid, in pixels of the picture being annotated.
  * @returns the annotated PNG, or the source when it cannot be decoded.
  */
-export function guidesPng(bytes: Buffer, pitch = 24): Buffer {
+/** How to mark up one closeup. */
+export interface GuideOptions {
+  /** Grid spacing in output pixels; the caller picks a step that lands near 50. */
+  pitch: number
+  /** Output pixels per source pixel, for the ruler. Omit to draw no ruler. */
+  scale?: number
+  /** Length the ruler stands for, in source pixels. */
+  rulerPixels?: number
+  /** The marks themselves, in output pixels: boxed, with the cross at its centre. */
+  target?: { readonly x: number; readonly y: number; readonly w: number; readonly h: number } | undefined
+}
+
+/**
+ * Overlay the ruler, the grid, and the target box.
+ *
+ * Three marks, each answering a different question: the dashed grid measures a
+ * correction ("4px narrower"), the box says what was actually touched, and the
+ * cross sits at the box's centre so a drifted target reads as a shift rather
+ * than as an impression. The grid is dashed and faint because a solid white net
+ * hides the very edges — a seam, a dark rim — that the reader is looking for.
+ * @param bytes - source PNG.
+ * @param options - pitch, scale, ruler length, and the target box.
+ * @returns the annotated PNG, or the source when it cannot be decoded.
+ */
+export function guidesPng(bytes: Buffer, options: GuideOptions): Buffer {
   const decoded = decode(bytes)
   if (decoded === undefined) return bytes
   const { width, height, bpp, colorType } = decoded
@@ -289,22 +321,59 @@ export function guidesPng(bytes: Buffer, pitch = 24): Buffer {
       pixels[index + channel] = Math.round(base * (1 - alpha) + (colour[channel] ?? 0) * alpha) & 0xff
     }
   }
-  const step = Math.max(8, Math.round(pitch))
-  // A faint grid marks intervals without hiding the pixels being judged.
-  for (let x = step; x < width; x += step) {
-    for (let y = 0; y < height; y += 1) blend(x, y, [255, 255, 255], 0.22)
+  const pitch = Math.max(4, Math.round(options.pitch))
+  const grid: readonly [number, number, number] = [255, 255, 255]
+  // Dashed: every other pixel, so the picture reads through the grid.
+  for (let x = pitch; x < width; x += pitch) {
+    for (let y = 0; y < height; y += 2) blend(x, y, grid, 0.3)
   }
-  for (let y = step; y < height; y += step) {
-    for (let x = 0; x < width; x += 1) blend(x, y, [255, 255, 255], 0.22)
+  for (let y = pitch; y < height; y += pitch) {
+    for (let x = 0; x < width; x += 2) blend(x, y, grid, 0.3)
   }
-  // The cross marks the window centre, so it must read as a marker rather than
-  // as one more grid line: solid red and three pixels wide, which survives both
-  // a bright sky and a dark shadow where a white line would vanish.
-  const centreX = Math.round(width / 2)
-  const centreY = Math.round(height / 2)
+  const target = options.target
+  if (target !== undefined) {
+    const colour: readonly [number, number, number] = [255, 204, 0]
+    const left = Math.round(target.x)
+    const top = Math.round(target.y)
+    const right = Math.round(target.x + target.w)
+    const bottom = Math.round(target.y + target.h)
+    for (let x = left; x <= right; x += 1) {
+      for (const spread of [0, 1]) {
+        blend(x, top + spread, colour, 0.9)
+        blend(x, bottom - spread, colour, 0.9)
+      }
+    }
+    for (let y = top; y <= bottom; y += 1) {
+      for (const spread of [0, 1]) {
+        blend(left + spread, y, colour, 0.9)
+        blend(right - spread, y, colour, 0.9)
+      }
+    }
+  }
+  // The cross marks the centre of what was touched, not the centre of the crop.
+  const centreX = Math.round(target === undefined ? width / 2 : target.x + target.w / 2)
+  const centreY = Math.round(target === undefined ? height / 2 : target.y + target.h / 2)
+  const cross: readonly [number, number, number] = [255, 59, 48]
   for (let offset = -1; offset <= 1; offset += 1) {
-    for (let y = 0; y < height; y += 1) blend(centreX + offset, y, [255, 59, 48], 0.9)
-    for (let x = 0; x < width; x += 1) blend(x, centreY + offset, [255, 59, 48], 0.9)
+    for (let y = 0; y < height; y += 1) blend(centreX + offset, y, cross, 0.85)
+    for (let x = 0; x < width; x += 1) blend(x, centreY + offset, cross, 0.85)
+  }
+  const scale = options.scale ?? 0
+  if (scale > 0) {
+    // Bottom-left ruler: a length the reader can count against the grid, drawn
+    // in cyan so it is neither the target box nor the centre cross.
+    const length = Math.max(6, Math.round((options.rulerPixels ?? 10) * scale))
+    const baseline = Math.max(6, height - 8)
+    const start = 8
+    const ruler: readonly [number, number, number] = [0, 208, 255]
+    for (let x = start; x < Math.min(width - 2, start + length); x += 1) {
+      blend(x, baseline, ruler, 0.95)
+      blend(x, baseline - 1, ruler, 0.95)
+    }
+    for (let y = baseline - 5; y <= baseline + 3; y += 1) {
+      blend(start, y, ruler, 0.95)
+      blend(Math.min(width - 2, start + length), y, ruler, 0.95)
+    }
   }
   return encode(pixels, width, height, colorType)
 }
