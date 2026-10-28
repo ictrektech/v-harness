@@ -23,7 +23,8 @@ beforeAll(async () => {
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       const body = await readBody(req)
-      seen.push({ path: req.url ?? '', body, session: req.headers['mcp-session-id'] as string | undefined })
+      const session = req.headers['mcp-session-id']
+      seen.push({ path: req.url ?? '', body, ...(typeof session === 'string' ? { session } : {}) })
       if (req.url === '/volumes') {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ code: 0, data: { data: [

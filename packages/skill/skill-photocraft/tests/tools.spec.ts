@@ -12,6 +12,7 @@ import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from 
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ToolDefinition, ToolExecutionToken, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { BridgeClient, EngineClient, OpenedDocument } from '../src/client.ts'
 
@@ -157,7 +158,7 @@ async function edit(
   options: { answer?: (name: string) => unknown; agent?: boolean; keepImages?: boolean } = {},
 ): Promise<{ value: Record<string, unknown>; stage: Stage }> {
   const stage = stageOf(options.answer)
-  const definition = toolOf(hostOf(stage, { keepImages: options.keepImages }).definitions, 'photocraft_edit')
+  const definition = toolOf(hostOf(stage, options.keepImages === undefined ? {} : { keepImages: options.keepImages }).definitions, 'photocraft_edit')
   const value = await definition.execute(args, execOf(options.agent ?? true))
   return { value: value as Record<string, unknown>, stage }
 }
@@ -541,8 +542,8 @@ describe('presentation', () => {
   }
 
   /** One canonical result value. */
-  function valueOf(extra: Record<string, unknown>): Record<string, unknown> {
-    return { file: 'wish-1.png', source: 'wish-1.psd', bytes: 2048, applied: 'edited: 调成电影感', ...extra }
+  function valueOf(extra: Record<string, unknown>): JsonValue {
+    return { file: 'wish-1.png', source: 'wish-1.psd', bytes: 2048, applied: 'edited: 调成电影感', ...extra } as JsonValue
   }
 
   const preview = {
@@ -562,7 +563,8 @@ describe('presentation', () => {
     expect(blocks).toHaveLength(3)
     expect(blocks[0]).toEqual({
       type: 'text',
-      text: '已按「edited: 调成电影感」处理：wish-1.png（2KB，可直接查看）；可编辑源文件 wish-1.psd，图层保留可再调',
+      text: '已按「edited: 调成电影感」处理：wish-1.png（2KB，可直接查看）；可编辑源文件 wish-1.psd，图层保留可再调\n'
+        + '给用户看成品就写 ![说明](wish-1.png)：工作区里只有这个文件，预览附件的名字（*-preview.png）只用于你查看，写成图片会加载失败。',
     })
     expect(blocks[1]).toEqual({ type: 'text', text: '只做了这一张的排版' })
     expect(blocks[2]).toMatchObject({ type: 'image' })

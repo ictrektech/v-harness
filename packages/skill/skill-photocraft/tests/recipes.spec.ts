@@ -59,7 +59,7 @@ async function run(
   options: { answer?: (name: string) => unknown; reject?: (name: string) => boolean; failMkdir?: boolean } = {},
 ): Promise<{ calls: Call[]; notes: string[]; folders: string[] }> {
   const { engine, calls } = engineOf(options.answer, options.reject)
-  const { bridge, folders } = bridgeOf({ failMkdir: options.failMkdir })
+  const { bridge, folders } = bridgeOf(options.failMkdir === undefined ? {} : { failMkdir: options.failMkdir })
   const recipe = recipeFor(id)
   const { notes } = await recipe.run(engine, params, bridge)
   return { calls, notes, folders }
