@@ -13,7 +13,7 @@ import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ToolDefinition, ToolExecutionToken, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BridgeClient, EngineClient, OpenedDocument } from '../src/client.ts'
 
 /** The attachment digests this suite publishes under `$DSH_HOME/attachments`. */
@@ -194,7 +194,13 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
+// Every case starts with an empty attempt ledger: the limit is per picture and
+// per instruction, and two cases that edit the same fixture photo would else
+// count against each other.
+beforeEach(() => { tools.resetAttemptLedger() })
+
 describe('photocraft_edit', () => {
+
   it('imports the picture the attachment id names and saves the result', async () => {
     const { value, stage } = await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE })
     expect(stage.uploads).toHaveLength(1)
@@ -210,11 +216,17 @@ describe('photocraft_edit', () => {
   })
 
   it('shows the preview at the configured side, or at the one the call names', async () => {
-    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE })).stage.previews).toEqual([700])
-    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 448 })).stage.previews).toEqual([448])
-    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 1 })).stage.previews).toEqual([64])
-    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 9000 })).stage.previews).toEqual([2048])
-    expect((await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, previewSide: 500.6 })).stage.previews).toEqual([501])
+    // Clamping cases, not retries: the ledger counts the same instruction on the
+    // same picture, so each case starts from an empty one.
+    const sides = async (previewSide?: number): Promise<number[]> => {
+      tools.resetAttemptLedger()
+      return (await edit({ instruction: '调成电影感', intent: 'film', source: SOURCE, ...previewSide === undefined ? {} : { previewSide } })).stage.previews
+    }
+    expect(await sides()).toEqual([700])
+    expect(await sides(448)).toEqual([448])
+    expect(await sides(1)).toEqual([64])
+    expect(await sides(9000)).toEqual([2048])
+    expect(await sides(500.6)).toEqual([501])
   })
 
   it('hands the named knobs to the recipe that reads them', async () => {

@@ -231,17 +231,22 @@ async function importSource(bridge: BridgeClient, source: string, cwd?: string):
   // copied into the workspace, so either root is accepted — but only for image
   // files, and only when they are actually there.
   const insideAttachments = absolute.startsWith(`${resolve(ATTACHMENT_ROOT)}/`)
-  if (!insideAttachments) {
-    if (!IMAGE_EXTENSIONS.includes(extname(absolute).toLowerCase())) {
-      throw new Error(`photocraft: 只能导入图片文件（${IMAGE_EXTENSIONS.join(' ')}）`)
-    }
-    const info = await stat(absolute).catch(() => undefined)
-    if (info === undefined || !info.isFile()) throw new Error(`photocraft: 找不到图片 ${source}`)
-    if (info.size > MAX_IMPORT_BYTES) throw new Error(`photocraft: 图片超过 ${String(MAX_IMPORT_BYTES / 1024 / 1024)}MB`)
+  if (!insideAttachments && !IMAGE_EXTENSIONS.includes(extname(absolute).toLowerCase())) {
+    throw new Error(`photocraft: 只能导入图片文件（${IMAGE_EXTENSIONS.join(' ')}）`)
+  }
+  const bytes = await readFile(absolute).catch(() => undefined)
+  // An attachment record can outlive its blob. The engine still resolves the
+  // name, so a missing local file is handed over rather than failed here.
+  if (bytes === undefined) {
+    if (!insideAttachments) throw new Error(`photocraft: 找不到图片 ${source}`)
+    return source
+  }
+  if (bytes.byteLength > MAX_IMPORT_BYTES) {
+    throw new Error(`photocraft: 图片超过 ${String(MAX_IMPORT_BYTES / 1024 / 1024)}MB`)
   }
   uploaded += 1
   const name = `wish-${String(Date.now())}-${String(uploaded)}.png`
-  await bridge.upload(name, await readFile(absolute), SCRATCH_DIR)
+  await bridge.upload(name, bytes, SCRATCH_DIR)
   return `${SCRATCH_DIR}/${name}`
 }
 
@@ -489,6 +494,58 @@ async function placeAll(
 function previewSideOf(requested: number | undefined, fallback: number): number {
   if (requested === undefined) return fallback
   return Math.min(PREVIEW_SIDE_MAX, Math.max(PREVIEW_SIDE_MIN, Math.round(requested)))
+}
+
+/**
+ * How many times one picture has been given the same instruction in a row.
+ *
+ * A model that judges its own result can keep re-running the same correction:
+ * the parameters move a little, the picture does not, and nothing in the loop
+ * ever says "this is not a parameter problem". Each dsh process serves one
+ * tenant, so a plain module-level map is tenant state, not shared state.
+ */
+const attempts = new Map<string, { signature: string; count: number }>()
+
+/**
+ * Count one attempt and say what the caller should do about it.
+ *
+ * The signature deliberately leaves out the instruction's wording: "再试一次"
+ * and "还是不对" describe the same intent, and a caller that only rephrases is
+ * exactly the loop this guards against.
+ * @param key - tenant session plus the picture being edited.
+ * @param signature - intent and the parameters that change pixels.
+ * @returns the attempt number, counting from 1.
+ */
+function noteAttempt(key: string, signature: string): number {
+  const previous = attempts.get(key)
+  const count = previous !== undefined && previous.signature === signature ? previous.count + 1 : 1
+  attempts.set(key, { signature, count })
+  return count
+}
+
+/**
+ * Forget every attempt.
+ *
+ * Only a test needs this: production wants the ledger to outlive a single call,
+ * which is the whole point of it.
+ */
+export function resetAttemptLedger(): void {
+  attempts.clear()
+}
+
+/**
+ * Why the next identical attempt is refused, when it is.
+ *
+ * Two attempts is the whole budget: a caller that judges its own result will
+ * keep nudging one parameter forever, and the user is waiting on a picture that
+ * already exists.
+ * @param count - how many times this signature has been tried.
+ * @returns the refusal message, or undefined when the attempt may proceed.
+ */
+function refusalFor(count: number): string | undefined {
+  if (count < 3) return undefined
+  return 'photocraft: 这张图上的同一个改动已经做过 2 次。'
+    + '不要再试第三次——把现有的结果交付给用户，或者直接说明这里做不到。'
 }
 
 /** Which pictures one edit returns, and where the closeup looks. */
@@ -1394,6 +1451,20 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       if (source === undefined) {
         throw new Error('photocraft: 需要一张图（聊天附件路径、工作区文件名，或先让上一轮生成一张）')
       }
+      // Same picture, same intent, same numbers: that is one attempt retried,
+      // not a new attempt, and the third retry is where the loop has to break.
+      const signature = [
+        String(args.intent ?? ''),
+        String(args.strength ?? ''),
+        String(args.shift ?? ''),
+        String(args.margin ?? ''),
+        String(args.tool ?? ''),
+        String(args.action ?? ''),
+        JSON.stringify(args.regions ?? ''),
+      ].join('|')
+      const attempt = noteAttempt(`${agentOf(exec).id}:${source}`, signature)
+      const refusal = refusalFor(attempt)
+      if (refusal !== undefined) throw new Error(refusal)
       // Materials are attachments as well, so they take the same upload bridge:
       // the engine only opens files that live in its own workspace.
       const assets: string[] = []
