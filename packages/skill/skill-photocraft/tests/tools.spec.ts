@@ -464,6 +464,20 @@ describe('photocraft_run', () => {
 
 })
 
+it('lands an export named by the caller in the workspace, not in the engine', async () => {
+  const stage = stageOf()
+  const definition = toolOf(hostOf(stage).definitions, 'photocraft_run')
+  await definition.execute(
+    { steps: [{ id: 'doc_export', params: { path: 'out/最终.png' } }] },
+    execOf(),
+  )
+  // The engine writes to its own scratch; the workspace gets the name asked for.
+  const saved = stage.calls.find(call => call.name === 'doc_save')
+  expect(String(saved?.args.path)).toMatch(/^photocraft-tmp\//u)
+  await expect(readFile(join(workspace, 'out', '最终.png'))).resolves.toEqual(PNG)
+  await rm(join(workspace, 'out'), { recursive: true, force: true })
+})
+
 describe('toolbox cards', () => {
   it('brush paints the strokes the caller sent', async () => {
     const { stage } = await edit({

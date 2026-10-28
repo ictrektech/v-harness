@@ -10,9 +10,9 @@
 
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-working-directory'
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
@@ -317,6 +317,28 @@ async function fitPiece(
  * @returns the same name, now resolvable from the session workspace.
  */
 /**
+ * Where an export should land inside the workspace.
+ *
+ * `path` is the reader's name for the file, not the engine's: an engine path is
+ * invisible to the workspace, so handing it through produced a file nobody could
+ * open. A bare name keeps its extension, an absolute path keeps only its last
+ * segment, and a relative directory is honoured.
+ * @param requested - the caller's `path`, possibly empty.
+ * @param format - the caller's `format`, used when the name carries none.
+ * @returns a workspace-relative file name.
+ */
+function deliveredNameOf(requested: string, format: string): string {
+  const fallback = format === '' ? 'png' : format.toLowerCase()
+  if (requested === '') return `wish-${String(Date.now())}.${fallback === 'jpeg' ? 'jpg' : fallback}`
+  const cleaned = (requested.startsWith('/') ? basename(requested) : requested).replace(/^\.\//u, '')
+  if (cleaned === '' || cleaned.split('/').includes('..')) {
+    throw new Error(`photocraft: 导出路径必须是工作区内的相对路径：${requested}`)
+  }
+  if (extname(cleaned) !== '') return cleaned
+  return `${cleaned}.${fallback === 'jpeg' ? 'jpg' : fallback}`
+}
+
+/**
  * The agent a call runs under.
  *
  * PTC sub-dispatches carry no agent, and without one there is no session
@@ -332,7 +354,11 @@ function agentOf(exec: ToolExecution): NonNullable<ToolExecution['agent']> {
 
 async function saveDeliverable(ctx: Context, exec: ToolExecution, name: string, bytes: Buffer): Promise<string> {
   const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
-  await writeFile(join(cwd, name), bytes)
+  const target = join(cwd, name)
+  // A caller may name a folder (`out/final.png`); the workspace is the reader's
+  // own tree, so the folder is created instead of failing the export.
+  await mkdir(dirname(target), { recursive: true })
+  await writeFile(target, bytes)
   return name
 }
 
@@ -629,15 +655,19 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       // as the tool's single `id`: `doc_open` must place the picture inside the
       // engine's volume, and an export must come back as a deliverable.
       const runSessionStep = async (id: string, params: Record<string, unknown>): Promise<string> => {
-        // An export step is the delivery point of the workflow: without an
-        // explicit path it writes to scratch and comes back as a file the
-        // user can open, instead of a path inside the engine's volume.
-        if ((id === 'doc_export' || id === 'doc_save') && typeof params.path !== 'string') {
+        // An export step is the delivery point of the workflow, and its `path`
+        // names where the reader wants the file — never a path inside the
+        // engine's volume, which the workspace reader cannot see. Every export
+        // therefore lands in scratch first and is downloaded back here, so the
+        // file the caller asked for is the file that exists.
+        if (id === 'doc_export' || id === 'doc_save') {
+          const requested = typeof params.path === 'string' ? params.path.trim() : ''
+          const name = deliveredNameOf(requested, String(params.format ?? ''))
+          const format = extname(name).slice(1).toLowerCase() || 'png'
           await ensureScratch(bridge)
-          const format = String(params.format ?? 'png').toLowerCase()
-          const name = `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
-          await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${name}`, format: format === 'jpeg' ? 'jpg' : format })
-          const bytes = await bridge.download(`${SCRATCH_DIR}/${name}`)
+          const scratch = `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
+          await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${scratch}`, format: format === 'jpeg' ? 'jpg' : format })
+          const bytes = await bridge.download(`${SCRATCH_DIR}/${scratch}`)
           return `已交付 ${await saveDeliverable(ctx, exec, name, bytes)}`
         }
         // A local picture has to reach the engine's own volume first; the
