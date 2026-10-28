@@ -596,7 +596,7 @@ describe('presentation', () => {
 
   /** One canonical result value. */
   function valueOf(extra: Record<string, unknown>): JsonValue {
-    return { file: 'wish-1.png', source: 'wish-1.psd', bytes: 2048, applied: 'edited: 调成电影感', ...extra } as JsonValue
+    return { file: 'wish-1.png', source: 'wish-1.psd', bytes: 2048, applied: 'edited: 调成电影感', metrics: { canvas: '547×365' }, ...extra } as JsonValue
   }
 
   const preview = {
@@ -613,20 +613,23 @@ describe('presentation', () => {
       { instruction: '调成电影感' },
       valueOf({ notes: ['只做了这一张的排版'], preview }),
     )
-    expect(blocks).toHaveLength(3)
+    expect(blocks).toHaveLength(4)
     expect(blocks[0]).toEqual({
       type: 'text',
       text: '已按「edited: 调成电影感」处理：wish-1.png（2KB，可直接查看）；可编辑源文件 wish-1.psd，图层保留可再调\n'
         + '给用户看成品就写 ![说明](wish-1.png)：工作区里只有这个文件，预览附件的名字（*-preview.png）只用于你查看，写成图片会加载失败。',
     })
     expect(blocks[1]).toEqual({ type: 'text', text: '只做了这一张的排版' })
-    expect(blocks[2]).toMatchObject({ type: 'image' })
+    expect(blocks[2]).toEqual({ type: 'text', text: '画布 547×365' })
+    expect(blocks[3]).toMatchObject({ type: 'image' })
   })
 
   it('renders a bare caption when there is nothing else to say', () => {
-    expect(editTool().output.render({}, valueOf({}))).toHaveLength(1)
-    expect(editTool().output.render({}, valueOf({ notes: [] }))).toHaveLength(1)
-    expect(editTool().output.render({}, valueOf({ notes: ['a'] }))).toHaveLength(2)
+    expect(editTool().output.render({}, valueOf({}))).toHaveLength(2)
+    expect(editTool().output.render({}, valueOf({ notes: [] }))).toHaveLength(2)
+    expect(editTool().output.render({}, valueOf({ notes: ['a'] }))).toHaveLength(3)
+    // A replayed transcript without metrics keeps the caption alone.
+    expect(editTool().output.render({}, valueOf({ metrics: undefined }))).toHaveLength(1)
   })
 
   it('carries the edit kind and value for the transcript', () => {

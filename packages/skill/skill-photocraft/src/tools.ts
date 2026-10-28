@@ -17,6 +17,7 @@ import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachme
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import { CommandIndex } from './capability.ts'
+import { cropPng, fitPng, guidesPng, pngSize, type PngFraction } from './png.ts'
 import type { BridgeClient, EngineClient } from './client.ts'
 import { centreCrop, normalizeRegion, toPixels, type PixelBox } from './coords.ts'
 import { RECIPES, recipeFor as recipeById } from './recipes.ts'
@@ -38,6 +39,10 @@ const ATTACHMENT_ROOT = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'a
 /** Long-edge bounds of a preview, shared with the plugin config's own range. */
 export const PREVIEW_SIDE_MIN = 64
 export const PREVIEW_SIDE_MAX = 2048
+/** Long edge of the enlarged closeup a card returns beside the whole frame. */
+const CLOSEUP_SIDE = 384
+/** Pixels the closeup is cut from: enough detail to survive the enlargement. */
+const CLOSEUP_SOURCE_SIDE = 1024
 
 /** The preview a result carries. */
 interface Preview {
@@ -452,6 +457,68 @@ function previewSideOf(requested: number | undefined, fallback: number): number 
   return Math.min(PREVIEW_SIDE_MAX, Math.max(PREVIEW_SIDE_MIN, Math.round(requested)))
 }
 
+/** Which pictures one edit returns, and where the closeup looks. */
+export interface FinishView {
+  /** `both` keeps the whole frame and the closeup; `off` returns neither. */
+  mode: 'both' | 'full' | 'focus' | 'off'
+  /** Long edge of the whole-frame preview. */
+  side: number
+  /** Window to enlarge, as fractions of the picture. */
+  focus?: PngFraction | undefined
+}
+
+/**
+ * The window an edit's closeup should show.
+ *
+ * The rectangle comes from the caller's own marks, never from a choice of what
+ * looks interesting: the same target must crop to the same window on every round,
+ * or a "fixed" edge cannot be compared with the one that was broken. Context is
+ * added at four to six radii of the target — enough to judge an edge, far less
+ * than the whole frame.
+ * @param args - the call's marks: boxes, strokes, or a single point.
+ * @returns the window as fractions of the picture, or undefined when the edit
+ *   has no target (a whole-frame change).
+ */
+function focusWindowOf(args: {
+  regions?: readonly { x: number; y: number; w: number; h: number }[] | undefined
+  strokes?: readonly { points: readonly (readonly number[])[] }[] | undefined
+  x?: number | undefined
+  y?: number | undefined
+}): PngFraction | undefined {
+  const xs: number[] = []
+  const ys: number[] = []
+  for (const region of args.regions ?? []) {
+    xs.push(region.x, region.x + region.w)
+    ys.push(region.y, region.y + region.h)
+  }
+  for (const stroke of args.strokes ?? []) {
+    for (const point of stroke.points) {
+      xs.push(point[0] ?? 0)
+      ys.push(point[1] ?? 0)
+    }
+  }
+  if (xs.length === 0 && typeof args.x === 'number' && typeof args.y === 'number') {
+    xs.push(args.x)
+    ys.push(args.y)
+  }
+  if (xs.length === 0) return undefined
+  const left = Math.min(...xs)
+  const right = Math.max(...xs)
+  const top = Math.min(...ys)
+  const bottom = Math.max(...ys)
+  const width = Math.max(right - left, 0.04)
+  const height = Math.max(bottom - top, 0.04)
+  const padX = Math.max(0.04, width * 1.2)
+  const padY = Math.max(0.04, height * 1.2)
+  return {
+    x: left - padX,
+    y: top - padY,
+    w: width + padX * 2,
+    h: height + padY * 2,
+  }
+}
+
+
 async function finish(
   ctx: Context,
   client: EngineClient,
@@ -461,7 +528,17 @@ async function finish(
   verb: string,
   exec: ToolExecution,
   notes: string[],
-): Promise<{ file: string; source: string; bytes: number; applied: string; notes: string[]; preview: Preview }> {
+  view: FinishView = { mode: 'full', side },
+): Promise<{
+  file: string
+  source: string
+  bytes: number
+  applied: string
+  notes: string[]
+  metrics: { canvas: string; focus?: string }
+  preview?: Preview
+  closeup?: Preview
+}> {
   const stamp = String(Date.now())
   const file = `wish-${stamp}.png`
   const source = `wish-${stamp}.psd`
@@ -475,13 +552,39 @@ async function finish(
   await client.call('doc_save', { path: `${SCRATCH_DIR}/${file}`, format: 'png' })
   const bytes = await bridge.download(`${SCRATCH_DIR}/${file}`)
   await saveDeliverable(ctx, exec, file, bytes)
+  const size = pngSize(bytes)
+  const wantsFull = view.mode === 'both' || view.mode === 'full'
+  const wantsCloseup = (view.mode === 'both' || view.mode === 'focus') && view.focus !== undefined
+  let preview: Preview | undefined
+  let closeup: Preview | undefined
+  if (wantsFull || wantsCloseup) {
+    // One render serves both: the closeup needs more pixels than the whole-frame
+    // thumbnail, and scaling down locally costs nothing next to a second render.
+    const raw = await client.preview(wantsCloseup ? CLOSEUP_SOURCE_SIDE : view.side)
+    if (wantsFull) {
+      preview = await keep(ctx, wantsCloseup ? fitPng(raw, view.side) : raw, `wish-${stamp}-preview.png`)
+    }
+    if (wantsCloseup) {
+      const box = view.focus as PngFraction
+      closeup = await keep(ctx, guidesPng(fitPng(cropPng(raw, box), CLOSEUP_SIDE)), `wish-${stamp}-closeup.png`)
+    }
+  }
+  const focusText = view.focus === undefined || size === undefined
+    ? undefined
+    : `${String(Math.round(view.focus.x * size.width))},${String(Math.round(view.focus.y * size.height))} `
+      + `${String(Math.round(view.focus.w * size.width))}×${String(Math.round(view.focus.h * size.height))}px`
   return {
     file,
     source,
     bytes: bytes.length,
     applied: `${verb}: ${applied}`,
     notes,
-    preview: await keep(ctx, await client.preview(side), `wish-${stamp}-preview.png`),
+    metrics: {
+      canvas: size === undefined ? '' : `${String(size.width)}×${String(size.height)}`,
+      ...focusText === undefined ? {} : { focus: focusText },
+    },
+    ...preview === undefined ? {} : { preview },
+    ...closeup === undefined ? {} : { closeup },
   }
 }
 
@@ -793,7 +896,18 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       to: { type: 'array', description: '渐变终点 [x, y]，0..1 比例', items: { type: 'number' } },
       angle: { type: 'number', description: 'transform=rotate 的角度，度，顺时针为正' },
       width: { type: 'number', description: 'transform=resize 的目标宽 px，高按比例跟随' },
-      previewSide: { type: 'number', description: '本次预览的长边 64..2048，默认取插件配置；反复迭代时给 448' },
+      previewSide: { type: 'number', description: '整图预览的长边 64..2048，默认取插件配置；反复迭代时给 448' },
+      preview: {
+        type: 'string',
+        enum: ['both', 'full', 'focus', 'off'],
+        description: [
+          '返回哪些图，默认 both：',
+          'both 整图缩略 + 改动局部放大（带十字网格，用来判断细节有没有改对；整图用来看色偏、接缝、遮挡）；',
+          'full 只给整图（整图类改动：调色、翻转、整图擦除）；',
+          'focus 只给局部放大（连续微调同一块时最省）；',
+          'off 不给图，只看数值。',
+        ].join(''),
+      },
       feather: { type: 'number', description: '红框裁下来的边缘羽化像素，默认取碎片短边的 2%（至少 1px）；0 表示硬边' },
       regions: {
         type: 'array',
@@ -833,7 +947,16 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           bytes: { type: 'number', required: true },
           applied: { type: 'string', required: true },
           notes: { type: 'array', items: { type: 'string' } },
+          metrics: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              canvas: { type: 'string', required: true },
+              focus: { type: 'string' },
+            },
+          },
           preview: previewSchema,
+          closeup: previewSchema,
         },
       },
       presentationMeta: (_args, value) => ({ kind: 'photocraft.edit', ...value }),
@@ -848,7 +971,15 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
             + `给用户看成品就写 ![说明](${value.file})：工作区里只有这个文件，预览附件的名字（*-preview.png）只用于你查看，写成图片会加载失败。`,
         },
         ...value.notes === undefined || value.notes.length === 0 ? [] : [{ type: 'text' as const, text: value.notes.join('\n') }],
+        // A replayed transcript can predate the metrics; the caption above still
+        // stands on its own, so the line is omitted rather than filled with noise.
+        ...value.metrics === undefined ? [] : [{
+          type: 'text' as const,
+          text: `画布 ${value.metrics.canvas}`
+            + (value.metrics.focus === undefined ? '' : `；局部窗口 ${value.metrics.focus}（放大 ${String(CLOSEUP_SIDE)} 长边，十字与网格是标尺）`),
+        }],
         ...(value.preview === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.preview) }]),
+        ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),
       ],
     },
     async execute(args, exec) {
@@ -967,7 +1098,13 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         // -25 再跑一次"); dropping them here is how that knowledge used to die.
         for (const note of run.notes) if (!notes.includes(note)) notes.push(note)
       }
-      return await finish(ctx, mcp, bridge, side, args.instruction, 'edited', exec, notes)
+      const mode = (['both', 'full', 'focus', 'off'] as const).find(candidate => candidate === args.preview)
+        ?? (regions.length === 0 && args.strokes === undefined ? 'full' : 'both')
+      return await finish(ctx, mcp, bridge, side, args.instruction, 'edited', exec, notes, {
+        mode,
+        side,
+        focus: focusWindowOf(args),
+      })
     },
   }))
 
