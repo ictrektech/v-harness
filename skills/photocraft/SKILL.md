@@ -104,7 +104,28 @@ PhotoCraft 是一个跑在 harness 旁边的完整图像编辑器。你通过 `p
 
 ## 七、超出一句话的活
 
-局部选区、按颜色选、蒙版、路径、滤镜库、动作、批处理——`photocraft_search { query: "按颜色选区域" }` 用自然语言搜（中英文都认），`photocraft_describe` 看参数，`photocraft_run` 执行。`photocraft_run` 传 `steps` 可以把 `doc_open`、引擎命令、`doc_export` 一次跑完；参数按 describe 的声明给，传错字段会被拒绝。
+局部选区、按颜色选、蒙版、路径、滤镜库、动作、批处理——卡片装不下的活走这条链：
+
+1. `photocraft_search { query: "按颜色选区域" }` 用自然语言搜（中英文都认），返回 id、参数、菜单路径
+2. `photocraft_describe { id }` 看参数与前置：`blocked` 写的就是"现在为什么跑不了"，先按它把条件凑齐再动手
+3. `photocraft_run` 执行；`steps` 里把 `doc_open`、命令、`doc_export` 一次跑完，参数按 describe 的声明给，传错字段会被拒绝
+
+### 命令族地图（918 条，按族找比按名猜快）
+
+| 族 | 条数 | 干什么 |
+|---|---|---|
+| `layer` | 215 | 图层、图层组、图层样式、混合模式 |
+| `filter` | 124 | 滤镜：gallery 47 / blur 11 / stylize 9 / distort 9 / render 9 / pixelate 7 / sharpen 5 / noise 5 / blurGallery 5 |
+| `edit` | 79 | 变换、填充、描边、撤销重做 |
+| `image` | 66 | 图像属性、画布、裁切、图像计算 |
+| `type` | 66 | 文字图层、字体、段落排版 |
+| `file` | 58 | 打开/保存/导出/批处理（`file.automate.*`） |
+| `select` | 35 | 选区：颜色范围、蒙版、羽化、扩展 |
+| `view` / `paint` / `channel` / `path` / `actions` | 31 / 26 / 22 / 21 / 18 | 视图缩放、画笔涂抹、通道、路径、动作录制 |
+| `brush` / `gradient` / `swatches` / `document` / `pattern` | 15 / 12 / 12 / 11 / 10 | 笔刷预设、渐变、色板、文档、图案 |
+| `shape` / `slice` / `plugin` / `jobs` / `variables` | 9 / 7 / 5 / 2 / 1 | 形状、切片、插件、任务、变量 |
+
+族名不够精确时用 `photocraft_search`：它按语义匹配全部 918 条，返回 id + 参数 + 菜单路径。**这张表只是路标，具体 id 一律以 search 的返回为准**——引擎版本换过，族里的命令会增减。
 
 ## 八、会话工具与文档生命周期
 
@@ -125,11 +146,31 @@ PhotoCraft 是一个跑在 harness 旁边的完整图像编辑器。你通过 `p
 - 必须跨调用时，用上一轮导出的 `wish-*.png` 重新 `doc_open`，不要指望上个会话还活着
 - 报 `no open document`、或发现文档状态不是刚才那样，就是会话换过了：重新 `doc_open` 再继续，别在错的状态上接着改
 
-## 九、真实边界
+## 九、常见问题速查
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| `unknown command` | id 写错，或这一版没有 | `photocraft_search` 重找，别改拼写硬试 |
+| `no open document` | 会话被换过，文档没了 | 重新 `doc_open`，整段工作流重跑 |
+| `HTTP 404 / Not Found` | 会话失效 | 客户端已自动重连并重开文档，重试一次即可 |
+| `blocked` | 前置条件没满足 | 读 `disabled_reason`，先做选择 / 建图层 / 开文档 |
+| 找不到图片 X | 文件名不对 | 报错会列工作区最近 5 张图，换对的 `source` |
+| 画面没变化 | 参数名给了但没生效 | `photocraft_describe` 核对字段名，别猜 |
+
+## 十、最小工作流
+
+```
+1) 探   photocraft_inspect（看当前文档）或用户给的信息已够（有图、有框、诉求明确）
+2) 查   不熟的命令：photocraft_search → photocraft_describe（看 blocked）
+3) 干   一句话能说清 → photocraft_edit 一张卡；否则 photocraft_run { steps } 一次跑完
+4) 验   看返回的预览图；不合格按第三节的上限重跑一次
+5) 交   报 wish-<时间戳>.png / .psd，需要展示就 ![说明](wish-<时间戳>.png)
+```
+
+## 十一、真实边界
 
 - **没有生成式能力**：换脸、扩图、凭空画元素，交给 Image Studio
 - **处理永远用原始字节**：不要让引擎先降采样
-- **模型看到的是缩略图**：`previewSide` 只影响预览长边（默认 768，迭代时给 448），不影响导出
+- **预览是 768 长边的缩略图**：`previewSide` 只影响预览（迭代时给 448），不影响导出；颗粒、噪点这类细微差别在缩略图上不可靠，按语义一次定稿
 - **引擎的中间文件在 `photocraft-tmp/`**，成品才落工作区，别让用户去那里找
-- `unknown command` → `photocraft_search` 重新找；命令成功但画面没变 → `photocraft_describe` 核对字段
 - `这个账号还没有被授予任何目录` → VOS 数据授权没配，不是程序坏了
