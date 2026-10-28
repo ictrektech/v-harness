@@ -115,7 +115,7 @@ PhotoCraft 是一个跑在 harness 旁边的完整图像编辑器。你通过 `p
 
 1. `photocraft_search { query: "按颜色选区域" }` 用自然语言搜（中英文都认），返回 id、参数、菜单路径
 2. `photocraft_describe { id }` 看参数与前置：`blocked` 写的就是"现在为什么跑不了"，先按它把条件凑齐再动手
-3. `photocraft_run` 执行；`steps` 里把 `doc_open`、命令、`doc_export` 一次跑完，参数按 describe 的声明给，传错字段会被拒绝
+3. `photocraft_run` 执行；`steps` 里把 `doc_open`、命令、`doc_export` 一次跑完，参数按 describe 的声明给，传错字段会被拒绝。`doc_export` / `doc_save` 的 `path` 写**工作区落点**（如 `out/最终.png`），省略就自动命名 `wish-<时间戳>.png`——两种都会下载回工作区，导出后直接读文件或 `present` 即可
 
 ### 命令族地图（918 条，按族找比按名猜快）
 
@@ -143,8 +143,8 @@ PhotoCraft 是一个跑在 harness 旁边的完整图像编辑器。你通过 `p
 | `doc_open` | `{ path }` | 打开一份文档。`path` 是**工作区文件名**（如 `wish-123.png`）或附件 id `sha256:<hex>`，**不是任意本地绝对路径**——引擎只打开它自己有权访问的位置 |
 | `doc_new` | `{ width, height }` | 新建空白文档 |
 | `doc_inspect` | `{}` | 读当前文档状态（尺寸、图层、选区、历史） |
-| `doc_save` | `{ path, format }` | 存盘；不给 `path` 就写进工作区并交付 |
-| `doc_export` | `{ path, format }` | 导出成品；不给 `path` 就写进工作区并交付 |
+| `doc_save` | `{ path, format }` | 存盘。`path` 是**工作区里的落点**（相对路径，可含子目录如 `out/最终.png`），不是引擎卷内的路径；省略时自动命名 `wish-<时间戳>.png` |
+| `doc_export` | `{ path, format }` | 导出成品，同上。导出后文件**就在工作区**，可以直接 `present` 或 `![说明](out/最终.png)` |
 | `doc_close` | `{}` | 关掉文档 |
 
 **会话会过期**：引擎把会话和文档都放在内存里，空闲超时或服务重启后旧会话作废。客户端会自动重连并重新打开最近一次 `doc_open` 的文档，但**之前的编辑历史回不来**。所以：
