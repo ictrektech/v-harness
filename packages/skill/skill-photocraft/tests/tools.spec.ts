@@ -3,7 +3,7 @@
  * the model is told when either refuses.
  */
 
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -150,6 +150,14 @@ function toolOf(definitions: ToolDefinition[], name: string): ToolDefinition {
   const definition = definitions.find(candidate => candidate.name === name)
   if (definition === undefined) throw new Error(`${name} was not registered`)
   return definition
+}
+
+/** Remove delivered pictures so a test controls which ones the fallback sees. */
+async function clearWishes(): Promise<void> {
+  const { readdir } = await import('node:fs/promises')
+  for (const name of await readdir(workspace)) {
+    if (/^wish-.*\.(?:png|jpe?g|webp)$/iu.test(name)) await rm(join(workspace, name), { force: true })
+  }
 }
 
 /** Run `photocraft_edit` against a fresh stage. */
@@ -379,6 +387,7 @@ describe('photocraft_edit', () => {
   })
 
   it('needs a picture to work on', async () => {
+    await clearWishes()
     await expect(edit({ instruction: '调成电影感' })).rejects.toThrow(/需要一张图/u)
     await expect(edit({ instruction: '调成电影感', source: '   ' })).rejects.toThrow(/需要一张图/u)
   })
@@ -412,6 +421,25 @@ describe('photocraft_edit', () => {
     const { stage } = await edit({ instruction: '调成电影感', intent: 'film', source: 'in-the-workspace.png' })
     expect(stage.uploads).toHaveLength(0)
     expect(stage.calls[0]).toEqual({ name: 'open', args: { path: 'in-the-workspace.png' } })
+  })
+
+  it('continues from the newest delivered picture when no source is named', async () => {
+    const older = join(workspace, 'wish-1000.png')
+    const newer = join(workspace, 'wish-2000.png')
+    await clearWishes()
+    await writeFile(older, PNG)
+    await writeFile(newer, EXTRA_PNG)
+    const now = Date.now()
+    await utimes(older, new Date(now + 1_000), new Date(now + 1_000))
+    await utimes(newer, new Date(now + 2_000), new Date(now + 2_000))
+    try {
+      const { stage } = await edit({ instruction: '再暖一点', intent: 'film' })
+      expect(stage.uploads).toHaveLength(1)
+      expect(stage.uploads[0]?.data.equals(EXTRA_PNG)).toBe(true)
+    } finally {
+      await rm(older, { force: true })
+      await rm(newer, { force: true })
+    }
   })
 
   it('refuses to report a result it could not store', async () => {

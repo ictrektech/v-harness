@@ -236,6 +236,26 @@ async function importSource(bridge: BridgeClient, source: string, cwd?: string):
 }
 
 /**
+ * The newest picture this skill delivered into a workspace.
+ *
+ * Every finished edit lands as `wish-<stamp>.png`, so a request that names no
+ * source almost always means "the one we were just looking at". Picking only
+ * names this skill produces keeps an unrelated workspace image out of it.
+ * @param cwd - session working directory.
+ * @returns the newest delivered file name, or undefined when there is none.
+ */
+async function latestWish(cwd: string): Promise<string | undefined> {
+  const entries = await readdir(cwd, { withFileTypes: true }).catch(() => [])
+  const wishes = await Promise.all(entries
+    .filter(entry => entry.isFile() && /^wish-.*\.(?:png|jpe?g|webp)$/iu.test(entry.name))
+    .map(async (entry) => {
+      const info = await stat(join(cwd, entry.name)).catch(() => undefined)
+      return { name: entry.name, at: info?.mtimeMs ?? 0 }
+    }))
+  return wishes.sort((left, right) => right.at - left.at)[0]?.name
+}
+
+/**
  * Make sure the scratch folder exists; a second call finding it already there is
  * the normal case, not an error.
  * @param bridge - file bridge of the capability.
@@ -712,7 +732,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           '留空时仅在提供了 assets/text/look 的场景自动判定，否则拒绝',
         ].join(''),
       },
-      source: { type: 'string', description: '要改的图：聊天附件的绝对路径，或工作区里的文件名' },
+      source: { type: 'string', description: '要改的图：聊天附件的绝对路径，或工作区里的文件名。省略表示接着改最近一次交付的 wish-*.png（用户在这张上继续提要求时就这样）' },
       assets: {
         type: 'array',
         description: '用户额外提供的图（素材/背景/天空）。有红框时按序号填进红框（第 i 个框用第 i 张，不够就用第一张）；没有框时贴到主体后面',
@@ -802,10 +822,15 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       ],
     },
     async execute(args, exec) {
-      const source = (args.source ?? '').trim()
-      if (source === '') throw new Error('photocraft: 需要一张图（聊天附件路径或工作区文件名）')
       await ensureScratch(bridge)
       const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
+      // A follow-up edit that names no picture means the one the last round
+      // produced: the reply already handed that file over, so asking the user to
+      // name it again — or failing outright — is a gap, not a safety check.
+      const source = (args.source ?? '').trim() || await latestWish(cwd)
+      if (source === undefined) {
+        throw new Error('photocraft: 需要一张图（聊天附件路径、工作区文件名，或先让上一轮生成一张）')
+      }
       // Materials are attachments as well, so they take the same upload bridge:
       // the engine only opens files that live in its own workspace.
       const assets: string[] = []
