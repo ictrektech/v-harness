@@ -21,9 +21,10 @@ import { execFile } from 'node:child_process'
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-/** Where the image puts built client plugins. */
-const PLUGIN_ROOT = '/opt/v-harness/plugins'
-const INSTALLATION_MODULES = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
+/** Where the image puts built client plugins; a deployment may relocate both roots. */
+const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
+const INSTALLATION_MODULES = process.env.VH_DSH_MODULES_DIR
+  ?? '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
 
 /** Where the image puts the built agent-side tool plugins and their carrier. */
 const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/agent-plugins'
@@ -133,9 +134,14 @@ export async function syncPlugins(user) {
  */
 export async function syncClientPlugins(user) {
   const modules = join(user.home, '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai')
+  // A deployment without the payload directory is not the image: it has nothing
+  // to overlay, and failing here would keep every instance from starting.
+  if (!(await exists(PLUGIN_ROOT))) return
   const deployed = (await readdir(PLUGIN_ROOT, { withFileTypes: true }).catch(() => []))
     .filter(entry => entry.isDirectory())
     .map(entry => entry.name)
+  // A payload that exists but carries nothing is a broken image, not a choice.
+  if (deployed.length === 0) throw new Error(`plugin payload is empty: ${PLUGIN_ROOT}`)
   for (const name of MANAGED) {
     if (!deployed.includes(name)) throw new Error(`deployed plugin missing: ${name}`)
   }
