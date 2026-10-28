@@ -625,7 +625,14 @@ function guidesFor(
   window: PngFraction,
   target?: PngFraction,
   override?: number,
-): { options: GuideOptions; step: number; inner: number; scale: number } {
+): {
+  options: GuideOptions
+  step: number
+  inner: number
+  scale: number
+  crop: { left: number; top: number; width: number; height: number }
+  output: { width: number; height: number }
+} {
   const crop = cropWindowOf(size.width, size.height, window)
   const scale = CLOSEUP_SIDE / Math.max(1, crop.width, crop.height)
   const steps = [2, 5, 10, 20, 25, 50, 100]
@@ -653,6 +660,13 @@ function guidesFor(
     // output-pixel number would read as a source one and mislead by the zoom.
     inner: Math.max(1, Math.round(inner / scale)),
     scale,
+    crop,
+    // What fitPng actually produces: the caller reports these so a reading can
+    // be divided by the same numbers the picture was drawn with.
+    output: {
+      width: Math.max(1, Math.round(crop.width * scale)),
+      height: Math.max(1, Math.round(crop.height * scale)),
+    },
     options: {
       pitch,
       scale,
@@ -1122,6 +1136,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           target: { type: 'string' },
           window: { type: 'string' },
           zoom: { type: 'string' },
+          output: { type: 'string' },
           grid: { type: 'string' },
           inner: { type: 'string' },
           view: previewSchema,
@@ -1134,7 +1149,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           text: `查看 ${value.file}：画布 ${value.canvas}`
             + (value.target === undefined
               ? ''
-              : `；窗口 ${value.window ?? '—'}（放大 ${value.zoom ?? '—'}）`
+              : `；窗口 ${value.window ?? '—'}（放大 ${value.zoom ?? '—'}，输出 ${value.output ?? '—'}）`
                 + `；选中区域 ${value.target}（黄框，红十字是它的中心）`
                 + `；主网格 ${value.grid ?? '—'}、框内 ${value.inner ?? '—'}、左下青线 = 10px`)
             + '\n这是侦察：工作区里的文件不会被改动（非 PNG 图会先由引擎转成 PNG）。'
@@ -1198,9 +1213,10 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         canvas: `${String(size.width)}×${String(size.height)}`,
         target: `${String(Math.round(box.x * size.width))},${String(Math.round(box.y * size.height))} `
           + `${String(Math.round(box.w * size.width))}×${String(Math.round(box.h * size.height))}px`,
-        window: `${String(Math.round(window.x * size.width))},${String(Math.round(window.y * size.height))} `
-          + `${String(Math.round(window.w * size.width))}×${String(Math.round(window.h * size.height))}px`,
-        zoom: `${guides.scale.toFixed(1)}×`,
+        window: `${String(guides.crop.left)},${String(guides.crop.top)} `
+          + `${String(guides.crop.width)}×${String(guides.crop.height)}px`,
+        zoom: `${guides.scale.toFixed(2)}×`,
+        output: `${String(guides.output.width)}×${String(guides.output.height)}`,
         grid: `${String(guides.step)}px/格`,
         inner: `${String(guides.inner)}px/格`,
         view,
