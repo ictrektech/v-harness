@@ -99,6 +99,55 @@ afterAll(async () => {
   await rm(directory, { recursive: true, force: true })
 })
 
+describe('McpClient session recovery', () => {
+  it('rebuilds the session and reopens its document after the engine forgets it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'photocraft-session-'))
+    const socket = join(directory, 'cap.sock')
+    let initialised = 0
+    let validSession = ''
+    const calls: string[] = []
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      void (async () => {
+        const frame = JSON.parse(await readBody(req)) as { id?: number; method: string; params?: { name?: string } }
+        if (frame.method === 'initialize') {
+          initialised += 1
+          validSession = `sess-${String(initialised)}`
+          res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': validSession })
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {} }))
+          return
+        }
+        if (frame.method === 'notifications/initialized') {
+          res.writeHead(202)
+          res.end()
+          return
+        }
+        if (req.headers['mcp-session-id'] !== validSession) {
+          res.writeHead(404)
+          res.end('Not Found: Session not found')
+          return
+        }
+        calls.push(frame.params?.name ?? '')
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { content: [{ type: 'text', text: '{"ok":true}' }] } }))
+      })()
+    })
+    await new Promise<void>((resolve) => { server.listen(socket, resolve) })
+    try {
+      const client = new McpClient({ url: `unix:${socket}` })
+      await expect(client.open('a.png')).resolves.toEqual({ ok: true })
+      // The engine forgets every session it handed out, as after a restart.
+      validSession = 'forgotten'
+      await expect(client.call('doc_inspect')).resolves.toEqual({ ok: true })
+      expect(initialised).toBe(2)
+      // The document lived in the dropped session, so it is reopened first.
+      expect(calls).toEqual(['doc_open', 'doc_open', 'doc_inspect'])
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('McpClient', () => {
   it('opens one session and reuses its id for every later call', async () => {
     seen.length = 0

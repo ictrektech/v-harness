@@ -140,8 +140,18 @@ interface RpcFrame {
 function parseRpc(reply: Reply, id: number): RpcFrame {
   const text = reply.body.toString('utf8')
   const type = reply.headers['content-type'] ?? ''
+  // Every failure the engine reports as plain text used to reach JSON.parse and
+  // surface as "Unexpected token", which names neither the status nor the body.
+  if (reply.status < 200 || reply.status >= 300) {
+    throw new Error(`photocraft MCP failed: HTTP ${String(reply.status)} ${text.trim().slice(0, 200)}`)
+  }
   if (!type.includes('text/event-stream')) {
-    const parsed = JSON.parse(text) as RpcFrame
+    let parsed: RpcFrame
+    try {
+      parsed = JSON.parse(text) as RpcFrame
+    } catch {
+      throw new Error(`photocraft MCP answered with non-JSON: ${text.trim().slice(0, 200)}`)
+    }
     if (parsed.error !== undefined) throw new Error(`photocraft MCP: ${parsed.error.message ?? 'error'}`)
     return parsed
   }
@@ -177,6 +187,15 @@ export interface EngineClient {
 export class McpClient {
   #session: string | undefined
   #nextId = 1
+  /**
+   * Arguments of the last successful `doc_open`.
+   *
+   * The engine keeps the document inside the session, so a session it dropped
+   * takes the document with it: replaying a command into a fresh session fails
+   * with "no open document" instead of doing what the caller asked. Remembering
+   * the open lets a reconnected client restore that state before it replays.
+   */
+  #opened: Record<string, unknown> | undefined
 
   /**
    * @param endpoint - the capability endpoint.
@@ -207,7 +226,7 @@ export class McpClient {
     })
   }
 
-  async #rpc(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async #rpc(method: string, params: Record<string, unknown>, retried = false): Promise<Record<string, unknown>> {
     const id = this.#nextId++
     const reply = await send(this.endpoint, 'POST', '/mcp', {
       headers: {
@@ -218,6 +237,19 @@ export class McpClient {
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
       timeoutMs: this.timeoutMs,
     })
+    // A session the engine no longer recognises answers 404 "Session not
+    // found": the service restarted, or the idle session expired. The id is
+    // routing, not identity, so the client rebuilds it — and reopens the
+    // document the dropped session held, because replaying a command into an
+    // empty session would report "no open document" rather than finish the work.
+    if (reply.status === 404 && this.#session !== undefined && !retried) {
+      this.#session = undefined
+      await this.#ensureSession()
+      if (this.#opened !== undefined && method !== 'initialize') {
+        await this.#rpc('tools/call', { name: 'doc_open', arguments: this.#opened }, true)
+      }
+      return await this.#rpc(method, params, true)
+    }
     const session = reply.headers['mcp-session-id']
     // The session id is routing, never authorisation: it only keeps this
     // conversation's documents resident on the service.
@@ -242,6 +274,8 @@ export class McpClient {
         typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text')
       .map(block => block.text)
     if (result.isError === true) throw new Error(`photocraft ${name}: ${texts.join(' ')}`)
+    // The document lives in the session; keep what it takes to restore it.
+    if (name === 'doc_open') this.#opened = args
     const image = content.find((block): block is { type: 'image'; data: string; mimeType: string } =>
       typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'image')
     const text = texts.join('\n')
