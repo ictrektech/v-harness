@@ -10,7 +10,7 @@
 
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-working-directory'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
 import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
@@ -185,6 +185,28 @@ async function workspaceFile(cwd: string | undefined, source: string): Promise<s
 }
 
 /**
+ * Name the pictures a caller most likely meant.
+ *
+ * A missing `source` used to fall through to the engine, which answered
+ * "automation read X failed (NotFound)" without saying what the workspace
+ * holds; listing the newest pictures turns a guessing loop into one retry.
+ * @param cwd - session working directory.
+ * @param limit - how many names to keep.
+ * @returns the newest image file names, newest first.
+ */
+async function recentPictures(cwd: string | undefined, limit = 5): Promise<string[]> {
+  if (cwd === undefined) return []
+  const entries = await readdir(cwd, { withFileTypes: true }).catch(() => [])
+  const pictures = await Promise.all(entries
+    .filter(entry => entry.isFile() && IMAGE_EXTENSIONS.includes(extname(entry.name).toLowerCase()))
+    .map(async (entry) => {
+      const info = await stat(join(cwd, entry.name)).catch(() => undefined)
+      return { name: entry.name, at: info?.mtimeMs ?? 0 }
+    }))
+  return pictures.sort((left, right) => right.at - left.at).slice(0, limit).map(picture => picture.name)
+}
+
+/**
  * Bring a source into the engine's workspace.
  * @param bridge - file bridge of the capability.
  * @param source - attachment id, absolute path, or workspace file name.
@@ -192,6 +214,8 @@ async function workspaceFile(cwd: string | undefined, source: string): Promise<s
  */
 async function importSource(bridge: BridgeClient, source: string, cwd?: string): Promise<string> {
   const absolute = localFileOf(source) ?? await workspaceFile(cwd, source)
+  // Not found locally is not a verdict: the engine's own volume may already hold
+  // that name, so the name goes through and a missing picture is reported there.
   if (absolute === undefined) return source
   // A picture may arrive as a chat attachment or as a file the agent already
   // copied into the workspace, so either root is accepted — but only for image
@@ -581,6 +605,38 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
     async execute(args, exec) {
       const steps = args.steps as readonly { id?: unknown; params?: unknown }[] | undefined
       const cwd = await ctx.workingDirectory.ensure(agentOf(exec), exec.signal)
+      // One session tool behaves the same whether it arrives inside `steps` or
+      // as the tool's single `id`: `doc_open` must place the picture inside the
+      // engine's volume, and an export must come back as a deliverable.
+      const runSessionStep = async (id: string, params: Record<string, unknown>): Promise<string> => {
+        // An export step is the delivery point of the workflow: without an
+        // explicit path it writes to scratch and comes back as a file the
+        // user can open, instead of a path inside the engine's volume.
+        if ((id === 'doc_export' || id === 'doc_save') && typeof params.path !== 'string') {
+          await ensureScratch(bridge)
+          const format = String(params.format ?? 'png').toLowerCase()
+          const name = `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
+          await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${name}`, format: format === 'jpeg' ? 'jpg' : format })
+          const bytes = await bridge.download(`${SCRATCH_DIR}/${name}`)
+          return `已交付 ${await saveDeliverable(ctx, exec, name, bytes)}`
+        }
+        // A local picture has to reach the engine's own volume first; the
+        // engine refuses absolute paths outside its automation root.
+        const call = id === 'doc_open' && typeof params.path === 'string'
+          ? { ...params, path: await importSource(bridge, params.path, cwd) }
+          : params
+        try {
+          await mcp.call(id, call)
+        } catch (error) {
+          // The engine's NotFound names only the missing path, which sends a
+          // caller guessing; name the pictures that are actually here instead.
+          const text = error instanceof Error ? error.message : String(error)
+          if (id !== 'doc_open' || !/NotFound|No such file/iu.test(text)) throw error
+          const available = await recentPictures(cwd)
+          throw new Error(available.length === 0 ? text : `${text}；工作区最近的图片：${available.join('、')}`)
+        }
+        return id
+      }
       if (Array.isArray(steps) && steps.length > 0) {
         const report: string[] = []
         let batch: { id: string; params: Record<string, unknown> }[] = []
@@ -596,25 +652,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           const params = (step.params ?? {}) as Record<string, unknown>
           if (SESSION_TOOLS.has(id)) {
             await flush()
-            // An export step is the delivery point of the workflow: without an
-            // explicit path it writes to scratch and comes back as a file the
-            // user can open, instead of a path inside the engine's volume.
-            if ((id === 'doc_export' || id === 'doc_save') && typeof params.path !== 'string') {
-              await ensureScratch(bridge)
-              const format = String(params.format ?? 'png').toLowerCase()
-              const name = `wish-${String(Date.now())}.${format === 'jpeg' ? 'jpg' : format}`
-              await mcp.call('doc_save', { path: `${SCRATCH_DIR}/${name}`, format: format === 'jpeg' ? 'jpg' : format })
-              const bytes = await bridge.download(`${SCRATCH_DIR}/${name}`)
-              report.push(`已交付 ${await saveDeliverable(ctx, exec, name, bytes)}`)
-              continue
-            }
-            // A local picture has to reach the engine's own volume first; the
-            // engine refuses absolute paths outside its automation root.
-            const call = id === 'doc_open' && typeof params.path === 'string'
-              ? { ...params, path: await importSource(bridge, params.path, cwd) }
-              : params
-            await mcp.call(id, call)
-            report.push(id)
+            report.push(await runSessionStep(id, params))
             continue
           }
           const { problems } = await index.check(id, params)
@@ -627,6 +665,9 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       const id = args.id
       if (typeof id !== 'string' || id === '') throw new Error('photocraft: 传 `steps` 跑工作流，或传 `id` 跑单条命令')
       const params = (args.params ?? {}) as Record<string, unknown>
+      // A session tool named as the single `id` used to fall through to the
+      // drawing-command path, where the engine answers "unknown command".
+      if (SESSION_TOOLS.has(id)) return { id, result: await runSessionStep(id, params) }
       const { problems } = await index.check(id, params)
       if (problems.length > 0) throw new Error(`photocraft: ${problems.join('; ')}`)
       const result = await mcp.run(id, params)

@@ -425,6 +425,17 @@ describe('photocraft_edit', () => {
   })
 })
 
+describe('photocraft_run', () => {
+  it('takes a session tool named as the single id, not just inside steps', async () => {
+    const stage = stageOf()
+    const definition = toolOf(hostOf(stage).definitions, 'photocraft_run')
+    const value = await definition.execute({ id: 'doc_open', params: { path: 'wish.png' } }, execOf())
+    expect(stage.calls).toEqual([{ name: 'doc_open', args: { path: 'wish.png' } }])
+    expect(value).toMatchObject({ id: 'doc_open' })
+  })
+
+})
+
 describe('toolbox cards', () => {
   it('brush paints the strokes the caller sent', async () => {
     const { stage } = await edit({
