@@ -261,6 +261,12 @@ export async function accessTokenFor(namespace) {
   refreshing.set(namespace, attempt);
   try {
     const next = await attempt;
+    // A refused refresh means VOS revoked the session. Keeping the entry makes
+    // `hasUsableTokens` keep answering "ready" while this function keeps
+    // returning nothing, and every navigation then bounces between the app and
+    // the bootstrap page — two requests every few hundred milliseconds, with no
+    // re-login ever offered. Dropping it lets the page ask for one.
+    if (next === undefined) tokens.delete(namespace);
     return next?.access;
   } finally {
     refreshing.delete(namespace);
