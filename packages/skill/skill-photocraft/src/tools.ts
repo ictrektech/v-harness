@@ -40,9 +40,11 @@ const ATTACHMENT_ROOT = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'a
 export const PREVIEW_SIDE_MIN = 64
 export const PREVIEW_SIDE_MAX = 2048
 /** Long edge of the enlarged closeup a card returns beside the whole frame. */
-const CLOSEUP_SIDE = 384
+const CLOSEUP_SIDE = 512
 /** Pixels the closeup is cut from: enough detail to survive the enlargement. */
 const CLOSEUP_SOURCE_SIDE = 1024
+/** Grid spacing on the closeup: fine enough to read a 5px correction. */
+const GRID_PITCH = 24
 
 /** The preview a result carries. */
 interface Preview {
@@ -465,6 +467,8 @@ export interface FinishView {
   side: number
   /** Window to enlarge, as fractions of the picture. */
   focus?: PngFraction | undefined
+  /** The marks themselves, reported as pixels so a caller can check a size. */
+  target?: PngFraction | undefined
 }
 
 /**
@@ -479,12 +483,20 @@ export interface FinishView {
  * @returns the window as fractions of the picture, or undefined when the edit
  *   has no target (a whole-frame change).
  */
-function focusWindowOf(args: {
+/** Marks one call carries, whichever shape they arrive in. */
+interface MarkArgs {
   regions?: readonly { x: number; y: number; w: number; h: number }[] | undefined
   strokes?: readonly { points: readonly (readonly number[])[] }[] | undefined
   x?: number | undefined
   y?: number | undefined
-}): PngFraction | undefined {
+}
+
+/**
+ * The tight box around every mark of one call.
+ * @param args - boxes, strokes, or a single point.
+ * @returns the box as fractions of the picture, or undefined when nothing was marked.
+ */
+function targetWindowOf(args: MarkArgs): PngFraction | undefined {
   const xs: number[] = []
   const ys: number[] = []
   for (const region of args.regions ?? []) {
@@ -506,13 +518,27 @@ function focusWindowOf(args: {
   const right = Math.max(...xs)
   const top = Math.min(...ys)
   const bottom = Math.max(...ys)
-  const width = Math.max(right - left, 0.04)
-  const height = Math.max(bottom - top, 0.04)
-  const padX = Math.max(0.04, width * 1.2)
-  const padY = Math.max(0.04, height * 1.2)
   return {
-    x: left - padX,
-    y: top - padY,
+    x: left,
+    y: top,
+    w: Math.max(right - left, 0.01),
+    h: Math.max(bottom - top, 0.01),
+  }
+}
+
+function focusWindowOf(args: MarkArgs): PngFraction | undefined {
+  const target = targetWindowOf(args)
+  if (target === undefined) return undefined
+  const width = Math.max(target.w, 0.04)
+  const height = Math.max(target.h, 0.04)
+  // 2.5x the target keeps enough context to judge an edge while leaving the
+  // enlargement strong enough to read a 25px eye: a wider window only scales
+  // the pixels back down again.
+  const padX = Math.max(0.02, width * 0.75)
+  const padY = Math.max(0.02, height * 0.75)
+  return {
+    x: target.x - padX,
+    y: target.y - padY,
     w: width + padX * 2,
     h: height + padY * 2,
   }
@@ -535,7 +561,7 @@ async function finish(
   bytes: number
   applied: string
   notes: string[]
-  metrics: { canvas: string; focus?: string }
+  metrics: { canvas: string; focus?: string; target?: string }
   preview?: Preview
   closeup?: Preview
 }> {
@@ -566,13 +592,16 @@ async function finish(
     }
     if (wantsCloseup) {
       const box = view.focus as PngFraction
-      closeup = await keep(ctx, guidesPng(fitPng(cropPng(raw, box), CLOSEUP_SIDE)), `wish-${stamp}-closeup.png`)
+      closeup = await keep(ctx, guidesPng(fitPng(cropPng(raw, box), CLOSEUP_SIDE), GRID_PITCH), `wish-${stamp}-closeup.png`)
     }
   }
-  const focusText = view.focus === undefined || size === undefined
-    ? undefined
-    : `${String(Math.round(view.focus.x * size.width))},${String(Math.round(view.focus.y * size.height))} `
-      + `${String(Math.round(view.focus.w * size.width))}×${String(Math.round(view.focus.h * size.height))}px`
+  const pixelsOf = (box: PngFraction | undefined): string | undefined =>
+    box === undefined || size === undefined
+      ? undefined
+      : `${String(Math.round(box.x * size.width))},${String(Math.round(box.y * size.height))} `
+        + `${String(Math.round(box.w * size.width))}×${String(Math.round(box.h * size.height))}px`
+  const focusText = pixelsOf(view.focus)
+  const targetText = pixelsOf(view.target)
   return {
     file,
     source,
@@ -582,6 +611,7 @@ async function finish(
     metrics: {
       canvas: size === undefined ? '' : `${String(size.width)}×${String(size.height)}`,
       ...focusText === undefined ? {} : { focus: focusText },
+      ...targetText === undefined ? {} : { target: targetText },
     },
     ...preview === undefined ? {} : { preview },
     ...closeup === undefined ? {} : { closeup },
@@ -953,6 +983,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
             properties: {
               canvas: { type: 'string', required: true },
               focus: { type: 'string' },
+              target: { type: 'string' },
             },
           },
           preview: previewSchema,
@@ -976,7 +1007,8 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         ...value.metrics === undefined ? [] : [{
           type: 'text' as const,
           text: `画布 ${value.metrics.canvas}`
-            + (value.metrics.focus === undefined ? '' : `；局部窗口 ${value.metrics.focus}（放大 ${String(CLOSEUP_SIDE)} 长边，十字与网格是标尺）`),
+            + (value.metrics.target === undefined ? '' : `；目标 ${value.metrics.target}`)
+            + (value.metrics.focus === undefined ? '' : `；局部窗口 ${value.metrics.focus}（放大到 ${String(CLOSEUP_SIDE)} 长边，网格 ${String(GRID_PITCH)}px 一格，十字是窗口中心）`),
         }],
         ...(value.preview === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.preview) }]),
         ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),
@@ -1104,6 +1136,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         mode,
         side,
         focus: focusWindowOf(args),
+        target: targetWindowOf(args),
       })
     },
   }))

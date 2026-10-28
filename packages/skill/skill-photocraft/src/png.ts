@@ -264,38 +264,50 @@ export function fitPng(bytes: Buffer, longSide: number): Buffer {
 }
 
 /**
- * Overlay a centre cross and a quarter grid.
+ * Overlay a fine grid and a centre cross.
  *
- * "Move it 5px left" needs a ruler the reader can count; without one the same
- * picture only supports "it looks a bit off", which is what makes a model guess
- * again. Lines are drawn at 40% opacity so the pixels underneath stay readable.
+ * "Move it 5px left" needs a ruler the reader can count, and a quarter grid is
+ * far too coarse for a 200px window: at a 24px pitch a reader can estimate to
+ * within a couple of pixels, which is the precision an edge judgement needs.
+ * The cross marks the centre of the window, so a target that drifts shows up as
+ * a shift rather than as an impression.
  * @param bytes - source PNG.
+ * @param pitch - spacing of the grid, in pixels of the picture being annotated.
  * @returns the annotated PNG, or the source when it cannot be decoded.
  */
-export function guidesPng(bytes: Buffer): Buffer {
+export function guidesPng(bytes: Buffer, pitch = 24): Buffer {
   const decoded = decode(bytes)
   if (decoded === undefined) return bytes
   const { width, height, bpp, colorType } = decoded
   const pixels = Buffer.from(decoded.pixels)
-  const mix = (index: number, channel: number, value: number, alpha: number): void => {
-    const base = pixels[index * bpp + channel] ?? 0
-    pixels[index * bpp + channel] = Math.round(base * (1 - alpha) + value * alpha) & 0xff
-  }
-  const mark = (x: number, y: number, value: number): void => {
+  const channels = colorType === 6 ? bpp : 3
+  const blend = (x: number, y: number, value: number, alpha: number): void => {
     if (x < 0 || y < 0 || x >= width || y >= height) return
-    const index = y * width + x
-    const channels = colorType === 6 ? bpp : 3
-    for (let channel = 0; channel < channels; channel += 1) mix(index, channel, value, 0.4)
+    const index = (y * width + x) * bpp
+    for (let channel = 0; channel < channels; channel += 1) {
+      const base = pixels[index + channel] ?? 0
+      pixels[index + channel] = Math.round(base * (1 - alpha) + value * alpha) & 0xff
+    }
   }
-  for (let step = 1; step < 4; step += 1) {
-    const x = Math.round(width * step / 4)
-    const y = Math.round(height * step / 4)
-    for (let row = 0; row < height; row += 1) mark(x, row, 255)
-    for (let column = 0; column < width; column += 1) mark(column, y, 255)
+  const step = Math.max(8, Math.round(pitch))
+  // A faint grid marks intervals without hiding the pixels being judged.
+  for (let x = step; x < width; x += step) {
+    for (let y = 0; y < height; y += 1) blend(x, y, 255, 0.22)
   }
+  for (let y = step; y < height; y += step) {
+    for (let x = 0; x < width; x += 1) blend(x, y, 255, 0.22)
+  }
+  // The cross is two pixels wide and doubled (black over white) so it stays
+  // legible on both a bright sky and a dark shadow.
   const centreX = Math.round(width / 2)
   const centreY = Math.round(height / 2)
-  for (let row = 0; row < height; row += 1) mark(centreX, row, 0)
-  for (let column = 0; column < width; column += 1) mark(column, centreY, 0)
+  for (let y = 0; y < height; y += 1) {
+    blend(centreX, y, 255, 0.5)
+    blend(centreX + 1, y, 0, 0.5)
+  }
+  for (let x = 0; x < width; x += 1) {
+    blend(x, centreY, 255, 0.5)
+    blend(x, centreY + 1, 0, 0.5)
+  }
   return encode(pixels, width, height, colorType)
 }
