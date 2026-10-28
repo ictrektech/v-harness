@@ -62,7 +62,7 @@ PhotoCraft 是一个跑在 harness 旁边的完整图像编辑器。你通过 `p
 ## 三、纪律：改完必须看图
 
 1. **动手前**：`photocraft_inspect` 看文档状态；命令不熟就 `photocraft_describe` 看参数（`blocked` 会写明现在为什么跑不了）
-2. **动手时**：一个工作流一次调用。走卡片就一个 `photocraft_edit`；走 search + run 就把 `doc_open`、命令、`doc_export` 写进同一个 `photocraft_run { steps: [...] }`
+2. **动手时**：一个工作流一次调用。走卡片就一个 `photocraft_edit`；走 search + run 就把 `doc_open`、命令、`doc_export` 写进同一个 `photocraft_run { steps: [...] }`（会话会过期，拆开调用等于把历史丢掉，见第八节）
 3. **动手后**：`photocraft_edit` 的返回带**预览图**，你必须看：
    - 抠图边缘有原背景残边 → `shift` 调到 -30 重跑一次
    - 填充区域糊/有鬼影 → 缩小框或换一张 nearby 采样，重跑一次
@@ -106,7 +106,26 @@ PhotoCraft 是一个跑在 harness 旁边的完整图像编辑器。你通过 `p
 
 局部选区、按颜色选、蒙版、路径、滤镜库、动作、批处理——`photocraft_search { query: "按颜色选区域" }` 用自然语言搜（中英文都认），`photocraft_describe` 看参数，`photocraft_run` 执行。`photocraft_run` 传 `steps` 可以把 `doc_open`、引擎命令、`doc_export` 一次跑完；参数按 describe 的声明给，传错字段会被拒绝。
 
-## 八、真实边界
+## 八、会话工具与文档生命周期
+
+`photocraft_run` 的 id 分两族：**会话工具**管文档本身，**绘图命令**改像素。两族都可以写在同一个 `steps` 里，按顺序执行。
+
+| 会话工具 | 参数 | 作用 |
+|---|---|---|
+| `doc_open` | `{ path }` | 打开一份文档。`path` 是**工作区文件名**（如 `wish-123.png`）或附件 id `sha256:<hex>`，**不是任意本地绝对路径**——引擎只打开它自己有权访问的位置 |
+| `doc_new` | `{ width, height }` | 新建空白文档 |
+| `doc_inspect` | `{}` | 读当前文档状态（尺寸、图层、选区、历史） |
+| `doc_save` | `{ path, format }` | 存盘；不给 `path` 就写进工作区并交付 |
+| `doc_export` | `{ path, format }` | 导出成品；不给 `path` 就写进工作区并交付 |
+| `doc_close` | `{}` | 关掉文档 |
+
+**会话会过期**：引擎把会话和文档都放在内存里，空闲超时或服务重启后旧会话作废。客户端会自动重连并重新打开最近一次 `doc_open` 的文档，但**之前的编辑历史回不来**。所以：
+
+- 一个工作流写成**一次** `photocraft_run { steps: [...] }`——`doc_open`、绘图命令、`doc_export` 一次跑完，不要拆成"先 open、再 run、再 export"
+- 必须跨调用时，用上一轮导出的 `wish-*.png` 重新 `doc_open`，不要指望上个会话还活着
+- 报 `no open document`、或发现文档状态不是刚才那样，就是会话换过了：重新 `doc_open` 再继续，别在错的状态上接着改
+
+## 九、真实边界
 
 - **没有生成式能力**：换脸、扩图、凭空画元素，交给 Image Studio
 - **处理永远用原始字节**：不要让引擎先降采样

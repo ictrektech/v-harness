@@ -570,9 +570,9 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
 
   ctx.tools.register(defineTool({
     name: 'photocraft_run',
-    description: 'Run engine commands on the open document. Pass `steps` to run a whole workflow in one call — doc_open, then the drawing commands, then doc_export — or `id` + `params` for a single command. Parameters are checked against the engine\'s own declaration first, so a misspelt field is refused instead of silently ignored.',
+    description: 'Run engine commands on the open document. Pass `steps` to run a whole workflow in one call — doc_open, then the drawing commands, then doc_export — or `id` + `params` for a single command. Session tools (doc_open, doc_save, doc_export, doc_inspect, doc_new, doc_close) are not drawing commands: `doc_open` takes `{ path }` — a workspace file name or a `sha256:<hex>` attachment id, never an arbitrary local path — and the engine only opens documents it manages. A document session expires on idle and on restart, and a reopened document loses its edit history, so run one workflow per call instead of chaining edits across calls. Parameters are checked against the engine\'s own declaration first, so a misspelt field is refused instead of silently ignored.',
     parameters: {
-      id: { type: 'string', description: '单条命令 id（来自 photocraft_search）；用 steps 时不要传' },
+      id: { type: 'string', description: '单条 id：绘图命令（来自 photocraft_search）或会话工具 doc_open / doc_save / doc_export。要连续操作同一个文档就用 steps，一个工作流一次跑完。用 steps 时不要传' },
       params: {
         type: 'object',
         additionalProperties: true,
@@ -580,7 +580,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
       },
       steps: {
         type: 'array',
-        description: '整个工作流：按顺序执行的 {id, params} 列表。doc_open、引擎命令、doc_export 可以混在一起，一次调用跑完',
+        description: '整个工作流：按顺序执行的 {id, params} 列表。会话工具（doc_open、doc_save、doc_export、doc_inspect）和绘图命令可以混在一起，一次调用跑完。doc_open 的参数是 {path}：工作区文件名或 sha256:<hex> 附件 id，不是任意本地路径；doc_export 不给 path 就直接写进工作区并交付。',
         items: {
           type: 'object',
           additionalProperties: false,
