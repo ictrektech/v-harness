@@ -246,6 +246,35 @@ async function importSource(bridge: BridgeClient, source: string, cwd?: string):
 }
 
 /**
+ * A PNG copy of a picture the local cropper cannot read.
+ *
+ * The crawler decodes PNG only, while uploads are usually JPEG. The engine
+ * already decodes what the browser sent, so opening it and saving a PNG costs
+ * one round and keeps the look ahead of the edit.
+ * @param client - the engine.
+ * @param files - the file bridge.
+ * @param source - the caller's source name, as it named it.
+ * @param cwd - session working directory.
+ * @returns the PNG bytes, or undefined when the engine could not open it.
+ */
+async function pngCopyOf(
+  client: EngineClient,
+  files: BridgeClient,
+  source: string,
+  cwd: string,
+): Promise<Buffer | undefined> {
+  await ensureScratch(files)
+  const name = `wish-${String(Date.now())}-look.png`
+  try {
+    await client.call('doc_open', { path: await importSource(files, source, cwd) })
+    await client.call('doc_save', { path: `${SCRATCH_DIR}/${name}`, format: 'png' })
+    return await files.download(`${SCRATCH_DIR}/${name}`)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * The newest picture this skill delivered into a workspace.
  *
  * Every finished edit lands as `wish-<stamp>.png`, so a request that names no
@@ -1040,7 +1069,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
 
   ctx.tools.register(defineTool({
     name: 'photocraft_look',
-    description: 'Look before editing: a whole-frame thumbnail plus an enlarged, ruled crop of one region, with that region reported in pixels. Call it when the target is named in words ("bigger eyes", "this mole") and no box was drawn — guessing coordinates is what turns one edit into four rounds. It only reads: nothing is opened in the engine and no file is written.',
+    description: 'Look before editing: a whole-frame thumbnail plus an enlarged, ruled crop of one region, with that region reported in pixels. Call it when the target is named in words ("bigger eyes", "this mole") and no box was drawn — guessing coordinates is what turns one edit into four rounds. Nothing in the workspace is modified; a non-PNG source is decoded by the engine first, which opens a temporary document.',
     parameters: {
       source: { type: 'string', description: '要看的图：工作区文件名（wish-123.png）或附件 id sha256:<hex>' },
       region: {
@@ -1075,8 +1104,10 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           text: `查看 ${value.file}：画布 ${value.canvas}`
             + (value.target === undefined
               ? ''
-              : `；目标 ${value.target}（黄框内，红十字是其中心，网格 ${value.grid ?? '—'} 一格，左下青线 = 10px）`)
-            + '\n这是侦察，没有修改任何文件。把量到的坐标换成 0..1 比例，再传给 photocraft_edit 的 regions / 落点。',
+              : `；选中区域 ${value.target}（黄框标出，红十字是这个区域的中心，网格 ${value.grid ?? '—'}，左下青线 = 10px）`)
+            + '\n这是侦察：工作区里的文件不会被改动（非 PNG 图会先由引擎转成 PNG）。'
+            + '十字和框标的是**你传进来的区域**，不是识别出来的物体——两只眼睛同框时中心会落在鼻梁上，要精确就收窄 region 再看一次。'
+            + '把量到的坐标换成 0..1 比例，再传给 photocraft_edit 的 regions / 落点。',
         },
         ...(value.view === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.view) }]),
         ...(value.closeup === undefined ? [] : [{ type: 'image' as const, attachment: previewRef(value.closeup) }]),
@@ -1091,21 +1122,38 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         const available = await recentPictures(cwd)
         throw new Error(`photocraft: 找不到图片 ${source}${available.length === 0 ? '' : `；工作区最近的图片：${available.join('、')}`}`)
       }
-      const bytes = await readFile(absolute)
-      const size = pngSize(bytes)
-      if (size === undefined) throw new Error('photocraft: 只能查看 PNG 图片')
+      const raw = await readFile(absolute)
+      // Uploads arrive as JPEG far more often than PNG, and the local cropper
+      // reads PNG only. The engine already decodes whatever the browser sent, so
+      // one open/save round buys a look at it — the alternative was telling the
+      // caller to export first, which put editing ahead of looking again.
+      const png = pngSize(raw) === undefined
+        ? await pngCopyOf(mcp, bridge, source, cwd)
+        : raw
+      const size = png === undefined ? undefined : pngSize(png)
+      if (png === undefined || size === undefined) {
+        throw new Error('photocraft: 这张图既不是 PNG，引擎也没能打开它')
+      }
       const side = Math.min(PREVIEW_SIDE_MAX, Math.max(PREVIEW_SIDE_MIN, Math.round(args.side ?? 512)))
       const stamp = String(Date.now())
-      const view = await keep(ctx, fitPng(bytes, side), `wish-${stamp}-look.png`)
+      const view = await keep(ctx, fitPng(png, side), `wish-${stamp}-look.png`)
       const region = args.region
       if (region === undefined) {
         return { file: basename(absolute), canvas: `${String(size.width)}×${String(size.height)}`, view }
       }
       const box = normalizeRegion(region)
-      const guides = guidesFor(size, box)
+      // A window equal to the region puts the box on the crop's own edge, where
+      // the border is half cut away and there is no context around it.
+      const window = {
+        x: box.x - Math.max(0.04, box.w * 0.25),
+        y: box.y - Math.max(0.04, box.h * 0.25),
+        w: box.w * 1.5,
+        h: box.h * 1.5,
+      }
+      const guides = guidesFor(size, window, box)
       const closeup = await keep(
         ctx,
-        guidesPng(fitPng(cropPng(bytes, box), CLOSEUP_SIDE), guides.options),
+        guidesPng(fitPng(cropPng(png, window), CLOSEUP_SIDE), guides.options),
         `wish-${stamp}-closeup.png`,
       )
       return {

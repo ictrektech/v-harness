@@ -517,6 +517,21 @@ describe('photocraft_look', () => {
       await rm(join(workspace, 'wish-look.png'), { force: true })
     }
   })
+
+  it('decodes a JPEG source through the engine before cropping it', async () => {
+    await writeFile(join(workspace, 'photo.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]))
+    const stage = stageOf()
+    stage.bridge.download = async () => SAMPLE
+    try {
+      const definition = toolOf(hostOf(stage).definitions, 'photocraft_look')
+      const value = await definition.execute({ source: 'photo.jpg' }, execOf())
+      expect(value).toMatchObject({ canvas: '8×8' })
+      // One open, one save: the engine is the only JPEG decoder in reach.
+      expect(stage.calls.map(call => call.name)).toEqual(['doc_open', 'doc_save'])
+    } finally {
+      await rm(join(workspace, 'photo.jpg'), { force: true })
+    }
+  })
 })
 
 describe('toolbox cards', () => {
