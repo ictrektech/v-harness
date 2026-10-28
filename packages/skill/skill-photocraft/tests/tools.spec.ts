@@ -510,6 +510,8 @@ describe('photocraft_look', () => {
         region: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
       }, execOf())
       expect(value).toMatchObject({ canvas: '8×8', target: '2,2 4×4px' })
+      // 1.5x the region, shifted so the region keeps the window's centre.
+      expect(value).toMatchObject({ window: '1,1 6×6px' })
       expect(value).toHaveProperty('closeup')
       // A look is read-only: the engine is never asked to open anything.
       expect(stage.calls).toHaveLength(0)

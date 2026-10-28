@@ -625,7 +625,7 @@ function guidesFor(
   window: PngFraction,
   target?: PngFraction,
   override?: number,
-): { options: GuideOptions; step: number; inner: number } {
+): { options: GuideOptions; step: number; inner: number; scale: number } {
   const crop = cropWindowOf(size.width, size.height, window)
   const scale = CLOSEUP_SIDE / Math.max(1, crop.width, crop.height)
   const steps = [2, 5, 10, 20, 25, 50, 100]
@@ -649,7 +649,10 @@ function guidesFor(
   const inner = Math.min(pitch, Math.max(12, targetShortSide / 12))
   return {
     step: chosen,
-    inner: Math.round(inner),
+    // Source pixels, like `step`: a reader converts both the same way, and the
+    // output-pixel number would read as a source one and mislead by the zoom.
+    inner: Math.max(1, Math.round(inner / scale)),
+    scale,
     options: {
       pitch,
       scale,
@@ -1117,6 +1120,8 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           file: { type: 'string', required: true },
           canvas: { type: 'string', required: true },
           target: { type: 'string' },
+          window: { type: 'string' },
+          zoom: { type: 'string' },
           grid: { type: 'string' },
           inner: { type: 'string' },
           view: previewSchema,
@@ -1129,7 +1134,9 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
           text: `查看 ${value.file}：画布 ${value.canvas}`
             + (value.target === undefined
               ? ''
-              : `；选中区域 ${value.target}（黄框标出，红十字是这个区域的中心，主网格 ${value.grid ?? '—'}、框内细网格 ${value.inner ?? '—'}、左下青线 = 10px）`)
+              : `；窗口 ${value.window ?? '—'}（放大 ${value.zoom ?? '—'}）`
+                + `；选中区域 ${value.target}（黄框，红十字是它的中心）`
+                + `；主网格 ${value.grid ?? '—'}、框内 ${value.inner ?? '—'}、左下青线 = 10px`)
             + '\n这是侦察：工作区里的文件不会被改动（非 PNG 图会先由引擎转成 PNG）。'
             + '十字和框标的是**你传进来的区域**，不是识别出来的物体——两只眼睛同框时中心会落在鼻梁上，要精确就收窄 region 再看一次。'
             + '把量到的坐标换成 0..1 比例，再传给 photocraft_edit 的 regions / 落点。',
@@ -1167,13 +1174,18 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         return { file: basename(absolute), canvas: `${String(size.width)}×${String(size.height)}`, view }
       }
       const box = normalizeRegion(region)
-      // A window equal to the region puts the box on the crop's own edge, where
-      // the border is half cut away and there is no context around it.
+      // 1.5x the region, then shifted so the region stays at the window's
+      // centre. Clipping the window at a canvas edge instead — which is what an
+      // unchecked expansion does — moves the box off-centre and puts the cross
+      // on the picture's centre rather than on the thing being measured.
+      const pad = 0.25
+      const width = Math.min(1, box.w * (1 + pad * 2))
+      const height = Math.min(1, box.h * (1 + pad * 2))
       const window = {
-        x: box.x - Math.max(0.04, box.w * 0.25),
-        y: box.y - Math.max(0.04, box.h * 0.25),
-        w: box.w * 1.5,
-        h: box.h * 1.5,
+        x: Math.min(Math.max(0, box.x + box.w / 2 - width / 2), 1 - width),
+        y: Math.min(Math.max(0, box.y + box.h / 2 - height / 2), 1 - height),
+        w: width,
+        h: height,
       }
       const guides = guidesFor(size, window, box, args.grid)
       const closeup = await keep(
@@ -1186,8 +1198,11 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         canvas: `${String(size.width)}×${String(size.height)}`,
         target: `${String(Math.round(box.x * size.width))},${String(Math.round(box.y * size.height))} `
           + `${String(Math.round(box.w * size.width))}×${String(Math.round(box.h * size.height))}px`,
+        window: `${String(Math.round(window.x * size.width))},${String(Math.round(window.y * size.height))} `
+          + `${String(Math.round(window.w * size.width))}×${String(Math.round(window.h * size.height))}px`,
+        zoom: `${guides.scale.toFixed(1)}×`,
         grid: `${String(guides.step)}px/格`,
-        inner: `${String(guides.inner)}px`,
+        inner: `${String(guides.inner)}px/格`,
         view,
         closeup,
       }
