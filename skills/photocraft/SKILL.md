@@ -1,6 +1,6 @@
 ---
 name: photocraft
-description: 用自然语言编辑照片。PhotoCraft 是跑在 harness 旁边的完整图像编辑器，每个编辑都是真实文档（图层、历史、可撤销）。常见诉求一步走 photocraft_edit——由你判断意图并选择卡片；更深的活走 photocraft_search → photocraft_describe → photocraft_run。每次编辑都会返回预览图，必须看图确认后再交付。
+description: 用自然语言编辑照片。PhotoCraft 是跑在 harness 旁边的完整图像编辑器，每个编辑都是真实文档（图层、历史、可撤销）。常见诉求一步走 photocraft_edit——由你判断意图并选择卡片；更深的活走 photocraft_search → photocraft_describe → photocraft_run。编辑返回预览图是给用户的，不是让你反复评判的：画面没被破坏就直接交付，同一改动最多 2 次。
 ---
 
 # PhotoCraft
