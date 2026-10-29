@@ -552,14 +552,41 @@ async function ask(transport, argv) {
   if (!sessionId) throw new Error('WeKnora 会话创建失败：返回里没有会话 id')
 
   const { answer, citations } = await chatStream(transport, String(sessionId), query, knowledgeBaseIds, knowledgeDocumentIds)
-  return {
-    query,
-    scope: { knowledge_bases: knowledgeBaseIds, knowledge_documents: knowledgeDocumentIds },
-    count: citations.length,
-    answer,
-    citations,
-    ...(answer === '' ? { hint: 'WeKnora 没有给出答案；改用 search 检索片段自己组织回答。' } : {}),
+  const formatted = formatAnswer(answer, citations)
+  if (formatted === '') {
+    return { instruction: 'WeKnora 没有给出答案。改用 search 检索片段，自己用几行组织回答。' }
   }
+  // 只给指令和成品，不给原文副本：模型能看到的东西越少，能改写的余地越小。
+  return {
+    instruction: '把 formatted_answer 的内容逐字作为回复正文输出。一个字都不改：不改措辞、不重排列表、不加前后缀、不加客套。它已经是排好版的最终答案。',
+    formatted_answer: formatted,
+  }
+}
+
+/**
+ * 把 HybRAG 的答案洗成可直接上屏的成品：引用标签转编号、去引用壳子、保留
+ * 上游原有的标题/编号/加粗结构。这是机械活，毫秒级，模型不再自己排版。
+ * @param {string} answer - the upstream answer text.
+ * @param {Record<string, unknown>[]} citations - references in display order.
+ * @returns {string} the cleaned answer; empty when the answer was empty.
+ */
+function formatAnswer(answer, citations) {
+  if (answer === '') return ''
+  const numbers = new Map(citations.map((entry, index) => [entry.chunk_id, index + 1]))
+  const formatted = answer
+    // 引用标签 → [n]；没有对应引用的标签直接删掉。
+    .replace(/<kb\b[^>]*?chunk_id="([^"]+)"[^>]*?\/?>/g, (tag, id) => {
+      const n = numbers.get(id)
+      return n === undefined ? '' : `[${String(n)}]`
+    })
+    .replace(/<kb\b[^>]*\/?>/g, '')
+    // 「（来源：[1][2]）」这类壳子只留编号本身。
+    .replace(/（\s*来源\s*：\s*((?:\[\d+\])+)\s*）/g, '$1')
+    .replace(/（\s*来源\s*：\s*）/g, '')
+    // 引用标签换行留下的连续空行压成一段。
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return formatted
 }
 
 async function main() {
