@@ -7,15 +7,22 @@ import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import type {} from '@deepseek-ai/dsh-client-ui-trajectory/client'
 import { ComposerAttachments } from './ComposerAttachments.tsx'
 import { MessageImages, MessageImagesContent } from './MessageImages.tsx'
+import { RegionTokenChip } from './RegionTokenChip.tsx'
+import { regionTokenRule } from './region-token-rule.ts'
 
-/** Slot registry required by the attachment presentation plugin. */
-export const inject = ['slots']
+/** Slot registry and Conversation assembly required by the attachment presentation plugin. */
+export const inject = ['slots', 'uiConversation']
 
 /**
- * Register composer attachments and the shared gallery with its domain adapters.
- * @param ctx - client plugin context with the Slot registry.
+ * Register composer attachments, the shared gallery, and the collapsed form of
+ * the region/brush tokens this package writes into the draft.
+ * @param ctx - client plugin context with the Slot registry and Conversation assembly.
  */
 export function apply(ctx: ClientContext): void {
+  ctx.effect(() => ctx.uiConversation.userText.register(regionTokenRule), 'ui-attachment: region tokens')
+  ctx.slots.inject('conversation.user.text.node', () => ctx.slots.register({
+    name: 'conversation.user.text.node', key: 'region', locale: 'conversation',
+  }, RegionTokenChip))
   ctx.slots.registerFactory({
     name: 'conversation.images.content', scope: 'root', locale: 'conversation',
   }, MessageImagesContent)

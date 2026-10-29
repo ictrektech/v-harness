@@ -18,6 +18,30 @@
   cursor: pointer;
 }
 
+/* A region/brush token in the draft: the wire text stays the node's content and
+   the chip is what the user sees, so a captured stroke does not paint a page of
+   fractions into the composer. Zeroing the glyphs keeps the caret at the token's
+   edges without moving the surrounding line box. */
+.regionToken {
+  font-size: 0;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.regionToken::after {
+  content: attr(data-chip-label);
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 13px;
+  line-height: 18px;
+  vertical-align: baseline;
+  user-select: none;
+}
+
 /* A command chip selected by its first deletion keystroke keeps the hover tint until the next deletion removes it. */
 [data-composer-command][data-selected] > .reference {
   background: var(--dsw-alias-state-business-tertiary);

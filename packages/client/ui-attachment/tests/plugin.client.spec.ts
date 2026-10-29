@@ -22,6 +22,7 @@ async function bench() {
   })
   ctx.provide('sessions', sessions)
   ctx.provide('locale', new LocaleRuntime(ctx))
+  ctx.provide('uiConversation', { userText: { register: () => () => {} } } as never)
   await ctx.plugin(SlotRegistry).await()
   ctx.slots.register({
     name: 'root',
@@ -46,7 +47,7 @@ describe('attachment plugin', () => {
 
   it('registers all entries and removes them with the plugin fiber', async () => {
     const { ctx, fiber, registerFactory } = await bench()
-    expect(inject).toEqual(['slots'])
+    expect(inject).toEqual(['slots', 'uiConversation'])
     expect(registerFactory).toHaveBeenCalledWith({
       name: 'conversation.images.content', scope: 'root', locale: 'conversation',
     }, MessageImagesContent)
