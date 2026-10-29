@@ -108,10 +108,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     throw new Error('skill-image-studio: assetRoot must be an absolute directory')
   }
   const runtime = resolveRuntime(config, assetRoot)
-  // The tool needs the shell, the tool registry, the question seam, and the
-  // attachment store (the answer carries the picture itself); a composition
-  // that only lists skills keeps the catalog without it.
-  ctx.inject(['tools', 'userQuestions', 'shell', 'attachments'], (toolCtx) => {
+  // The tool needs the shell, the tool registry, the question seam, the
+  // attachment store (the answer carries the picture itself), and the working
+  // directory (the body-image path resolves against it); a composition that
+  // only lists skills keeps the catalog without it.
+  ctx.inject(['tools', 'userQuestions', 'shell', 'attachments', 'workingDirectory'], (toolCtx) => {
     registerImageStudioTool(toolCtx, runtime)
   })
 }

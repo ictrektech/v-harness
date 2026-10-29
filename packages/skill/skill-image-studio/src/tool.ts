@@ -4,12 +4,14 @@
  */
 
 import { readFile } from 'node:fs/promises'
+import { relative } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-shell'
+import type {} from '@deepseek-ai/dsh-working-directory'
 import {
   buildFormFields, generateArguments, readConfirmed, withoutFormIntent, type CatalogEntry,
 } from './params.ts'
@@ -115,6 +117,8 @@ interface GenerateOutput {
     height: number
     name: string
   }[]
+  /** 正文里原样嵌入的 markdown 图片；相对会话工作目录解析。 */
+  markdown?: string
 }
 
 /** Image extensions the answer carries as picture attachments. */
@@ -217,11 +221,17 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
               },
             },
           },
+          markdown: { type: 'string' },
         },
       },
       presentationMeta: (_args, value) => ({ kind: 'image.studio', ...value }),
       render: (_args, value) => [
-        { type: 'text', text: JSON.stringify(value) },
+        {
+          type: 'text',
+          text: value.markdown === undefined
+            ? JSON.stringify(value)
+            : `${JSON.stringify(value)}\n\n给用户看图：在回复正文里**原样**写入这一行（路径已按会话目录算好，不要改写）：\n${value.markdown}`,
+        },
         ...(value.images ?? []).map(image => ({
           type: 'image' as const,
           attachment: {
@@ -275,7 +285,9 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
         files?: { path: string; filename: string; bytes: number }[]
       }
       const files = (jobValue.files ?? []).map(file => ({ path: file.path, filename: file.filename, bytes: file.bytes }))
-      return {
+      // 正文图片的路径按会话工作目录解析：算好相对路径，把要原样写进回复的
+      // markdown 直接给模型，杜绝它自己拼错（写错路径正文就不显示）。
+      const output = {
         job_id: jobValue.job_id ?? '',
         status: jobValue.status ?? 'unknown',
         seed: jobValue.seed ?? -1,
@@ -283,6 +295,16 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
         files,
         images: await savePictures(ctx, files),
       } satisfies GenerateOutput
+      const first = files.find(file => IMAGE_MEDIA[file.filename.split('.').pop()?.toLowerCase() ?? ''] !== undefined)
+      if (first !== undefined && exec.agent !== undefined) {
+        try {
+          const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+          output.markdown = `![${first.filename}](${relative(cwd, first.path).split('\\').join('/')})`
+        } catch {
+          // 拿不到工作目录就不给 markdown 字段：卡片和附件仍在。
+        }
+      }
+      return output
     },
   }))
 }

@@ -36,9 +36,9 @@ Authentication lives in the auth file; never print or pass its token to the mode
 1. Check the model is ready with `models --ready`; if its weights are missing, see [Prepare models](#prepare-models).
 2. Submit the job with `--wait`, which polls until it finishes and downloads the outputs.
 3. Inspect downloaded images with the image-reading tool before describing them; never guess what was rendered. When the running model declares no image input, `read_image` refuses — then skip the inspection and deliver the file instead of retrying.
-4. **照片怎么到用户眼前，分两条路，都不需要你额外做任何事**：
-   - **走了 `image_studio_generate` 工具**：结果卡片已经把照片直接显示在网页里了。正文一两句话收尾（说了什么、seed 多少）。**禁止**再内嵌 markdown 图片、**禁止**写文件链接或路径——你写的路径和用户页面的工作目录对不上，点开就是「文件不存在」；也**禁止**去运行任何命令研究路径怎么解析。
-   - **走 CLI（没有卡片）**：用 markdown 图片内嵌结果，src 用相对**当前工作目录**的路径（`files[].path` 是绝对路径，减去 cwd 前缀；会话在子目录里时带 `../`）。写完就交，不要验证、不要解释路径。
+4. **照片必须出现在回复正文里**，两条路：
+   - **走了 `image_studio_generate` 工具**：结果里有一个 `markdown` 字段（形如 `![output.png](image-studio-output/.../output.png)`，路径已按会话工作目录算好）——把这一行**原样**写进回复正文，再加一两句话收尾。不要改写路径、不要自己算、不要运行任何命令。
+   - **走 CLI（没有工具）**：先用 `--out <目录>` 把图下载到**当前工作目录**下，再在正文写 `![文件名](相对当前目录的路径)`。不要写到工作区根目录去。
 
 ## Generate images and videos
 
