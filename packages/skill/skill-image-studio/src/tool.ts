@@ -221,14 +221,14 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
               },
             },
           },
-          markdown: { type: 'string' },
+          markdown: { type: 'string', required: true },
         },
       },
       presentationMeta: (_args, value) => ({ kind: 'image.studio', ...value }),
       render: (_args, value) => [
         {
           type: 'text',
-          text: value.markdown === undefined
+          text: value.markdown === ''
             ? JSON.stringify(value)
             : `${JSON.stringify(value)}\n\n给用户看图：在回复正文里**原样**写入这一行（路径已按会话目录算好，不要改写）：\n${value.markdown}`,
         },
@@ -294,6 +294,7 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
         directory: jobValue.directory ?? '',
         files,
         images: await savePictures(ctx, files),
+        markdown: '',
       } satisfies GenerateOutput
       const first = files.find(file => IMAGE_MEDIA[file.filename.split('.').pop()?.toLowerCase() ?? ''] !== undefined)
       if (first !== undefined && exec.agent !== undefined) {
@@ -301,7 +302,7 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
           const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)
           output.markdown = `![${first.filename}](${relative(cwd, first.path).split('\\').join('/')})`
         } catch {
-          // 拿不到工作目录就不给 markdown 字段：卡片和附件仍在。
+          // 拿不到工作目录 markdown 就是空串：卡片和附件仍在。
         }
       }
       return output
