@@ -16,6 +16,8 @@
  *   search <query> [--kb] [--doc] [--limit]
  *                                retrieval with citations
  *   read <knowledge_id>          one document, every chunk in order
+ *   ask <question> [--kb] [--doc]
+ *                                HybRAG's own RAG answer, returned verbatim
  */
 
 import { existsSync } from 'node:fs'
@@ -455,7 +457,110 @@ async function read(transport, argv) {
 }
 
 /** Commands this CLI accepts. */
-const COMMANDS = { kbs, docs, search, read }
+const COMMANDS = { kbs, docs, search, read, ask }
+
+/**
+ * Read one knowledge-chat SSE response to completion, folding the answer
+ * pieces and the references event into one value.
+ * @param {{ request: Function, describe: string }} transport
+ * @param {string} sessionId - the WeKnora chat session.
+ * @param {string} query
+ * @param {string[]} knowledgeBaseIds
+ * @param {string[]} knowledgeDocumentIds
+ * @returns {Promise<{ answer: string, citations: Record<string, unknown>[] }>}
+ */
+async function chatStream(transport, sessionId, query, knowledgeBaseIds, knowledgeDocumentIds) {
+  const payload = Buffer.from(JSON.stringify({
+    query,
+    knowledge_base_ids: knowledgeBaseIds,
+    ...(knowledgeDocumentIds.length === 0 ? {} : { knowledge_ids: knowledgeDocumentIds }),
+  }), 'utf8')
+
+  const response = await new Promise((resolve, reject) => {
+    const outgoing = transport.request(`/api/v1/knowledge-chat/${encodeURIComponent(sessionId)}`, {
+      method: 'POST',
+      headers: {
+        accept: 'text/event-stream',
+        'content-type': 'application/json',
+        'content-length': String(payload.byteLength),
+      },
+    })
+    outgoing.setTimeout(REQUEST_TIMEOUT_MS, () => { outgoing.destroy(new Error('知识库问答超时')) })
+    outgoing.on('error', reject)
+    outgoing.on('response', resolve)
+    outgoing.end(payload)
+  })
+
+  const status = response.statusCode ?? 0
+  if (status >= 400) {
+    const body = parse(await readText(response))
+    throw new Error(`知识库服务返回 HTTP ${String(status)}：${upstreamMessage(body)}`)
+  }
+
+  let answer = ''
+  const citations = []
+  const seen = new Set()
+  for await (const chunk of response) {
+    for (const line of String(chunk).split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const payloadText = trimmed.slice(5).trim()
+      if (payloadText === '' || payloadText === '[DONE]') continue
+      let event
+      try {
+        event = JSON.parse(payloadText)
+      } catch {
+        continue
+      }
+      if (event?.response_type === 'answer' && typeof event.content === 'string') answer += event.content
+      if (event?.response_type !== 'references' || !Array.isArray(event.knowledge_references)) continue
+      for (const row of event.knowledge_references) {
+        const entry = citation(row)
+        if (entry.chunk_id && !seen.has(entry.chunk_id)) {
+          seen.add(entry.chunk_id)
+          citations.push(entry)
+        }
+      }
+    }
+  }
+  return { answer, citations }
+}
+
+/**
+ * HybRAG's own RAG answer: the upstream writes the prose, this command only
+ * carries it back verbatim — the agent must not reformat it into its own.
+ * @param {{ request: Function, describe: string }} transport
+ * @param {string[]} argv
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function ask(transport, argv) {
+  const query = positional(argv)
+  if (!query) throw new UsageError('用法：ask <问题> [--kb 库名,库名] [--doc 文档ID,...]')
+
+  const kbSpec = option(argv, 'kb')
+  const docSpec = option(argv, 'doc')
+  const knowledgeDocumentIds = docSpec === undefined ? [] : await resolveDocuments(transport, docSpec)
+  const knowledgeBaseIds = kbSpec === undefined
+    ? (knowledgeDocumentIds.length === 0 ? await allKnowledgeBases(transport) : [])
+    : await resolveKnowledgeBases(transport, kbSpec)
+
+  const session = await call(transport, '/api/v1/sessions', {
+    method: 'POST',
+    body: { title: query.slice(0, 40) },
+  })
+  const sessionId = session?.data?.id ?? (typeof session?.data === 'string' ? session.data : undefined)
+  if (!sessionId) throw new Error('WeKnora 会话创建失败：返回里没有会话 id')
+
+  const { answer, citations } = await chatStream(transport, String(sessionId), query, knowledgeBaseIds, knowledgeDocumentIds)
+  return {
+    query,
+    scope: { knowledge_bases: knowledgeBaseIds, knowledge_documents: knowledgeDocumentIds },
+    count: citations.length,
+    answer,
+    citations,
+    ...(answer === '' ? { hint: 'WeKnora 没有给出答案；改用 search 检索片段自己组织回答。' } : {}),
+  }
+}
 
 async function main() {
   const [command, ...argv] = process.argv.slice(2)
