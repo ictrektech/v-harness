@@ -16,7 +16,6 @@ import { ReferenceChipNode, $createReferenceChipNode } from './chip-node.tsx'
 import { CommandChipNode, $createCommandChipNode, registerCommandChipSeat } from './command-chip-node.tsx'
 import { registerCommandChipSelection } from './command-chip-selection.ts'
 import { registerTextRefDecoration, rescanTextRefs, TextRefNode } from './text-ref.ts'
-import { RegionTokenNode, registerRegionTokenDecoration } from './region-token.ts'
 import type { EditorProjection } from './projection.ts'
 import { $composerLayout, $projectComposer, detectOffsetOfClipboardOffset } from './projection.ts'
 import { $replaceDetectSpanWithNodes, $replaceDetectSpanWithText } from './span-map.ts'
@@ -61,7 +60,7 @@ export class DraftEditorRuntime {
   constructor(private readonly deps: DraftEditorRuntimeDeps) {
     this.editor = createEditor({
       namespace: 'dsh-composer',
-      nodes: [ReferenceChipNode, CommandChipNode, TextRefNode, RegionTokenNode],
+      nodes: [ReferenceChipNode, CommandChipNode, TextRefNode],
       onError: (error) => { throw error },
     })
   }
@@ -95,7 +94,6 @@ export class DraftEditorRuntime {
       registerCommandChipSeat(this.editor),
       registerCommandChipSelection(this.editor),
       registerTextRefDecoration(this.editor, () => this.deps.lexicon()),
-      registerRegionTokenDecoration(this.editor),
       () => {
         this.lexiconOff?.()
         this.lexiconOff = undefined
