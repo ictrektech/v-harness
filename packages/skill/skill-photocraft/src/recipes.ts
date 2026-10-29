@@ -100,6 +100,26 @@ function strokesOf(params: Record<string, unknown>, size: { width: number; heigh
 }
 
 /** Whether a `select.*` command actually selected anything. */
+/**
+ * Whether one painted stroke closes on itself: the ends meet within 5% of the
+ * short side. A closed stroke is a boundary the user drew; an open one is only a
+ * seed for the colour flood.
+ * @param points - one stroke, in document pixels.
+ * @param size - document size in pixels.
+ * @returns true when the stroke is a closed loop.
+ */
+export function isClosedLoop(
+  points: readonly (readonly number[])[],
+  size: { width: number; height: number },
+): boolean {
+  if (points.length < 8) return false
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (first === undefined || last === undefined) return false
+  const gap = Math.hypot(Number(first[0]) - Number(last[0]), Number(first[1]) - Number(last[1]))
+  return gap <= 0.05 * Math.max(1, Math.min(size.width, size.height))
+}
+
 function selectedAnything(reply: unknown): boolean {
   return typeof reply === 'object' && reply !== null && (reply as { selected?: unknown }).selected === true
 }
@@ -364,7 +384,27 @@ const CUTOUT: Recipe = {
       }, size)
       : undefined
     let seeded = false
-    if (painted.length > 0) {
+    // A closed stroke is a boundary, not a seed: flooding it by colour runs over a
+    // low-contrast frame (white fur on a white table reached the whole canvas, and
+    // an all-white mask makes every pixel opaque), so the polyline itself is the
+    // edge. An engine without path commands keeps the old behaviour instead of
+    // failing the whole cutout.
+    const loop = painted[0]
+    const closed = loop !== undefined && isClosedLoop(loop.points, size)
+    let traced = false
+    let pathUnsupported = false
+    if (closed && loop !== undefined) {
+      const knots = loop.points.map(point => [Math.round(Number(point[0])), Math.round(Number(point[1]))])
+      try {
+        await step(client, steps, 'path.set', { path: { subpaths: [{ closed: true, knots }] } })
+        const picked = await step(client, steps, 'path.toSelection', { feather: 1.5, antiAlias: true, mode: 'replace' })
+        seeded = selectedAnything(picked)
+        traced = seeded
+      } catch {
+        pathUnsupported = true
+      }
+    }
+    if (!seeded && painted.length > 0) {
       // Quick Selection floods by colour, so on a low-contrast picture it runs
       // over everything. The box is what stops it: the flood is grown first, then
       // intersected with the box's GrabCut, so a stray flood cannot leave it.
@@ -398,8 +438,10 @@ const CUTOUT: Recipe = {
       radius: 2,
       smartRadius: true,
       smooth: Number(params.soften ?? 20),
-      feather: 0.6,
-      shiftEdge: Number(params.shift ?? -25),
+      // The default -25 pulls the edge 25 px inside the shape, which is the
+      // opposite of cutting where the user drew; a traced loop keeps it on the line.
+      feather: traced ? 1.5 : 0.6,
+      shiftEdge: traced ? 0 : Number(params.shift ?? -25),
       decontaminate: true,
       output: 'newLayerWithMask',
       ...painted.length === 0 ? {} : {
@@ -421,6 +463,8 @@ const CUTOUT: Recipe = {
       steps,
       notes: [
         background === '' ? '结果层带蒙版，导出 PNG 即为透明底' : `结果层带蒙版，底色 ${background} 在它下面一层`,
+        ...traced ? ['按你画的闭合线直接切的，线内保留、线外透明'] : [],
+        ...pathUnsupported ? ['引擎版本不支持按线切，已退回颜色漫水，边缘可能不准'] : [],
         ...drawn || painted.length > 0 ? [] : ['没给框也没画笔，这版按画面里最显著的区域抠；回复时可以顺带说一句「框一下或涂一下会更准」'],
         '主体边缘如果还带一圈原背景，把 shift 调到 -30 再跑一次',
       ],

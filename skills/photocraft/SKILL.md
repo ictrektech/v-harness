@@ -68,7 +68,7 @@ description: 用自然语言编辑照片。一句话能说清就走 photocraft_e
 - `<strokes>` 的 tag 体就是点数组 → `strokes: [{ points: [[0.31,0.52],[0.33,0.51]] }]`。
 - **框不在图里**：你收到的永远是原图，不要在图里找红框，也不要因为"看着干净"就当用户没画。
 - 笔迹比框精确，擦除/画笔/局部调色优先用笔迹。
-- **抠图（出蒙版）更要用坐标**：先按框/笔迹把选区圈出来（矩形 `select.rect`，笔迹 `select.quick` 带 `points`/`size`），再让 `layer.removeBackground` 拿选区出蒙版——有选区时它直接用你的选区，不再自己猜主体；没有选区才会退回整图语义识别，边缘会糊。
+- **抠图按线来**：闭合笔迹用 `path.set` + `path.toSelection`（`knots` 是像素），线内保留、线外透明；`select.quick` 是按颜色漫水、只适合开放笔迹/涂抹——用闭合线去漫水会跑成整张画布，蒙版全白，导出的 PNG 就这么没有透明区。之后的 `select.refineEdge` 用 `shiftEdge: 0`，负值会沿线内缩。矩形框用 `select.object({rect})`；什么都没有才回退 `select.subject`。
 
 ## 图从哪来
 

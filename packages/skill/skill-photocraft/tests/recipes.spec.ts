@@ -222,6 +222,46 @@ describe('cutout', () => {
     })
     expect(names(calls)).not.toContain('layer.moveTo')
   })
+
+  /** A closed outline around the middle of a 100x50 document, as fractions. */
+  const loopOf = (): number[][] => {
+    const points: number[][] = []
+    for (let index = 0; index < 12; index += 1) {
+      const angle = (index / 12) * Math.PI * 2
+      points.push([0.5 + 0.3 * Math.cos(angle), 0.5 + 0.3 * Math.sin(angle)])
+    }
+    points.push([...points[0] as number[]])
+    return points
+  }
+
+  it('cuts along a closed stroke instead of flooding it', async () => {
+    const { calls, notes } = await run('cutout', { strokes: [{ points: loopOf(), size: 7 }] }, {
+      answer: name => (name === 'doc_inspect'
+        ? { width: 100, height: 100, activeLayer: 1, layers: [{ id: 1, kind: 'Pixel' }] }
+        : name === 'path.toSelection' ? { selected: true } : {}),
+    })
+    // The line is the boundary: no colour flood, and the edge is not pulled inside it.
+    expect(names(calls)).toEqual(['doc_inspect', 'path.set', 'path.toSelection', 'select.refineEdge'])
+    const traced = (calls[1]?.args as { path: { subpaths: { closed: boolean; knots: number[][] }[] } }).path.subpaths[0]
+    // `strokesOf` already converted the fractions, so the knots are pixels.
+    expect(traced?.closed).toBe(true)
+    expect(traced?.knots[0]).toEqual([80, 50])
+    expect(traced?.knots).toHaveLength(13)
+    expect(calls[3]?.args).toMatchObject({ shiftEdge: 0, feather: 1.5 })
+    expect(notes[1]).toBe('按你画的闭合线直接切的，线内保留、线外透明')
+  })
+
+  it('falls back to the colour flood when the engine has no path commands', async () => {
+    const { calls, notes } = await run('cutout', { strokes: [{ points: loopOf(), size: 7 }] }, {
+      answer: name => (name === 'doc_inspect'
+        ? { width: 100, height: 100, activeLayer: 1, layers: [{ id: 1, kind: 'Pixel' }] }
+        : name === 'select.quick' ? { selected: true } : {}),
+      reject: name => name.startsWith('path.'),
+    })
+    expect(names(calls)).toEqual(['doc_inspect', 'path.set', 'select.quick', 'select.refineEdge'])
+    expect(calls[3]?.args).toMatchObject({ shiftEdge: -25 })
+    expect(notes).toContain('引擎版本不支持按线切，已退回颜色漫水，边缘可能不准')
+  })
 })
 
 describe('remove', () => {
