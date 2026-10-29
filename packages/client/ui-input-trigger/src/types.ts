@@ -98,6 +98,13 @@ export interface HeaderRequest {
    * means for a header is the source's to decide.
    */
   readonly drilled: boolean
+  /**
+   * Name of the source whose drill pick produced {@link drilled}. Several
+   * sources share one trigger, so a descended draft belongs to exactly one of
+   * them; the others answer `undefined` rather than publishing a header for a
+   * path that is not theirs.
+   */
+  readonly drilledBy?: string
 }
 
 /**
@@ -118,6 +125,8 @@ export interface CandidateRequest {
   readonly position: TriggerPosition
   /** Whether this menu was opened or last re-scoped by a drill pick; see {@link HeaderRequest.drilled}. */
   readonly drilled: boolean
+  /** Which source's drill produced {@link drilled}; see {@link HeaderRequest.drilledBy}. */
+  readonly drilledBy?: string
   readonly signal: AbortSignal
 }
 

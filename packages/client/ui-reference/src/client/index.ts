@@ -74,7 +74,7 @@ export function apply(ctx: ClientContext): void {
     trigger: '@',
     name: 'reference',
     showGroupTitle: false,
-    async candidates(session: ClientSessionContext, { query, quoted, drilled, signal }) {
+    async candidates(session: ClientSessionContext, { query, quoted, drilled, drilledBy, signal }) {
       if (sessions.binding(session.sessionId) === undefined) {
         throw new Error(`reference candidates require a retained session "${session.sessionId}"`)
       }
@@ -99,7 +99,7 @@ export function apply(ctx: ClientContext): void {
       if (signal.aborted) return []
       // The header already names the directory being listed; rows repeat it only
       // when there is no header to carry it.
-      const withLocation = crumbsFor(query, quoted === true, drilled, t) === undefined
+      const withLocation = crumbsFor(query, quoted === true, drilled, drilledBy, t) === undefined
       const now = Date.now()
       const home = ctx.remote.$host.home
       const listed = sessions.list.getSnapshot().byId
@@ -126,7 +126,7 @@ export function apply(ctx: ClientContext): void {
       ]
     },
     header(_session: ClientSessionContext, req) {
-      return crumbsFor(req.query, req.quoted === true, req.drilled, t)
+      return crumbsFor(req.query, req.quoted === true, req.drilled, req.drilledBy, t)
     },
     onPick({ candidate, action }) {
       const value = parseCandidate(candidate.value)
@@ -189,10 +189,13 @@ type ReferenceCandidateValue =
  *
  * Only a drill produces one: a path the user typed carries its own context in
  * the draft, while a drill replaced the text they were reading with a deeper
- * one and owes them the way back.
+ * one and owes them the way back. The drill must also be this source's own —
+ * several sources share the `@` trigger, and a descent into another source's
+ * scope (V-Office's folder, a knowledge base) names no workspace trail.
  * @param query - the live query, path text following `@` or `@"`.
  * @param quoted - whether the active token is an open quoted path.
  * @param drilled - whether a drill pick, rather than typing, produced the query.
+ * @param drilledBy - the source whose drill produced it.
  * @param t - the reference dictionary.
  * @returns the crumbs, or undefined when this listing needs no header.
  */
@@ -200,9 +203,10 @@ function crumbsFor(
   query: string,
   quoted: boolean,
   drilled: boolean,
+  drilledBy: string | undefined,
   t: Translate,
 ): readonly InputTriggerCrumb[] | undefined {
-  if (!drilled) return undefined
+  if (!drilled || drilledBy !== 'reference') return undefined
   const slash = query.lastIndexOf('/')
   if (slash < 0) return undefined
   const segments = query.slice(0, slash).split('/').filter(segment => segment !== '')

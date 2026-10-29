@@ -14,7 +14,12 @@ import css from './Cards.module.css'
 
 /** The workspace file-read face this plugin uses; satisfied by the Host remote. */
 interface WorkspaceFileReader {
-  readBytes(sessionId: unknown, path: string, params: Record<string, never>, signal?: AbortSignal): Promise<unknown>
+  readBytes(
+    sessionId: unknown,
+    path: string,
+    params: Record<string, never>,
+    signal?: AbortSignal,
+  ): Promise<{ ok: true; value: { data: Uint8Array } } | { ok: false; error: unknown }>
 }
 
 /** The workspace-files remote, captured at registration and injected per call. */
@@ -45,8 +50,10 @@ function WorkspaceImage(props: {
     const cwd = props.cwd
     const relative = cwd !== undefined && path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path
     props.workspaceFiles.readBytes(props.sessionId, relative, {}, controller.signal).then((file) => {
-      const bytes = (file as { data?: Uint8Array }).data ?? file
-      objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/jpeg' }))
+      // The Remote answers in a result envelope; the bytes live in `value.data`.
+      if (!file.ok) throw new Error('workspace file read failed')
+      // Copy into an ArrayBuffer-backed view: the wire type allows any buffer.
+      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(file.value.data)], { type: imageTypeOf(path) }))
       setUrl(objectUrl)
     }).catch(() => {
       // A missing image degrades that cell to a plain button; the grid stays.
@@ -62,6 +69,15 @@ function WorkspaceImage(props: {
       ? <span className={css.thumbPending}>{props.alt}</span>
       : <img className={css.thumbImage} src={url} alt={props.alt} loading="lazy" />}
   </button>
+}
+
+/** The MIME type a blob needs so the browser renders the file as an image. */
+function imageTypeOf(path: string): string {
+  const extension = path.split('.').pop()?.toLowerCase() ?? ''
+  if (extension === 'png') return 'image/png'
+  if (extension === 'webp') return 'image/webp'
+  if (extension === 'gif') return 'image/gif'
+  return 'image/jpeg'
 }
 
 function formatBytes(size: number): string {

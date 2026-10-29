@@ -17,7 +17,7 @@
 import type {
   InputTriggerCandidate, InputTriggerCrumb, InputTriggerSource,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
-import { documents, failureOf, libraries } from './api.ts'
+import { documents, failureOf, knownLibraries, libraries } from './api.ts'
 import type { KnowledgeKey } from './locales.ts'
 import { decodeScope, encodeScope, labelOf, markerOf, type Scope } from './markers.ts'
 
@@ -122,6 +122,20 @@ async function documentRows(
 }
 
 /**
+ * @param path - text after `@`, trigger character stripped.
+ * @returns whether the first path segment names a library of this account —
+ *   a descended draft whose base is anything else (V-Office's folder, a
+ *   workspace directory) belongs to another `@` source and lists nothing
+ *   here. Undefined while no library list has settled yet.
+ */
+function ownsPath(path: string): boolean | undefined {
+  const known = knownLibraries()
+  if (known === undefined) return undefined
+  const base = path.slice(0, path.indexOf('/'))
+  return known.some(library => library.name === base)
+}
+
+/**
  * Build the source registered under `@` for this plugin.
  * @param t - the knowledge dictionary.
  * @param openPanel - opens the evidence panel in the right column.
@@ -139,6 +153,7 @@ export function knowledgeSource(t: Translate): InputTriggerSource {
     async candidates(_session, { query, signal }) {
       const path = pathOf(query)
       const slash = path.indexOf('/')
+      if (slash !== -1 && ownsPath(path) === false) return []
       return slash === -1
         ? baseRows(path, signal, t)
         : documentRows(path.slice(0, slash), path.slice(slash + 1), signal, t)
@@ -150,6 +165,10 @@ export function knowledgeSource(t: Translate): InputTriggerSource {
       // Only a descent owes a way back; text the user typed carries its own
       // context in the draft.
       if (slash === -1) return undefined
+      // A descent into something that is not a library names no trail here —
+      // publishing one would stack this source's crumbs under another
+      // source's menu (V-Office's folder, a workspace directory).
+      if (ownsPath(path) !== true) return undefined
       const base = path.slice(0, slash)
       return [
         { label: t('source.all'), value: ROOT },

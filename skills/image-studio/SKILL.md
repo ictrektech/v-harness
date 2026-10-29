@@ -36,7 +36,9 @@ Authentication lives in the auth file; never print or pass its token to the mode
 1. Check the model is ready with `models --ready`; if its weights are missing, see [Prepare models](#prepare-models).
 2. Submit the job with `--wait`, which polls until it finishes and downloads the outputs.
 3. Inspect downloaded images with the image-reading tool before describing them; never guess what was rendered. When the running model declares no image input, `read_image` refuses — then skip the inspection and deliver the file instead of retrying.
-4. When `image_studio_generate` ran, the result card already shows the image and the seed: reply in one or two sentences and do not restate paths, sizes, or re-present the same file. Without the tool, report the prompt, model, seed, and absolute output paths.
+4. **照片怎么到用户眼前，分两条路，都不需要你额外做任何事**：
+   - **走了 `image_studio_generate` 工具**：结果卡片已经把照片直接显示在网页里了。正文一两句话收尾（说了什么、seed 多少）。**禁止**再内嵌 markdown 图片、**禁止**写文件链接或路径——你写的路径和用户页面的工作目录对不上，点开就是「文件不存在」；也**禁止**去运行任何命令研究路径怎么解析。
+   - **走 CLI（没有卡片）**：用 markdown 图片内嵌结果，src 用相对**当前工作目录**的路径（`files[].path` 是绝对路径，减去 cwd 前缀；会话在子目录里时带 `../`）。写完就交，不要验证、不要解释路径。
 
 ## Generate images and videos
 

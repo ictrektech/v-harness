@@ -546,6 +546,7 @@ describe('directory header', () => {
     quoted,
     position: 'inline',
     drilled: true,
+    drilledBy: 'reference',
     signal: new AbortController().signal,
   })
 
@@ -559,9 +560,14 @@ describe('directory header', () => {
     expect(source.header?.(session, { query: 'src', drilled: true })).toBeUndefined()
   })
 
+  it('publishes no header for a drill another @ source made', async () => {
+    const { source } = await bench()
+    expect(source.header?.(session, { query: '我的文档/', drilled: true, drilledBy: 'voffice' })).toBeUndefined()
+  })
+
   it('trails the workspace root down to the directory being listed', async () => {
     const { source } = await bench()
-    expect(source.header?.(session, { query: 'src/module1/ind', drilled: true })).toEqual([
+    expect(source.header?.(session, { query: 'src/module1/ind', drilled: true, drilledBy: 'reference' })).toEqual([
       { label: 'Workspace', value: JSON.stringify({ kind: 'file', fileKind: 'directory', label: 'Workspace', mention: '@' }) },
       { label: 'src', value: JSON.stringify({ kind: 'file', fileKind: 'directory', label: 'src', mention: '@src/' }) },
       {
@@ -574,19 +580,19 @@ describe('directory header', () => {
 
   it('keeps an open quote across every crumb of a quoted descent', async () => {
     const { source } = await bench()
-    const crumbs = source.header?.(session, { query: 'my dir/sub/', quoted: true, drilled: true })
+    const crumbs = source.header?.(session, { query: 'my dir/sub/', quoted: true, drilled: true, drilledBy: 'reference' })
     expect(crumbs?.map(crumb => JSON.parse(crumb.value) as { mention: string }).map(value => value.mention))
       .toEqual(['@"', '@"my dir/', '@"my dir/sub/'])
   })
 
   it('publishes no header when a segment cannot be written back as mention text', async () => {
     const { source } = await bench()
-    expect(source.header?.(session, { query: 'ok/we\u0001ird/', drilled: true })).toBeUndefined()
+    expect(source.header?.(session, { query: 'ok/we\u0001ird/', drilled: true, drilledBy: 'reference' })).toBeUndefined()
   })
 
   it('returns to a crumb through the same drill outcome a folder row uses', async () => {
     const { source } = await bench()
-    const crumbs = source.header?.(session, { query: 'src/module1/', drilled: true })
+    const crumbs = source.header?.(session, { query: 'src/module1/', drilled: true, drilledBy: 'reference' })
     expect(source.onPick({
       candidate: { name: 'src', value: crumbs?.[1]?.value ?? '' },
       session,

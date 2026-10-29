@@ -68,6 +68,17 @@ describe('the folder level', () => {
       ])
   })
 
+  it('answers a foreign descent with nothing, on both levels', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const source = vofficeSource(t)
+    // A slash under any other first segment belongs to another `@` source
+    // (a knowledge base, a workspace directory): no rows, no trail, no fetch.
+    await expect(source.candidates(session, request('合同智能档案/条款'))).resolves.toEqual([])
+    expect(source.header?.(session, { query: '合同智能档案/条款', drilled: true })).toBeUndefined()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('walks back to the bare trigger from the back step', () => {
     const outcome = vofficeSource(t).onPick(pick({ name: 'source.back', value: 'voffice-back' }, 'drill'))
     expect(outcome).toEqual({ text: '@', continue: true })

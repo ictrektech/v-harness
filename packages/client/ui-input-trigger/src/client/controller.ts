@@ -98,6 +98,8 @@ export class InputTriggerController {
   private dismissed: DismissedHit | null = null
   /** Whether the open menu was reached by a drill pick; cleared with the menu. */
   private drilled = false
+  /** The source whose drill produced {@link drilled}; undefined whenever it is. */
+  private drilledBy: string | undefined = undefined
   private fetch: AbortController | null = null
   private disposed = false
   /** Per-source lexicon unsubscribers (sources without the hook never enter). */
@@ -549,6 +551,7 @@ export class InputTriggerController {
           quoted: hit.quoted,
           position: hit.position,
           drilled: this.drilled,
+          ...(this.drilledBy === undefined ? {} : { drilledBy: this.drilledBy }),
           signal: controller.signal,
         })
         .then(
@@ -611,7 +614,11 @@ export class InputTriggerController {
     // a header off a draft nobody descended into — one that would name a
     // directory while hiding the locations its rows still need.
     this.drilled = action === 'drill'
-    if (!this.execute(outcome, hit.span)) this.drilled = false
+    this.drilledBy = action === 'drill' ? src.name : undefined
+    if (!this.execute(outcome, hit.span)) {
+      this.drilled = false
+      this.drilledBy = undefined
+    }
   }
 
   /** Re-poll every header-bearing source in the hit roster and publish their crumbs. */
@@ -622,7 +629,12 @@ export class InputTriggerController {
       if (src.header === undefined) continue
       let published: readonly InputTriggerCrumb[] | undefined
       try {
-        published = src.header(projection, { query: hit.query, quoted: hit.quoted, drilled: this.drilled })
+        published = src.header(projection, {
+          query: hit.query,
+          quoted: hit.quoted,
+          drilled: this.drilled,
+          ...(this.drilledBy === undefined ? {} : { drilledBy: this.drilledBy }),
+        })
       } catch (error) {
         // A faulty source drops silently with a console record (the
         // candidate-fetch failure policy); a header is decoration and must
@@ -660,6 +672,7 @@ export class InputTriggerController {
     if (next.open) return
     this.clearLauncher()
     this.drilled = false
+    this.drilledBy = undefined
     this.setHeaders(new Map())
   }
 }

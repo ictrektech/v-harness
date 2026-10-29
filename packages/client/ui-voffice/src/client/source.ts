@@ -148,6 +148,10 @@ export function vofficeSource(t: Translate): InputTriggerSource {
       const slash = path.indexOf('/')
       // The folder level costs no request: it is one row the user descends.
       if (slash === -1) return [folderRow(t)]
+      // Only the folder token this source writes descends into its documents;
+      // a slash under any other first segment belongs to another `@` source
+      // (a knowledge base, a workspace directory) and lists nothing here.
+      if (path.slice(0, slash) !== t('source.root')) return []
       return documentRows(path.slice(slash + 1), signal, t)
     },
 
@@ -157,6 +161,8 @@ export function vofficeSource(t: Translate): InputTriggerSource {
       // Only a descent owes a way back; text the user typed carries its own
       // context in the draft.
       if (slash === -1) return undefined
+      // A foreign descent names no trail of this source's.
+      if (path.slice(0, slash) !== t('source.root')) return undefined
       return [
         { label: t('source.back'), value: BACK },
         { label: t('source.root'), value: ROOT, current: true },

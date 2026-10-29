@@ -45,6 +45,13 @@ const ERROR_BODY_LIMIT = 4_096
 const RESULT_BODY_LIMIT = 8 * 1024 * 1024
 const THUMB_DIR = process.env.ALBUM_THUMB_DIR ?? 'album-thumbs'
 const THUMB_SIZES = new Set(['thumb', 'preview', 'full'])
+/**
+ * 相册前端的跳转链接路径：拼在 `/search/photos/<id>` 前。
+ *
+ * 部署的挂载段不一样的用 `ALBUM_FRONTEND_URL` 覆盖；链接本身由网关记着的
+ * 门户域名拼成绝对地址（见 portalOrigin），域名不同也不用改配置。
+ */
+const FRONTEND_PATH = (process.env.ALBUM_FRONTEND_URL ?? '/app/com.ictrek.ai-album').replace(/\/+$/, '')
 
 class UsageError extends Error {}
 
@@ -306,6 +313,58 @@ function shapeAsset(asset) {
 }
 
 /**
+ * This tenant's portal origin, as recorded by the gateway for this account
+ * (the same endpoint the V-Office editor links use). An empty string when the
+ * gateway has not seen a browser request from this account yet.
+ * @returns {Promise<string>}
+ */
+function portalOrigin() {
+  const socketPath = process.env.VH_OFFICE_SOCK ?? join(homedir(), '.dsh', 'voffice.sock')
+  if (!existsSync(socketPath)) return Promise.resolve('')
+  return new Promise((resolve) => {
+    const request = httpRequest(
+      { socketPath, path: '/__vh/origin', headers: { accept: 'application/json' } },
+      (response) => {
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', (chunk) => { body += chunk })
+        response.on('end', () => {
+          try { resolve(String(JSON.parse(body).origin ?? '')) } catch { resolve('') }
+        })
+        response.on('error', () => resolve(''))
+      },
+    )
+    request.setTimeout(5_000, () => request.destroy(new Error('origin timeout')))
+    request.on('error', () => resolve(''))
+    request.end()
+  })
+}
+
+/**
+ * Give every asset a clickable album-frontend link.
+ *
+ * The link must be an absolute URL on the user's own portal: the chat client
+ * renders a relative path as a workspace file (clicking it reports "file not
+ * found"), while an absolute one opens the album app on the machine the user
+ * is actually on. No browser request seen yet → the bare relative path, the
+ * best available fallback.
+ * @param {Record<string, unknown>[]} assets
+ * @returns {Promise<void>}
+ */
+async function withViewUrls(assets) {
+  if (FRONTEND_PATH === '') return
+  const origin = await portalOrigin()
+  const base = origin !== '' && !/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/iu.test(origin)
+    ? origin.replace(/\/+$/u, '')
+    : ''
+  for (const asset of assets) {
+    const id = String(asset.id ?? '')
+    if (id === '') continue
+    asset.viewUrl = `${base}${FRONTEND_PATH}/search/photos/${encodeURIComponent(id)}`
+  }
+}
+
+/**
  * Download one binary response into the workspace.
  * @param {import('node:http').IncomingMessage} response
  * @param {string} target
@@ -432,6 +491,7 @@ async function run(argv) {
       ? body.assets.items
       : Array.isArray(body.assets) ? body.assets : []
     const list = assets.map(shapeAsset)
+    await withViewUrls(list)
     const { failures } = await withThumbs(transport, list, thumbs)
     const result = { ok: true, total: list.length, assets: list, hint }
     if (failures > 0) result.thumbFailures = failures

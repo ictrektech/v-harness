@@ -3,7 +3,10 @@
  * then run the packaged CLI with the values the human accepted.
  */
 
+import { readFile } from 'node:fs/promises'
+
 import type { Context } from '@deepseek-ai/cordis'
+import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-shell'
@@ -103,6 +106,63 @@ interface GenerateOutput {
   seed: number
   directory: string
   files: { path: string; filename: string; bytes: number }[]
+  /** Generated pictures as durable attachments; the chat shows them directly. */
+  images: {
+    attachmentId: string
+    mediaType: string
+    bytes: number
+    width: number
+    height: number
+    name: string
+  }[]
+}
+
+/** Image extensions the answer carries as picture attachments. */
+const IMAGE_MEDIA: Readonly<Record<string, 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+}
+
+/**
+ * Save every generated picture as a durable attachment, so the tool result
+ * itself carries the picture and the chat displays it — no card, no markdown
+ * path, nothing the model can get wrong.
+ * @param ctx - context owning the attachment store.
+ * @param files - the job's downloaded files.
+ * @returns one ref per picture that saved; failures skip that picture only.
+ */
+async function savePictures(
+  ctx: Context,
+  files: readonly { path: string; filename: string; bytes: number }[],
+): Promise<GenerateOutput['images']> {
+  const inputs: (SaveImageAttachment & { name: string })[] = []
+  for (const file of files) {
+    const mediaType = IMAGE_MEDIA[file.filename.split('.').pop()?.toLowerCase() ?? '']
+    if (mediaType === undefined) continue
+    try {
+      inputs.push({ data: await readFile(file.path), mediaType, name: file.filename })
+    } catch {
+      // An unreadable download still has the card; skip the attachment only.
+    }
+  }
+  if (inputs.length === 0) return []
+  try {
+    const refs = await ctx.attachments.saveImages(inputs)
+    return refs.map((ref: ImageAttachmentRef, index: number) => ({
+      attachmentId: String(ref.attachmentId),
+      mediaType: ref.mediaType,
+      bytes: ref.bytes,
+      width: ref.width,
+      height: ref.height,
+      name: inputs[index]?.name ?? '',
+    }))
+  } catch {
+    // The job itself succeeded; a refused attachment must not fail it.
+    return []
+  }
 }
 
 /**
@@ -141,10 +201,38 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
               },
             },
           },
+          images: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                attachmentId: { type: 'string', required: true },
+                mediaType: { type: 'string', required: true },
+                bytes: { type: 'number', required: true },
+                width: { type: 'number', required: true },
+                height: { type: 'number', required: true },
+                name: { type: 'string', required: true },
+              },
+            },
+          },
         },
       },
       presentationMeta: (_args, value) => ({ kind: 'image.studio', ...value }),
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      render: (_args, value) => [
+        { type: 'text', text: JSON.stringify(value) },
+        ...(value.images ?? []).map(image => ({
+          type: 'image' as const,
+          attachment: {
+            attachmentId: AttachmentId(image.attachmentId),
+            mediaType: image.mediaType as ImageAttachmentRef['mediaType'],
+            bytes: image.bytes,
+            width: image.width,
+            height: image.height,
+          },
+        })),
+      ],
     },
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('image_studio_generate needs an agent to confirm parameters with')
@@ -186,12 +274,14 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
         directory?: string
         files?: { path: string; filename: string; bytes: number }[]
       }
+      const files = (jobValue.files ?? []).map(file => ({ path: file.path, filename: file.filename, bytes: file.bytes }))
       return {
         job_id: jobValue.job_id ?? '',
         status: jobValue.status ?? 'unknown',
         seed: jobValue.seed ?? -1,
         directory: jobValue.directory ?? '',
-        files: (jobValue.files ?? []).map(file => ({ path: file.path, filename: file.filename, bytes: file.bytes })),
+        files,
+        images: await savePictures(ctx, files),
       } satisfies GenerateOutput
     },
   }))

@@ -78,6 +78,16 @@ export function forgetLibraries(): void {
 }
 
 /**
+ * The library list as of the last settled fetch, for synchronous ownership
+ * checks (a menu header cannot await). `undefined` while no fetch has
+ * settled yet.
+ * @returns the cached libraries, or undefined before the first success.
+ */
+export function knownLibraries(): readonly Library[] | undefined {
+  return cachedLibraries
+}
+
+/**
  * @param response - the gateway's answer, or undefined when the request never left.
  * @returns status plus the gateway's error code and message.
  */

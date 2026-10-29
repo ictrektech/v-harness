@@ -694,6 +694,27 @@ describe('header / drilled descent', () => {
     expect(controller.headers.getSnapshot().size).toBe(0)
   })
 
+  it('names the drilling source in the header and candidate requests of every source', async () => {
+    const driller: InputTriggerSource = {
+      trigger: '@',
+      name: 'voffice',
+      candidates: () => Promise.resolve([{ name: '我的文档', drill: true, value: '我的文档' }]),
+      onPick: pick => (pick.action === 'drill' ? { text: `@${String(pick.candidate.value)}/`, continue: true } : undefined),
+    }
+    const { source, requests, fetches } = crumbSource()
+    const { controller, actx } = controllerBench([driller, source])
+    actx.on('slash/input-insert-text', () => true)
+    controller.track('@我', 2, { tier: 'plain' }, 1)
+    await tick()
+    controller.pick('voffice', 0, 'drill')
+    controller.track('@我的文档/', 6, { tier: 'plain' }, 2)
+    await tick()
+    // The descent belongs to `voffice`; every source reads who owns it, so a
+    // foreign source can stay silent instead of publishing a trail.
+    expect(requests.at(-1)).toMatchObject({ query: '我的文档/', drilled: true, drilledBy: 'voffice' })
+    expect(fetches.at(-1)).toBe(true)
+  })
+
   it('routes a crumb through the source drill path and refuses the current step', async () => {
     const { source, picks } = crumbSource()
     const { controller, actx } = controllerBench([source])
