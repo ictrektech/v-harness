@@ -176,6 +176,7 @@ export function apply(ctx: Context): void {
     subscribeSessionExpired: listener => ctx.remote.$on('deepseek-account/session-expired', listener),
     subscribeModelSignInRequired: listener => ctx.remote.$on('deepseek-account/model-sign-in-required', listener),
     ...nativePlatform === undefined ? {} : { openPlatformPage: platformPageOpener(refreshAccount) },
+    ...(config.hideSignIn ? { hideSignIn: true } : {}),
     refreshAccount,
     contactUs() {
       // Sample the account, build and environment before awaiting native information, so

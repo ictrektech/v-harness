@@ -54,6 +54,8 @@ export interface AccountSectionInjected {
   subscribeModelSignInRequired?: (listener: () => void) => () => void
   /** Desktop-only: show one page in the account feature's shared native host; absent in ordinary browsers. */
   openPlatformPage?: PlatformPages['open']
+  /** Deployment switch: the DeepSeek sign-in entry is hidden when authentication happens elsewhere. */
+  hideSignIn?: boolean
 
   /** Account stream owned by the Host and theme snapshots published by the renderer, observed through framework hooks. */
   hooks: {

@@ -29,6 +29,7 @@ export const Config = z.object({
   contactSource: ContactConfigFields.contactSource,
   bonusAckRetryDelayMs: ContactConfigFields.bonusAckRetryDelayMs,
   bonusAckRetryMaxDelayMs: ContactConfigFields.bonusAckRetryMaxDelayMs,
+  hideSignIn: ContactConfigFields.hideSignIn,
   version: OnboardingSettingsFields.version.volatile(),
   step: OnboardingSettingsFields.step.volatile(),
   purpose: OnboardingSettingsFields.purpose.volatile(),
@@ -51,6 +52,7 @@ export function apply(ctx: Context, config: Config): void {
     table.push({ kind: 'global', name: CONTACT_CONFIG_GLOBAL, value: {
       contactFormUrl: config.contactFormUrl, contactSource: config.contactSource,
       bonusAckRetryDelayMs: config.bonusAckRetryDelayMs, bonusAckRetryMaxDelayMs: config.bonusAckRetryMaxDelayMs,
+      hideSignIn: config.hideSignIn,
     } satisfies ContactConfig })
   })
 }

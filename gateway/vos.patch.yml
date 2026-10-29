@@ -6,6 +6,10 @@
   config:
     credentialOnboarding: false
     schedulerManaged: true
+- id: ui-settings-account
+  config:
+    # VOS 部署的登录由网关的 OIDC 免登录完成，页面内不需要 DeepSeek 账号登录入口。
+    hideSignIn: true
 - id: workspace-controller
   config:
     documentsDirectory: !!js process.env.HOME + '/workspace'
