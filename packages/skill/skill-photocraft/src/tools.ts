@@ -18,7 +18,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import { CommandIndex } from './capability.ts'
 import {
-  cropPng, cropWindowOf, fitPng, guidesPng, pngSize,
+  cropPng, cropWindowOf, fitPng, guidesPng, pngHasAlpha, pngSize,
   type GuideOptions, type PngFraction,
 } from './png.ts'
 import type { BridgeClient, EngineClient } from './client.ts'
@@ -506,6 +506,8 @@ export interface FinishView {
   focus?: PngFraction | undefined
   /** The marks themselves, reported as pixels so a caller can check a size. */
   target?: PngFraction | undefined
+  /** The edit is a cutout: warn when the delivered PNG has no alpha at all. */
+  expectsAlpha?: boolean | undefined
 }
 
 /**
@@ -777,6 +779,11 @@ async function finish(
   const bytes = await bridge.download(`${SCRATCH_DIR}/${file}`)
   await saveDeliverable(ctx, exec, file, bytes)
   const size = pngSize(bytes)
+  // A cutout whose mask came back white is byte-for-byte the source picture, and
+  // every downstream reader calls that success. Say it out loud instead.
+  if (view.expectsAlpha === true && !pngHasAlpha(bytes)) {
+    notes.push('抠图结果没有透明区域：选区可能没生效，导出的 PNG 不带 alpha')
+  }
   const wantsFull = view.mode === 'both' || view.mode === 'full'
   const wantsCloseup = (view.mode === 'both' || view.mode === 'focus') && view.focus !== undefined
   let preview: Preview | undefined
@@ -1512,6 +1519,7 @@ export function registerPhotocraftTools(ctx: Context, runtime: PhotocraftToolsRu
         side,
         focus: focusWindowOf(args),
         target: targetWindowOf(args),
+        expectsAlpha: id === 'cutout',
       })
     },
   }))

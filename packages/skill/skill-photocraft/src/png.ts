@@ -222,6 +222,24 @@ export function cropPng(bytes: Buffer, region: PngFraction): Buffer {
 }
 
 /** Pixel size from the header alone, without decoding the image. */
+/**
+ * Whether one PNG carries an alpha channel.
+ *
+ * A cutout that lost its mask looks finished: every pixel is opaque, the encoder
+ * writes colour type 2, and the delivery is the source picture again. Reading the
+ * header is the only way to tell that from a real cut.
+ * @param bytes - encoded PNG.
+ * @returns true for colour types 4 (grey + alpha) and 6 (RGBA); false otherwise.
+ */
+export function pngHasAlpha(bytes: Buffer): boolean {
+  if (bytes.length < 26) return false
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10]
+  if (signature.some((byte, index) => bytes[index] !== byte)) return false
+  if (bytes.toString('ascii', 12, 16) !== 'IHDR') return false
+  const colorType = bytes[25]
+  return colorType === 4 || colorType === 6
+}
+
 export function pngSize(bytes: Buffer): { width: number; height: number } | undefined {
   if (bytes.length < 24 || !bytes.subarray(0, 8).equals(SIGNATURE)) return undefined
   if (bytes.toString('latin1', 12, 16) !== 'IHDR') return undefined

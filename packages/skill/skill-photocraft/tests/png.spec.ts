@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cropPng, fitPng, guidesPng, pngSize } from '../src/png.ts'
+import { cropPng, fitPng, guidesPng, pngHasAlpha, pngSize } from '../src/png.ts'
 
 /** One 8×8 RGBA PNG: every pixel distinct, so a wrong window is visible. */
 const SAMPLE = Buffer.from(
@@ -56,5 +56,28 @@ describe('closeup cropping', () => {
     expect(fitPng(junk, 32)).toBe(junk)
     expect(guidesPng(junk)).toBe(junk)
     expect(pngSize(junk)).toBeUndefined()
+  })
+})
+
+describe('alpha header check', () => {
+  /** A PNG prefix whose IHDR reports `colorType`. */
+  const headerOf = (colorType: number): Buffer => {
+    const bytes = Buffer.alloc(26)
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes, 0)
+    bytes.write('IHDR', 12, 'ascii')
+    bytes[25] = colorType
+    return bytes
+  }
+
+  it('accepts the colour types that carry alpha', () => {
+    expect(pngHasAlpha(SAMPLE)).toBe(true)
+    expect(pngHasAlpha(headerOf(6))).toBe(true)
+    expect(pngHasAlpha(headerOf(4))).toBe(true)
+  })
+
+  it('rejects an opaque picture and anything that is not a PNG', () => {
+    expect(pngHasAlpha(headerOf(2))).toBe(false)
+    expect(pngHasAlpha(headerOf(0))).toBe(false)
+    expect(pngHasAlpha(Buffer.from('PNG'))).toBe(false)
   })
 })
