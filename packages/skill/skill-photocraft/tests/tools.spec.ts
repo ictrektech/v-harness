@@ -385,7 +385,7 @@ describe('photocraft_edit', () => {
     expect(value.notes).toEqual([
       '结果层带蒙版，导出 PNG 即为透明底',
       '没给框也没画笔，这版按画面里最显著的区域抠；回复时可以顺带说一句「框一下或涂一下会更准」',
-      '主体边缘如果还带一圈原背景，把 shift 调到 -30 再跑一次',
+      '主体边缘还带一圈原背景时如实告诉用户；只有没给位置或用户要求收边，才把 shift 调到 -30 重跑',
       // The fake bridge delivers `PNG`, so the header check fires: that is the
       // behaviour a cutout that produced no transparency has to report.
       '抠图结果没有透明区域：选区可能没生效，导出的 PNG 不带 alpha',
