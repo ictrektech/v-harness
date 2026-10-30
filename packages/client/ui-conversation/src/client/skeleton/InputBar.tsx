@@ -422,20 +422,12 @@ export const InputBar = memo(function InputBar({
             // outside the editor, so a captured span is stale by the time it is
             // used and the insertion would be refused silently.
             onInsertRegion: (token: string) => {
-              // Two lines instead of a cross-package helper: ui-attachment
-              // already imports this package, so sharing code would close a
-              // cycle between the composer and its attachment surface.
-              // Replaces the tags already in the draft: the surface re-sends the
-              // whole set while a box is being adjusted, and appending would
-              // stack one tag per pointer move.
-              const kept = draft
-                .split('\n')
-                .filter(line => !line.startsWith('<region ') && !line.startsWith('<strokes '))
-                .join('\n')
-                .trimEnd()
-              const next = kept === '' ? token : `${kept}\n${token}`
-              inputActions.setDraft(next)
-              return true
+              // The token rides in a reference chip, never as plain text: a chip
+              // is inserted once and keeps the fractions in its own projection,
+              // while a text transform rebuilding itself on every keystroke is
+              // what locked the composer up. The surface re-sends the whole set
+              // while a box is adjusted, so the chip batch replaces the old one.
+              return inputActions.insertRegionTokens(token)
             },
           },
         })}

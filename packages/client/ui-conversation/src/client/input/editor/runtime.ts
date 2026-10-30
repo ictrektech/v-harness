@@ -8,11 +8,12 @@ import {
 } from 'lexical'
 import { registerPlainText } from '@lexical/plain-text'
 import { createEmptyHistoryState, registerHistory } from '@lexical/history'
-import { mergeRegister } from '@lexical/utils'
+import { $dfs, mergeRegister } from '@lexical/utils'
 import type { DraftReference, ReferenceInsert } from '../../contract/draft-editor.ts'
 import type { CommandClaim } from '../../contract/input.ts'
 import { registerReferenceActivation } from './reference-activation.ts'
-import { ReferenceChipNode, $createReferenceChipNode } from './chip-node.tsx'
+import { ReferenceChipNode, $createReferenceChipNode, $isReferenceChipNode } from './chip-node.tsx'
+import { REGION_SOURCE, regionChipLabel } from './region-chip.ts'
 import { CommandChipNode, $createCommandChipNode, registerCommandChipSeat } from './command-chip-node.tsx'
 import { registerCommandChipSelection } from './command-chip-selection.ts'
 import { registerTextRefDecoration, rescanTextRefs, TextRefNode } from './text-ref.ts'
@@ -301,6 +302,44 @@ export class DraftEditorRuntime {
       const before = projection.detectText.slice(0, at)
       const nodes = references.flatMap(ref => [$createReferenceChipNode(ref), $createTextNode(' ')])
       if (before !== '' && !/\s$/u.test(before)) nodes.unshift($createTextNode(' '))
+      applied = $replaceDetectSpanWithNodes({ start: at, end: at }, nodes)
+    }, PASTE_TAG)
+    return applied
+  }
+
+  /**
+   * Replace the picker's region/brush chips with one chip per token, keeping the
+   * rest of the draft.
+   *
+   * The token itself is the chip's clipboard projection, so the message the model
+   * receives and the turn log still carry the fractions; only the glyphs are
+   * collapsed. Chips are inserted, never re-derived from text: a text transform
+   * would rebuild them on every keystroke and lock the editor up.
+   * @param tokens - whole tokens, in the order the picker drew them.
+   * @returns whether the insertion position accepted the batch.
+   */
+  setRegionTokens(tokens: readonly string[]): boolean {
+    let applied = false
+    this.applyEdit(() => {
+      for (const { node } of $dfs()) {
+        if ($isReferenceChipNode(node) && node.getSource() === REGION_SOURCE) node.remove()
+      }
+      if (tokens.length === 0) {
+        applied = true
+        return
+      }
+      const projection = $projectComposer(key => this.occurrenceIdOf(key))
+      const at = projection.detectText.length
+      const nodes = tokens.flatMap(token => [
+        $createTextNode(' '),
+        $createReferenceChipNode({
+          source: REGION_SOURCE,
+          ref: token,
+          label: regionChipLabel(token),
+          appearance: 'file',
+          clipboardText: token,
+        }),
+      ])
       applied = $replaceDetectSpanWithNodes({ start: at, end: at }, nodes)
     }, PASTE_TAG)
     return applied

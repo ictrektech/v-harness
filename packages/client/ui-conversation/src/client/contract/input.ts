@@ -256,6 +256,12 @@ export interface InputActions {
   insertText(text: string, span: TokenSpan): boolean
   /** Replace the whole draft with plain text, removing inline reference chips. */
   setDraft(text: string): void
+  /**
+   * Replace the picker's region/brush chips with one chip per token.
+   * @param tokens - whole tokens, newline separated; each keeps its own text as the chip's projection.
+   * @returns false when submission locked the editor.
+   */
+  insertRegionTokens(tokens: string): boolean
   /** Write the current semantic document through the mounted persistence callback. */
   persistDraft(): void
   /** Append ordered browser-owned attachment ids; busy admission phases refuse. */
