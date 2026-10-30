@@ -104,6 +104,7 @@ function props(
       captureInsertion: unused,
       insertText: unused,
       setDraft: unused,
+      insertRegionTokens: () => false,
       persistDraft: unused,
       addAttachments: unused,
       removeAttachment: unused,
