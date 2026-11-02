@@ -5,7 +5,7 @@
 # Every command is idempotent: re-running `ensure` after a container rebuild
 # re-adopts the existing volume instead of replacing it.
 #
-# Layout: one tenant = one account = /home/<account>. The home root itself is
+# Layout: one tenant = one account = <data root>/<account>. The home root itself is
 # 0700 root, so a tenant cannot even traverse into a sibling's name.
 set -euo pipefail
 

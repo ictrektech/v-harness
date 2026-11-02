@@ -55,7 +55,7 @@ import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
 import { closeWeknoraCapabilities, ensureWeknoraCapability, handleWeknoraControl } from './weknora.mjs';
 import { handleScheduler } from './scheduler.mjs';
 
-// Tenant homes live in /home/<account>, and nothing else does: the gateway's
+// Tenant homes live in <DATA_ROOT>/<account>, and nothing else does: the gateway's
 // own state (user table, instance cookies, logs, capability sockets) sits in
 // one hidden sibling that no tenant can reach.
 const DATA_ROOT = process.env.DATA_ROOT ?? '/data';

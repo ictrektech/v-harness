@@ -22,7 +22,7 @@
   config:
     mode: !!js "process.env.DSH_PERMISSION_MODE ?? 'workspace-write'"
     workspaceRoot: !!js process.cwd()
-    tenantRoot: !!js "process.env.HOME ?? '/home'"
+    tenantRoot: !!js "process.env.HOME ?? '/data'"
 # A tenant may pick read-only or workspace-write in General settings, never
 # danger-full-access: one click must not be able to turn the sandbox off.
 - id: permission

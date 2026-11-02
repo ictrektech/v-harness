@@ -50,7 +50,7 @@ const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 const instances = new Map();
 
 /**
- * Directory layout for one tenant. The home is `/home/<account>` and nothing
+ * Directory layout for one tenant. The home is `<DATA_ROOT>/<account>` and nothing
  * else: the account is the only name a tenant ever sees, and its home is the
  * one writable tree in its world. Gateway state (user table, logs, instance
  * cookies) lives beside the homes under the state root, outside every tenant's

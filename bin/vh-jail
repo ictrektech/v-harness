@@ -14,7 +14,8 @@
 # named entries below are reachable, and identity files are generated per tenant.
 #
 # The hostname is set per account so the prompt reads `vh-xxxx@dsh:~` instead of
-# exposing the container id, and `cd ..` from the tenant home stops at /home
+# exposing the container id, and `cd ..` from the tenant home stops at the
+# data root holding only that tenant
 # because nothing above it exists.
 #
 # Requires CAP_SYS_ADMIN plus unconfined seccomp, declared in the app manifest.
@@ -181,9 +182,9 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     # late, so it is treated as a refusal.
     fail() { printf \"vh-jail: isolation check failed: %s\n\" \"\$1\" >&2; exit 97; }
     [ \"\$(wc -l < /etc/passwd)\" -eq 1 ] || fail \"etc/passwd lists more than one account\"
-    [ \"\$(ls /home | wc -l)\" -eq 1 ] || fail \"home lists more than one tenant\"
-    [ \"\$(ls /home)\" = \"$VH_JAIL_ACCOUNT\" ] || fail \"home does not name this tenant\"
-    if [ -e /data ]; then fail \"the state root is visible\"; fi
+    [ \"\$(ls $HOME_ROOT | wc -l)\" -eq 1 ] || fail \"the data root lists more than one tenant\"
+    [ \"\$(ls $HOME_ROOT)\" = \"$VH_JAIL_ACCOUNT\" ] || fail \"the data root does not name this tenant\"
+    if [ -e /home ]; then fail \"a system home is visible\"; fi
     if [ -e /root ]; then fail \"the root home is visible\"; fi
     export HOME=\"$VH_JAIL_HOME\"
     export USER=\"$VH_JAIL_ACCOUNT\"
