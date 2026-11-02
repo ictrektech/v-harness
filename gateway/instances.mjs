@@ -33,7 +33,7 @@ const BUNDLED_SKILL_DIR = process.env.BUNDLED_SKILL_DIR ?? '/opt/v-harness/skill
  * fresh home tree on the container's writable layer and losing it on the next
  * recreate.
  */
-const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/home';
+const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 
 /**
  * @typedef {object} Instance
@@ -297,8 +297,8 @@ async function launch(options) {
 
   // vh-jail drops to the user *after* entering a mount+pid+uts namespace. The
   // jailed paths are what the process sees and what dsh records, so HOME and
-  // everything derived from it use /home/<account>: the tenant's own name, not
-  // an internal identifier.
+  // everything derived from it use <data root>/<account>: the tenant's own
+  // name, not an internal identifier.
   const jailHome = join(HOME_ROOT, account);
 
   const launchArgs = [

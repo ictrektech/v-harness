@@ -9,7 +9,7 @@
 # 0700 root, so a tenant cannot even traverse into a sibling's name.
 set -euo pipefail
 
-HOME_ROOT="${HOME_ROOT:-/home}"
+HOME_ROOT="${HOME_ROOT:-/data}"
 NAME_RE='^[a-z_][a-z0-9_-]{0,31}$'
 
 die() { printf 'vh-userctl: %s\n' "$*" >&2; exit 1; }

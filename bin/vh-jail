@@ -3,7 +3,7 @@
 #
 # The jail layout mirrors an ordinary Linux server:
 #
-#   /home/<account>     the tenant's own content (bound from /home/<account>)
+#   /data/<account>     the tenant's own content (bound from the data root)
 #   /usr /bin /lib ...  shared runtime, mounted read-only
 #   (nothing else)
 #
@@ -22,7 +22,7 @@
 # Usage: vh-jail <account> <uid> <home> <command...>
 set -euo pipefail
 
-HOME_ROOT="${HOME_ROOT:-/home}"
+HOME_ROOT="${HOME_ROOT:-/data}"
 SKILLS_ROOT="${BUNDLED_SKILL_DIR:-/opt/v-harness/skills}"
 JAIL_HOSTNAME="${VH_JAIL_HOSTNAME:-dsh}"
 

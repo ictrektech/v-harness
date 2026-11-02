@@ -58,7 +58,7 @@ import { handleScheduler } from './scheduler.mjs';
 // Tenant homes live in /home/<account>, and nothing else does: the gateway's
 // own state (user table, instance cookies, logs, capability sockets) sits in
 // one hidden sibling that no tenant can reach.
-const DATA_ROOT = process.env.DATA_ROOT ?? '/home';
+const DATA_ROOT = process.env.DATA_ROOT ?? '/data';
 const STATE_ROOT = process.env.STATE_ROOT ?? join(DATA_ROOT, '.vh');
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';

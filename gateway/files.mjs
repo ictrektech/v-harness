@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 
 const HELPER = process.env.FILE_HELPER ?? '/opt/v-harness/bin/vh-file';
-const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/home';
+const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 
 /**
  * Build the helper invocation for the current privilege level.
