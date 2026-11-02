@@ -414,7 +414,7 @@ async function launch(options) {
  * @returns {Promise<Instance>}
  */
 export async function ensureInstance(options) {
-  const { record, dataRoot, statePath } = options;
+  const { record, dataRoot } = options;
   const account = record.account ?? record.linuxName;
   const existing = instances.get(record.namespace);
   if (existing?.starting) {
@@ -441,13 +441,11 @@ export async function ensureInstance(options) {
     starting: undefined,
   };
   placeholder.starting = (async () => {
-    const state = await readState(statePath);
-    const cached = state[record.namespace];
+    // Every process start exchanges its own launch URL for a cookie. A cached
+    // cookie belongs to the `.credentials.yaml` that signed it: once the home
+    // was moved or replaced by a new image, that key is gone and replaying the
+    // stale value lands the browser on "authentication required".
     const launched = await launch(options);
-    if (cached?.cookie && cached.cookieExpiresAt && cached.cookieExpiresAt > Date.now()) {
-      launched.cookie = cached.cookie;
-      launched.cookieExpiresAt = cached.cookieExpiresAt;
-    }
     launched.child?.once('exit', () => {
       const current = instances.get(record.namespace);
       if (current?.child === launched.child) instances.delete(record.namespace);
