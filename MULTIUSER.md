@@ -1,6 +1,6 @@
 # v-harness 多用户
 
-唯一入口文档。其他文档：[发布流程](ictrek.app/RELEASE.md) · [VOS 应用说明](ictrek.app/README.md)。
+唯一入口文档。其他文档：[多租户隔离设计](MULTIUSER-ISOLATION.md) · [发布流程](ictrek.app/RELEASE.md) · [VOS 应用说明](ictrek.app/README.md)。
 
 ## 一句话
 
@@ -89,8 +89,9 @@ skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access t
 
 - **浏览器 bundle**（V-Office 卡片等）：构建产物在 `/opt/v-harness/plugins`。
 - **agent 侧工具插件**（`dsh-skill-image-studio` / `dsh-skill-photocraft`）：`scripts/stage-agent-plugins.ts` 按发布流程同款构建（tsdown 出 `lib/index.js` 入口，`tsc -b` 按引用自动构建依赖闭包），payload 在 `/opt/v-harness/agent-plugins`。
+- **registry 插件**（`dshmarket` / `ds-bot`）：镜像构建时用 `--legacy-peer-deps` 装进同一 payload（版本由 `DSMARKET_VERSION` / `DS_BOT_VERSION` 固定），依赖一并带上但只在 profile 缺包时复制。两者自带 `dsh.bundle.patch`，所以按 bundle 层挂载，而不是插行。
 
-`gateway/plugins.mjs` 在每次 dsh 启动前同步：浏览器 bundle 覆盖发布版（fork 独有的包缺失即创建）；agent 侧插件包覆盖、依赖包缺了才补（peer 依赖由 dsh 安装解析层供给，不打包），并把 carrier bundle（`gateway/agent-plugins/vh-agent-plugins`，声明挂载行）写进 profile 的 `dsh.profile.bundles`。profile 由网关在 dsh 首次启动前预创建，**新租户第一次登录即有全部工具**。完整开发教程（skill / 工具插件 / 交互卡片怎么做、怎么上线）见 [PLUGINS.md](PLUGINS.md)。
+`gateway/plugins.mjs` 在每次 dsh 启动前同步：浏览器 bundle 覆盖发布版（fork 独有的包缺失即创建）；agent 侧插件包覆盖、依赖包缺了才补（peer 依赖由 dsh 安装解析层供给，不打包），并把 carrier bundle（`gateway/agent-plugins/vh-agent-plugins`，声明挂载行）写进 profile 的 `dsh.profile.bundles`。profile 由网关在 dsh 首次启动前预创建，**新租户第一次登录即有全部工具**；已有租户的 profile 在下次启动时补齐缺失的 bundle 条目。完整开发教程（skill / 工具插件 / 交互卡片怎么做、怎么上线）见 [PLUGINS.md](PLUGINS.md)。
 
 ## 数据布局
 

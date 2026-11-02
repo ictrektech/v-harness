@@ -43,6 +43,17 @@ export interface SandboxExecutionPolicy {
   /** Absolute root directory `workspace-write` may write under. */
   workspaceRoot: string
   /**
+   * Absolute root of the calling account's own tree. When set, a confining
+   * provider HIDES the other accounts' trees instead of leaving them readable:
+   * sibling homes, the deployment state root, and the root account's home stop
+   * existing inside the confined view. This is a visibility boundary orthogonal
+   * to {@link mode} — `workspaceRoot` governs writes, `tenantRoot` governs
+   * whether another tenant's files are reachable at all. Absent keeps the
+   * legacy whole-host read-only view, which is only correct on a host that
+   * belongs to a single account.
+   */
+  tenantRoot?: string
+  /**
    * Opaque identity of the calling session (the branded `dsh-session`
    * SessionId). Backends key per-session state off it (e.g. windows-acl gives
    * each live session/workspace pair a random private temp directory and SID,

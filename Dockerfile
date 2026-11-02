@@ -172,6 +172,25 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
  && node --import tsx/esm scripts/stage-agent-plugins.ts \
       --out /build/agent-plugins
 
+# Registry plugins every tenant profile ships with. They are not workspace
+# packages, so they install from the registry instead of being staged from the
+# build; naming them in the payload manifest is what makes gateway/plugins.mjs
+# overwrite a tenant's copy on every start. Both declare `dsh.bundle.patch`, so
+# the profile layer list loads their rows from their own patches.
+#
+# Their real dependencies (undici, js-yaml, deep-view) ride along and are
+# copied only when a profile has no copy yet — the same rule that keeps a
+# published package from being shadowed by this payload. Peers are not
+# installed: dsh supplies them from the installation at runtime.
+ARG DSMARKET_VERSION=1.73.8
+ARG DS_BOT_VERSION=0.2.5
+RUN mkdir -p /tmp/registry-plugins \
+ && npm install --prefix /tmp/registry-plugins --no-save --ignore-scripts --legacy-peer-deps \
+      "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" \
+ && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
+ && rm -rf /tmp/registry-plugins \
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')"
+
 # ============================================================
 # Stage: runtime image
 # ============================================================

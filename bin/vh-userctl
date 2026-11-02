@@ -4,10 +4,13 @@
 #
 # Every command is idempotent: re-running `ensure` after a container rebuild
 # re-adopts the existing volume instead of replacing it.
+#
+# Layout: one tenant = one account = /home/<account>. The home root itself is
+# 0700 root, so a tenant cannot even traverse into a sibling's name.
 set -euo pipefail
 
-DATA_ROOT="${DATA_ROOT:-/data}"
-NAME_RE='^vh-[0-9a-f]{8}$'
+HOME_ROOT="${HOME_ROOT:-/home}"
+NAME_RE='^[a-z_][a-z0-9_-]{0,31}$'
 
 die() { printf 'vh-userctl: %s\n' "$*" >&2; exit 1; }
 
@@ -15,18 +18,14 @@ require_root() {
   [[ "${EUID}" -eq 0 ]] || die 'must run as root'
 }
 
-# ensure <linuxName> <uid> <home>
+# ensure <account> <uid> <home>
 ensure() {
   local name="${1:-}" uid="${2:-}" home="${3:-}"
 
   [[ "$name" =~ $NAME_RE ]] || die "invalid account name: ${name}"
   [[ "$uid" =~ ^[0-9]+$ ]] || die "invalid uid: ${uid}"
   (( uid >= 20000 && uid <= 59999 )) || die "uid out of range: ${uid}"
-  [[ "$home" == /* ]] || die "home must be absolute: ${home}"
-  case "$home" in
-    "${DATA_ROOT}"/*) ;;
-    *) die "home outside data root: ${home}" ;;
-  esac
+  [[ "$home" == "${HOME_ROOT}/${name}" ]] || die "home must be ${HOME_ROOT}/${name}: ${home}"
 
   if ! getent group "$uid" >/dev/null 2>&1; then
     groupadd -g "$uid" --system "$name"
@@ -41,35 +40,41 @@ ensure() {
   mkdir -p "$home" "$home/.dsh" "$home/.agents" "$home/workspace"
   # The default landing directory for chats without a project.
   mkdir -p "$home/workspace/日常"
+  # User-level tool prefixes, pre-created and owned by the account so the first
+  # `npm i -g` / `pip install --user` cannot fail on a root-owned path.
+  mkdir -p "$home/.npm-global/bin" "$home/.local/bin" "$home/.local/lib" \
+    "$home/.local/share" "$home/.local/state" "$home/.config" \
+    "$home/.cargo/bin" "$home/.bun/bin" "$home/.nvm/current/bin" "$home/.cache"
 
-  # Traversable but not listable: the account must reach its own home through
-  # both parents, while neither parent reveals the other tenants.
-  chmod 0711 "$(dirname "$home")"
+  # The home root is closed: a tenant reaches its own home through the jail's
+  # bind mount, never by walking this directory. A sibling's name is therefore
+  # not merely unreadable but undiscoverable.
+  chmod 0700 "$HOME_ROOT"
+  chown root:root "$HOME_ROOT"
   chown "$name:$name" "$home"
   # Tighten only: never widen an existing mode.
   chmod 0700 "$home"
-  chown -R "$name:$name" "$home/.dsh" "$home/.agents" "$home/workspace"
+  chown -R "$name:$name" "$home/.dsh" "$home/.agents" "$home/workspace" \
+    "$home/.npm-global" "$home/.local" "$home/.config" \
+    "$home/.cargo" "$home/.bun" "$home/.nvm" "$home/.cache"
   chmod 0700 "$home/.dsh" "$home/.agents"
 }
 
-# claim <linuxName> <socketPath>
+# claim <account> <socketPath>
 #
 # The gateway creates a tenant's capability sockets as root; the owner of the
 # account must be the only one able to connect to them. Only the listed socket
-# names under a namespace home are accepted, so this cannot become a
+# names under a tenant home are accepted, so this cannot become a
 # general-purpose chown.
 claim() {
   local name="${1:-}" path="${2:-}"
 
   [[ "$name" =~ $NAME_RE ]] || die "invalid account name: ${name}"
   case "$path" in
-    "${DATA_ROOT}/users/"*"/.dsh/voffice.sock"|"${DATA_ROOT}/users/"*"/.dsh/album.sock"|"${DATA_ROOT}/users/"*"/.dsh/weknora.sock"|"${DATA_ROOT}/users/"*"/.dsh/photocraft.sock") ;;
+    "${HOME_ROOT}/${name}/.dsh/voffice.sock"|"${HOME_ROOT}/${name}/.dsh/album.sock"|"${HOME_ROOT}/${name}/.dsh/weknora.sock"|"${HOME_ROOT}/${name}/.dsh/photocraft.sock") ;;
     *) die "unexpected claim path: ${path}" ;;
   esac
   [[ -S "$path" ]] || die "not a socket: ${path}"
-
-  local home="${path%/.dsh/*}"
-  [[ "$(basename "$home")" =~ ^[0-9a-f]{40}$ ]] || die "home is not a namespace directory: ${home}"
   getent passwd "$name" >/dev/null 2>&1 || die "unknown account: ${name}"
 
   chown "$name:$name" "$path"

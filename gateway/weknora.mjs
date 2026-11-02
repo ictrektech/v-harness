@@ -47,7 +47,7 @@ const EXCHANGE_TTL_MS = 45 * 60_000;
  * on the data volume survives restarts and lets an operator point the gateway
  * at a service that moved.
  */
-const ADDRESS_FILE = join(process.env.DATA_ROOT ?? '/data', 'weknora-url');
+const ADDRESS_FILE = join(process.env.STATE_ROOT ?? '/home/.vh', 'weknora-url');
 
 /**
  * The configured upstream, if any.

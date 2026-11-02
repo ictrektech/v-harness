@@ -13,9 +13,9 @@
  * @module v-harness/gateway/instances
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, writeFile, rename, access, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
@@ -25,6 +25,15 @@ const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const LOG_DIR_NAME = 'logs';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
 const BUNDLED_SKILL_DIR = process.env.BUNDLED_SKILL_DIR ?? '/opt/v-harness/skills';
+/**
+ * The one root every tenant home lives under.
+ *
+ * It follows DATA_ROOT so a deployment whose volume is still mounted at the
+ * old path (`/data`) keeps finding its tenants there, instead of creating a
+ * fresh home tree on the container's writable layer and losing it on the next
+ * recreate.
+ */
+const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/home';
 
 /**
  * @typedef {object} Instance
@@ -41,18 +50,22 @@ const BUNDLED_SKILL_DIR = process.env.BUNDLED_SKILL_DIR ?? '/opt/v-harness/skill
 const instances = new Map();
 
 /**
- * Directory layout for one user under the shared data root.
- * @param {string} dataRoot
- * @param {string} namespace
+ * Directory layout for one tenant. The home is `/home/<account>` and nothing
+ * else: the account is the only name a tenant ever sees, and its home is the
+ * one writable tree in its world. Gateway state (user table, logs, instance
+ * cookies) lives beside the homes under the state root, outside every tenant's
+ * writable tree.
+ * @param {string} stateRoot - gateway state directory (user table, logs).
+ * @param {string} account - the tenant's stable account name.
  */
-export function userPaths(dataRoot, namespace) {
-  const home = join(dataRoot, 'users', namespace);
+export function userPaths(stateRoot, account) {
+  const home = join(HOME_ROOT, account);
   return {
     home,
     dshHome: join(home, '.dsh'),
     agentsHome: join(home, '.agents'),
     workspace: join(home, 'workspace'),
-    log: join(dataRoot, LOG_DIR_NAME, `${namespace}.log`),
+    log: join(stateRoot, LOG_DIR_NAME, `${account}.log`),
   };
 }
 
@@ -185,16 +198,20 @@ async function exchangeCookie(launchUrl) {
  * safer than rewriting it, and dsh rebuilds it from the storages.
  *
  * @param {string} dshHome absolute path of the tenant's `.dsh`
- * @param {string} namespace tenant namespace (the directory name)
+ * @param {string} namespace tenant namespace (the historical directory name)
+ * @param {string} account tenant account (the home name now in use)
  * @returns {Promise<void>}
  */
-async function rewriteJailPaths(dshHome, namespace) {
-  const legacy = `/data/users/${namespace}`;
-  const current = `/home/${namespace}`;
+async function rewriteJailPaths(dshHome, namespace, account) {
+  const current = join(HOME_ROOT, account);
+  // Both spellings predate the account-named home: the mirrored `/data/users`
+  // tree and the earlier `/home/<namespace>` one.
+  const stale = [`/data/users/${namespace}`, `/home/${namespace}`]
+    .filter((prefix) => prefix !== current);
   const storages = join(dshHome, 'storages');
   // The marker names the layout it migrated to, so a future layout change
   // re-runs the rewrite by bumping the version instead of silently skipping.
-  const marker = join(dshHome, '.jail-paths-home-v1');
+  const marker = join(dshHome, '.jail-paths-home-v2');
   try {
     await access(marker);
     return;
@@ -212,10 +229,49 @@ async function rewriteJailPaths(dshHome, namespace) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     const file = join(storages, entry.name);
     const text = await readFile(file, 'utf8').catch(() => undefined);
-    if (text === undefined || !text.includes(legacy)) continue;
-    await writeFile(file, text.split(legacy).join(current), 'utf8');
+    if (text === undefined) continue;
+    let rewritten = text;
+    for (const prefix of stale) rewritten = rewritten.split(prefix).join(current);
+    if (rewritten === text) continue;
+    await writeFile(file, rewritten, 'utf8');
   }
   await writeFile(marker, `${current}\n`, 'utf8');
+}
+
+/**
+ * Hand a tenant's data roots to the tenant before anything starts.
+ *
+ * A home carried over from an earlier layout can still be owned by root, and a
+ * root-owned `.dsh` is exactly the state in which two accounts write the same
+ * plugin store: the process runs as the tenant but every write into that store
+ * needs the gateway, so the newest writer wins and the previous content stays
+ * readable. Repairing the owner is what closes that window; refusing the launch
+ * instead would leave the account unable to sign in at all.
+ *
+ * @param {string} home absolute tenant home
+ * @param {string} dshHome absolute tenant DSH_HOME
+ * @param {number} uid tenant uid
+ * @param {string} account tenant account, for the diagnostic
+ * @returns {Promise<void>}
+ */
+async function adoptTenantRoots(home, dshHome, uid, account) {
+  for (const path of [home, dshHome]) {
+    let owner
+    try {
+      owner = (await stat(path)).uid
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue
+      throw error
+    }
+    if (owner === uid) continue
+    console.warn(`instance home ${path} was owned by uid ${String(owner)}; adopting it for ${account}`)
+    await new Promise((resolve, reject) => {
+      execFile('chown', ['-R', `${String(uid)}:${String(uid)}`, path], (error) => {
+        if (error) reject(error)
+        else resolve()
+      })
+    })
+  }
 }
 
 /**
@@ -231,20 +287,22 @@ async function rewriteJailPaths(dshHome, namespace) {
  */
 async function launch(options) {
   const { record, dataRoot, dshBin, nodeBin, statePath } = options;
-  const paths = userPaths(dataRoot, record.namespace);
+  const account = record.account ?? record.linuxName;
+  const paths = userPaths(dataRoot, account);
   await mkdir(join(dataRoot, LOG_DIR_NAME), { recursive: true, mode: 0o700 });
 
   const state = await readState(statePath);
-  await rewriteJailPaths(paths.dshHome, record.namespace);
+  await adoptTenantRoots(paths.home, paths.dshHome, record.uid, account);
+  await rewriteJailPaths(paths.dshHome, record.namespace, account);
 
   // vh-jail drops to the user *after* entering a mount+pid+uts namespace. The
   // jailed paths are what the process sees and what dsh records, so HOME and
-  // everything derived from it use /home/<namespace>; the /data/users spelling
-  // never leaks into a session or a saved workspace path.
-  const jailHome = `/home/${record.namespace}`;
+  // everything derived from it use /home/<account>: the tenant's own name, not
+  // an internal identifier.
+  const jailHome = join(HOME_ROOT, account);
 
   const launchArgs = [
-    record.linuxName, String(record.uid), paths.home,
+    account, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
     '--patch', '/usr/local/share/v-harness/vos.patch.yml',
     '--host', '127.0.0.1',
@@ -254,6 +312,9 @@ async function launch(options) {
   const launchOptions = {
     cwd: paths.workspace,
     env: {
+      // vh-jail checks the host home against this root before entering the
+      // jail; without it the jail refuses every launch on a /data deployment.
+      HOME_ROOT,
       HOME: jailHome,
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,
@@ -283,6 +344,19 @@ async function launch(options) {
         `${jailHome}/.nvm/current/bin`,
         process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       ].join(':'),
+      // Every plugin resolves its data root from HOME, DSH_HOME or an XDG
+      // root. Pinning all of them is what keeps a plugin's first write inside
+      // the tenant: one shared root (a root-owned ~/.dsh left by an earlier
+      // layout, or a process inheriting the gateway's own XDG paths) is how a
+      // tenant's input in a plugin store becomes visible to the next tenant.
+      XDG_CONFIG_HOME: `${jailHome}/.config`,
+      XDG_DATA_HOME: `${jailHome}/.local/share`,
+      XDG_CACHE_HOME: `${jailHome}/.cache`,
+      XDG_STATE_HOME: `${jailHome}/.local/state`,
+      // ds-bot keeps its own store and team folder; both default to the
+      // process home, which is only correct if they are named explicitly.
+      DS_BOT_USER_DSH_HOME: `${jailHome}/.dsh`,
+      DS_BOT_WORKSPACE: `${jailHome}/workspace`,
       NODE_ENV: 'production',
       ...schedulerEnvironment(record.namespace),
       // Without a UTF-8 locale bash escapes non-ASCII names: the default
@@ -296,7 +370,7 @@ async function launch(options) {
   // Update profile-local overrides before dsh snapshots its browser bundles,
   // then stage the agent-side tool plugins and their carrier: the loader reads
   // the carrier row list at this same boot.
-  await syncPlugins({ home: paths.home, linuxName: record.linuxName, uid: record.uid });
+  await syncPlugins({ home: paths.home, linuxName: account, uid: record.uid });
   const child = spawn(JAIL_BIN, launchArgs, launchOptions);
 
   const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });
@@ -310,7 +384,7 @@ async function launch(options) {
     await writeState(statePath, state);
     return {
       namespace: record.namespace,
-      linuxName: record.linuxName,
+      linuxName: account,
       port: record.port,
       child,
       cookie,
@@ -341,6 +415,7 @@ async function launch(options) {
  */
 export async function ensureInstance(options) {
   const { record, dataRoot, statePath } = options;
+  const account = record.account ?? record.linuxName;
   const existing = instances.get(record.namespace);
   if (existing?.starting) {
     await existing.starting;
@@ -351,14 +426,14 @@ export async function ensureInstance(options) {
   }
 
   await runUserHelper(options.userHelper, [
-    'ensure', record.linuxName, String(record.uid), userPaths(dataRoot, record.namespace).home,
+    'ensure', account, String(record.uid), userPaths(dataRoot, account).home,
   ]);
 
 
   /** @type {Instance} */
   const placeholder = {
     namespace: record.namespace,
-    linuxName: record.linuxName,
+    linuxName: account,
     port: record.port,
     child: undefined,
     cookie: undefined,

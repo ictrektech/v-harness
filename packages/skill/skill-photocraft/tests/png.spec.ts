@@ -54,7 +54,7 @@ describe('closeup cropping', () => {
     const junk = Buffer.from('not a png at all')
     expect(cropPng(junk, { x: 0, y: 0, w: 0.5, h: 0.5 })).toBe(junk)
     expect(fitPng(junk, 32)).toBe(junk)
-    expect(guidesPng(junk)).toBe(junk)
+    expect(guidesPng(junk, { pitch: 4 })).toBe(junk)
     expect(pngSize(junk)).toBeUndefined()
   })
 })

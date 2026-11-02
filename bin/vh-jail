@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Run one user's dsh inside a mount + pid + ipc + uts + chroot jail.
+# Run one tenant's dsh inside a mount + pid + ipc + uts + chroot jail.
 #
 # The jail layout mirrors an ordinary Linux server:
 #
-#   /home/<namespace>   the tenant's own content (bound from /data/users/...)
+#   /home/<account>     the tenant's own content (bound from /home/<account>)
 #   /usr /bin /lib ...  shared runtime, mounted read-only
-#   /data               not mounted at all
+#   (nothing else)
 #
 # Everything bound in is an allow-list. The container's /etc, /dev and /proc are
 # shared by every tenant, so rbinding a whole directory would hand one tenant
@@ -13,8 +13,8 @@
 # every account, /dev/shm is one writable tmpfs for the whole container. Only the
 # named entries below are reachable, and identity files are generated per tenant.
 #
-# The hostname is set per namespace so the prompt reads `vh-xxxx@dsh:~` instead
-# of exposing the container id, and `cd ..` from the tenant home stops at /home
+# The hostname is set per account so the prompt reads `vh-xxxx@dsh:~` instead of
+# exposing the container id, and `cd ..` from the tenant home stops at /home
 # because nothing above it exists.
 #
 # Requires CAP_SYS_ADMIN plus unconfined seccomp, declared in the app manifest.
@@ -22,9 +22,7 @@
 # Usage: vh-jail <account> <uid> <home> <command...>
 set -euo pipefail
 
-DATA_ROOT="${DATA_ROOT:-/data}"
-USERS_ROOT="${DATA_ROOT}/users"
-# Read-only: the tenant's own content is the only writable path besides /tmp.
+HOME_ROOT="${HOME_ROOT:-/home}"
 SKILLS_ROOT="${BUNDLED_SKILL_DIR:-/opt/v-harness/skills}"
 JAIL_HOSTNAME="${VH_JAIL_HOSTNAME:-dsh}"
 
@@ -37,19 +35,14 @@ uid="${2:-}"
 home="${3:-}"
 shift 3 || die 'usage: vh-jail <account> <uid> <home> <command...>'
 
-[[ "$account" =~ ^vh-[0-9a-f]{8}$ ]] || die "invalid account: ${account}"
+[[ "$account" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid account: ${account}"
 [[ "$uid" =~ ^[0-9]+$ ]] || die "invalid uid: ${uid}"
-[[ "$home" == "${USERS_ROOT}"/* ]] || die "home outside ${USERS_ROOT}: ${home}"
-namespace="$(basename "$home")"
-[[ "$namespace" =~ ^[0-9a-f]{40}$ ]] || die "invalid namespace: ${namespace}"
+[[ "$home" == "${HOME_ROOT}/${account}" ]] || die "home must be ${HOME_ROOT}/${account}: ${home}"
+[[ -d "$home" ]] || die "home does not exist: ${home}"
 
 export VH_JAIL_ACCOUNT="$account"
 export VH_JAIL_UID="$uid"
-export VH_JAIL_NAMESPACE="$namespace"
-export VH_JAIL_HOST_HOME="$home"
-# The home path as the jailed process sees it; the gateway advertises the same
-# value in HOME/DSH_HOME so nothing inside dsh ever records /data/users/...
-export VH_JAIL_HOME="/home/$namespace"
+export VH_JAIL_HOME="$home"
 export VH_JAIL_SKILLS="$SKILLS_ROOT"
 export VH_JAIL_HOSTNAME="$JAIL_HOSTNAME"
 
@@ -67,7 +60,7 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   hostname "$VH_JAIL_HOSTNAME" 2>/dev/null || true
 
   # The jail root is a fresh tmpfs; only what is bound below is reachable.
-  root="/tmp/.vh-root-$VH_JAIL_NAMESPACE"
+  root="/run/vh-root-$VH_JAIL_ACCOUNT"
   rm -rf "$root"
   mkdir -p "$root"
   mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$root"
@@ -125,9 +118,10 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" "$VH_JAIL_UID" "$VH_JAIL_HOME" \
     > "$root/etc/passwd"
   printf "%s:x:%s:\n" "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" > "$root/etc/group"
+  printf "%s\n" "$VH_JAIL_ACCOUNT" > "$root/etc/hostname"
   printf "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n" \
     > "$root/etc/hosts"
-  chmod 0644 "$root/etc/passwd" "$root/etc/group" "$root/etc/hosts"
+  chmod 0644 "$root/etc/passwd" "$root/etc/group" "$root/etc/hosts" "$root/etc/hostname"
   # DNS is not a jail concern (the container network is shared by design) but
   # name resolution is required by every model call, so the resolver comes in.
   bind_ro etc/resolv.conf
@@ -140,7 +134,7 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # Devices: a fresh tmpfs with the nodes a process actually needs. The container
   # /dev is shared, and rbinding it would carry /dev/shm (one writable 64MB
   # tmpfs for the whole container) and a view of the pty of every other tenant.
-  mkdir -p "$root/dev" "$root/proc" "$root/tmp"
+  mkdir -p "$root/dev" "$root/proc" "$root/tmp" "$root/run"
   mount -t tmpfs -o mode=0755,nosuid tmpfs "$root/dev"
   for node in null:1:3 zero:1:5 full:1:7 random:1:8 urandom:1:9 tty:5:0; do
     node_name="${node%%:*}"
@@ -153,7 +147,7 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   mount -t devpts -o newinstance,ptmxmode=0666,mode=0620,gid=5 devpts "$root/dev/pts"
   ln -sfn pts/ptmx "$root/dev/ptmx"
   # Private scratch, so the classic cross-tenant tmpfs is not shared.
-  mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$root/dev/shm"
+  mount -t tmpfs -o mode=1777,nosuid,nodev,size=64m tmpfs "$root/dev/shm"
   ln -sfn /proc/self/fd "$root/dev/fd"
   ln -sfn /proc/self/fd/0 "$root/dev/stdin"
   ln -sfn /proc/self/fd/1 "$root/dev/stdout"
@@ -164,11 +158,15 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # this instance lists only this tenant.
   mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
 
-  mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$root/tmp"
+  # Bounded private scratch: an unbounded tmpfs lets one tenant exhaust the
+  # container memory and slow every other tenant down — which is itself a way to
+  # learn that someone else is there.
+  mount -t tmpfs -o mode=1777,nosuid,nodev,size=512m tmpfs "$root/tmp"
+  mount -t tmpfs -o mode=0755,nosuid,nodev,size=16m tmpfs "$root/run"
 
   # The tenant home, at the same path the gateway advertises as HOME.
   mkdir -p "$root$VH_JAIL_HOME"
-  mount --bind "$VH_JAIL_HOST_HOME" "$root$VH_JAIL_HOME"
+  mount --bind "$VH_JAIL_HOME" "$root$VH_JAIL_HOME"
   chmod 0700 "$root$VH_JAIL_HOME"
 
   # Everything above is root-side setup. The command starts unprivileged and
@@ -178,7 +176,39 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # be inherited by the tenant. --no-new-privs keeps a setuid binary inside the
   # home from reintroducing privilege.
   exec chroot "$root" /bin/sh -c "
+    # Fail closed: if the world below is not the isolated one, do not start at
+    # all. A degraded start is indistinguishable from a leak until it is too
+    # late, so it is treated as a refusal.
+    fail() { printf \"vh-jail: isolation check failed: %s\n\" \"\$1\" >&2; exit 97; }
+    [ \"\$(wc -l < /etc/passwd)\" -eq 1 ] || fail \"etc/passwd lists more than one account\"
+    [ \"\$(ls /home | wc -l)\" -eq 1 ] || fail \"home lists more than one tenant\"
+    [ \"\$(ls /home)\" = \"$VH_JAIL_ACCOUNT\" ] || fail \"home does not name this tenant\"
+    if [ -e /data ]; then fail \"the state root is visible\"; fi
+    if [ -e /root ]; then fail \"the root home is visible\"; fi
     export HOME=\"$VH_JAIL_HOME\"
+    export USER=\"$VH_JAIL_ACCOUNT\"
+    export LOGNAME=\"$VH_JAIL_ACCOUNT\"
+    export HOSTNAME=\"$VH_JAIL_HOSTNAME\"
+    # User-level installs land in the tenant home, exactly like a plain server:
+    # the system runtime is read-only, so npm/pip/cargo must be pointed at
+    # writable prefixes under \$HOME, and those prefixes must be on PATH or the
+    # command a tenant just installed is not found.
+    export NPM_CONFIG_PREFIX=\"\$HOME/.npm-global\"
+    export CONDA_PKGS_DIRS=\"\$HOME/.cache/conda\"
+    # Plugins that resolve their store from an XDG root instead of DSH_HOME
+    # must land in the tenant home too: a root inherited from the gateway
+    # would be one directory shared by every tenant.
+    export XDG_CONFIG_HOME=\"\$HOME/.config\"
+    export XDG_DATA_HOME=\"\$HOME/.local/share\"
+    export XDG_CACHE_HOME=\"\$HOME/.cache\"
+    export XDG_STATE_HOME=\"\$HOME/.local/state\"
+    export PATH=\"\$HOME/.npm-global/bin:\$HOME/.local/bin:\$HOME/.cargo/bin:\$HOME/.bun/bin:\$HOME/.nvm/current/bin:/usr/local/bin:/usr/bin:/bin\"
+    # Bound what one tenant can consume inside its own process tree. Without
+    # these, a fork bomb or a multi-gigabyte file slows every other tenant,
+    # which is itself a signal that somebody else is there.
+    ulimit -u 1024 2>/dev/null || true
+    ulimit -n 4096 2>/dev/null || true
+    ulimit -f 2097152 2>/dev/null || true
     cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
     exec /usr/bin/setpriv \
       --no-new-privs \

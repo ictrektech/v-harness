@@ -13,6 +13,27 @@
 - id: workspace-controller
   config:
     documentsDirectory: !!js process.env.HOME + '/workspace'
+# The terminal sandbox hides every other account's tree. `tenantRoot` is this
+# account's own root as the jailed process sees it; the provider masks the
+# sibling homes and the state root, so even a deployment that loses its jail
+# never exposes another tenant. A patch replaces the whole config, so the
+# mode/root the base bundle sets are restated here.
+- id: sandbox-policy
+  config:
+    mode: !!js "process.env.DSH_PERMISSION_MODE ?? 'workspace-write'"
+    workspaceRoot: !!js process.cwd()
+    tenantRoot: !!js "process.env.HOME ?? '/home'"
+# A tenant may pick read-only or workspace-write in General settings, never
+# danger-full-access: one click must not be able to turn the sandbox off.
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
 # The answer language follows the tenant's VOS interface language. A patch
 # replaces the whole config, so the prefix the web-app bundle sets is restated
 # here instead of being dropped; without a known language both templates stay

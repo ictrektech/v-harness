@@ -38,8 +38,19 @@ const AGENT_BUNDLE_NAME = 'vh-agent-plugins'
  * FIRST boot already resolve the carrier bundle and its plugin packages, so
  * a tenant's first login ships the full tool surface instead of a degraded
  * one. dsh never overwrites existing profile files, so pre-creation wins.
+ *
+ * The registry plugins follow the carrier layer because their own
+ * `dsh.bundle.patch` files mount their rows — and ds-bot's also restates the
+ * `web` row's search provider. A profile patch that names another provider
+ * still wins, since the tenant's patch layer applies after every bundle.
  */
-const PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', AGENT_BUNDLE_NAME]
+const PROFILE_BUNDLES = [
+  '@deepseek-ai/dsh-base',
+  '@deepseek-ai/dsh-web-app',
+  AGENT_BUNDLE_NAME,
+  'dshmarket',
+  'ds-bot',
+]
 
 /** Mirrors dsh's profile user-patch template. */
 const PROFILE_PATCH_TEMPLATE = `# Your patch layer for this dsh profile, applied after every bundle layer:
@@ -95,10 +106,10 @@ async function ensureProfile(user) {
 
 /**
  * One entry point for everything plugin-related a launch needs: pre-create
- * the profile, refresh the client bundles, and stage the agent-side plugins.
- * Called before spawn and again after a first launch (which created nothing
- * to stage before dsh's profile install could prune it — with the profile
- * pre-created here that second call is a plain no-op refresh).
+ * the profile, refresh the client bundles, stage the agent-side plugins, and
+ * finish the bundle list. Called before spawn and again after a first launch
+ * (which created nothing to stage before dsh's profile install could prune
+ * it — with the profile pre-created here that second call is a no-op refresh).
  * @param {{
  *   home: string,
  *   linuxName: string,
@@ -115,6 +126,10 @@ export async function syncPlugins(user) {
   }
   await syncClientPlugins(user)
   await syncAgentPlugins(user)
+  // A profile that predates a bundle must still receive it: pre-creation
+  // returns early for an existing manifest, so this is the only path that
+  // upgrades a tenant who already signed in.
+  await mountProfileBundles(user)
 }
 
 /**
@@ -160,6 +175,10 @@ export async function syncClientPlugins(user) {
     }
     try {
       await mkdir(modules, { recursive: true })
+      // The profile's own install writes here later, so the scope directory
+      // and its `node_modules` parent belong to the tenant, not to root.
+      await chownDir(join(user.home, '.dsh', 'profiles', 'web', 'node_modules'), user.uid, user.linuxName)
+      await chownDir(modules, user.uid, user.linuxName)
       await rm(target, { recursive: true, force: true })
       await cp(source, target, { recursive: true })
       await chownTo(target, user.uid, user.linuxName)
@@ -208,6 +227,8 @@ async function syncAgentPlugins(user) {
   const plugins = new Set(manifest.plugins ?? [])
   const payloadModules = join(AGENT_PLUGIN_ROOT, 'node_modules')
   const modules = join(profile, 'node_modules')
+  await mkdir(modules, { recursive: true })
+  await chownDir(modules, user.uid, user.linuxName)
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
@@ -225,7 +246,6 @@ async function syncAgentPlugins(user) {
       }
     }
   }
-  await mountAgentBundle(profile, user)
 }
 
 /**
@@ -256,24 +276,41 @@ async function stagedPackagePaths(root) {
 }
 
 /**
- * Append the carrier bundle to the profile's bundle list (idempotent JSON
- * edit). The bundle layer it adds is what mounts the plugin rows; without it
- * the copied packages would sit in node_modules unloaded.
+ * Append the bundles a profile is missing (idempotent JSON edit). A bundle
+ * layer is what mounts its plugin rows; without the entry the copied packages
+ * would sit in node_modules unloaded. Appended in {@link PROFILE_BUNDLES}
+ * order, so a later layer still overrides an earlier one.
  * @param {string} profile - the tenant's profile directory.
  * @param {{ linuxName: string }} user - the tenant, for diagnostics.
+ * @param {readonly string[]} names - bundle package names that must be listed.
  * @returns {Promise<void>}
  */
-async function mountAgentBundle(profile, user) {
+async function mountBundles(profile, user, names) {
   const manifestPath = join(profile, 'package.json')
   try {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     const bundles = manifest?.dsh?.profile?.bundles
-    if (!Array.isArray(bundles) || bundles.includes(AGENT_BUNDLE_NAME)) return
-    bundles.push(AGENT_BUNDLE_NAME)
+    if (!Array.isArray(bundles)) return
+    const missing = names.filter(name => !bundles.includes(name))
+    if (missing.length === 0) return
+    bundles.push(...missing)
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
   } catch (error) {
-    console.error(`agent bundle mount failed for ${user.linuxName}:`, error.message)
+    console.error(`bundle mount failed for ${user.linuxName}:`, error.message)
   }
+}
+
+/**
+ * Ensure one tenant's profile lists every bundle this image ships.
+ * @param {{
+ *   home: string,
+ *   linuxName: string,
+ *   uid: number,
+ * }} user - the tenant whose profile to update.
+ * @returns {Promise<void>}
+ */
+async function mountProfileBundles(user) {
+  await mountBundles(join(user.home, '.dsh', 'profiles', 'web'), user, PROFILE_BUNDLES)
 }
 
 /**
@@ -299,5 +336,26 @@ async function exists(path) {
 function chownTo(path, uid, group) {
   return new Promise((resolve) => {
     execFile('chown', ['-R', `${String(uid)}:${group}`, path], () => { resolve() })
+  })
+}
+
+/**
+ * Hand one directory, not its contents, to the tenant.
+ *
+ * `chownTo` recurses, which fits a package copy but not `node_modules` itself:
+ * that directory holds thousands of entries that already belong to the tenant,
+ * and it has to stay writable so the profile's own install can add a package.
+ * A root-owned `node_modules` is what turns a plugin install into EACCES for
+ * the tenant, and a shared one is what lets two tenants see each other's
+ * plugin store.
+ *
+ * @param {string} path - directory to hand over.
+ * @param {number} uid - tenant uid.
+ * @param {string} group - tenant group name.
+ * @returns {Promise<void>}
+ */
+function chownDir(path, uid, group) {
+  return new Promise((resolve) => {
+    execFile('chown', [`${String(uid)}:${group}`, path], () => { resolve() })
   })
 }

@@ -1,6 +1,6 @@
 x-v-harness-env: &v-harness-env
   PORT: 8080
-  DATA_ROOT: /data
+  DATA_ROOT: /home
   APP_BASE_PATH: /app/com.ictrek.v-harness
   VOS_OIDC_CLIENT_ID: com.ictrek.v-harness
   VOS_OIDC_SCOPE: openid profile email
@@ -32,7 +32,7 @@ x-v-harness-base: &v-harness-base
     - seccomp:unconfined
     - apparmor:unconfined
   volumes:
-    - ${VOS_APP_STORAGE_PATH}/data:/data
+    - ${VOS_APP_STORAGE_PATH}/data:/home
   networks:
     vos_default:
       aliases:

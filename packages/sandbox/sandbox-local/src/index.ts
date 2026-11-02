@@ -324,7 +324,13 @@ export class LocalSandboxProvider extends SandboxProvider {
    */
   async confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv> {
     signal?.throwIfAborted()
-    policy = { ...policy, workspaceRoot: canonicalPath(policy.workspaceRoot) }
+    policy = {
+      ...policy,
+      workspaceRoot: canonicalPath(policy.workspaceRoot),
+      // Canonicalize too, or a masked sibling could reappear through a
+      // spelling the mount table treats as a different path.
+      ...policy.tenantRoot === undefined ? {} : { tenantRoot: canonicalPath(policy.tenantRoot) },
+    }
     if (this.runnerCommand !== undefined) {
       return Promise.resolve<ConfinedArgv>({
         argv: [...this.runnerCommand, ...bwrapProfileArgs(policy), '--', ...argv],

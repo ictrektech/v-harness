@@ -76,6 +76,14 @@ export interface Config {
    * `process.cwd()`). Normal agent calls use their session cwd instead.
    */
   workspaceRoot?: string
+  /**
+   * Absolute root of the calling account's own tree, for deployments that
+   * serve several accounts from one host. When set, confining providers hide
+   * every other account's tree instead of exposing it read-only, so two
+   * accounts never see the same home. Absent keeps the whole-host read-only
+   * view, which is only correct when the host belongs to one account.
+   */
+  tenantRoot?: string
 }
 
 /** Inputs that select the sandbox policy for one capability call. */
@@ -114,6 +122,8 @@ export class SandboxPolicyService extends Service {
     // No schema default: process.cwd() is resolved in the constructor so the
     // stored root is always absolute regardless of how it was supplied.
     workspaceRoot: z.string(),
+    // Optional: absence keeps the legacy whole-host read-only view.
+    tenantRoot: z.string(),
   })
 
   static inject = ['sessionProjections']
@@ -122,6 +132,8 @@ export class SandboxPolicyService extends Service {
   readonly defaultMode: SandboxMode
   /** The absolute `workspace-write` fallback root for calls without a session cwd. */
   readonly workspaceRoot: string
+  /** The absolute root of this deployment's account, when visibility is bounded. */
+  readonly tenantRoot: string | undefined
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
@@ -129,6 +141,9 @@ export class SandboxPolicyService extends Service {
     // the process cwd is real branching, resolved absolute either way.
     this.defaultMode = config.mode as SandboxMode
     this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd())
+    this.tenantRoot = config.tenantRoot === undefined || config.tenantRoot === ''
+      ? undefined
+      : resolveWorkspaceRoot(config.tenantRoot)
 
     ctx.sessionProjections.register({
       key: 'sandboxMode',
@@ -166,6 +181,7 @@ export class SandboxPolicyService extends Service {
     return {
       mode: request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode,
       workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
+      ...this.tenantRoot === undefined ? {} : { tenantRoot: this.tenantRoot },
       ...session === undefined ? {} : { sessionId: session.id },
     }
   }

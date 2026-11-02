@@ -54,6 +54,14 @@ interface SandboxExecutionPolicy {
   /** Absolute root directory `workspace-write` may write under. */
   workspaceRoot: string
   /**
+   * 调用方账号自己的根目录。设置后，强制执行的 provider 会隐藏其他账号的
+   * 目录树（兄弟家目录、部署状态根、root 家目录），使其在受限视图内不再
+   * 存在。这是与 {@link mode} 正交的可见性边界：`workspaceRoot` 决定能写
+   * 哪里，`tenantRoot` 决定别人的文件是否可达。缺省保持整机只读视图，仅
+   * 在单账号主机上成立。
+   */
+  tenantRoot?: string
+  /**
    * Opaque identity of the calling session (the branded `dsh-session`
    * SessionId). Backends key per-session state off it (e.g. windows-acl gives
    * each live session/workspace pair a random private temp directory and SID,

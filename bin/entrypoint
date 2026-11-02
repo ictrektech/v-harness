@@ -3,12 +3,20 @@
 # gateway. dsh instances are started on first sign-in, not here.
 set -euo pipefail
 
-DATA_ROOT="${DATA_ROOT:-/data}"
+DATA_ROOT="${DATA_ROOT:-/home}"
+STATE_ROOT="${STATE_ROOT:-${DATA_ROOT}/.vh}"
 
-mkdir -p "${DATA_ROOT}" "${DATA_ROOT}/users"
-# 0711: a tenant must traverse /data to reach its own home, but cannot list it.
-# `users.json` and the session secret stay 0600, so traversal grants nothing.
-chmod 0711 "${DATA_ROOT}" "${DATA_ROOT}/users"
+mkdir -p "${DATA_ROOT}" "${STATE_ROOT}"
+# 0711: a tenant must traverse the home root to reach its own home, but cannot
+# list it. The gateway state lives in one hidden sibling that stays 0700 root.
+chmod 0711 "${DATA_ROOT}"
+chmod 0700 "${STATE_ROOT}"
+
+# A volume written by an earlier layout keeps the user table at its root.
+if [[ -f "${DATA_ROOT}/users.json" && ! -f "${STATE_ROOT}/users.json" ]]; then
+  mv "${DATA_ROOT}/users.json" "${STATE_ROOT}/users.json"
+fi
+chmod 0600 "${STATE_ROOT}/users.json" 2>/dev/null || true
 
 # dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
 # usable the bash tool refuses to run. Record the verdict at startup so a broken
@@ -18,14 +26,24 @@ node /opt/v-harness/bin/sandbox-probe.mjs
 # Containers have no init loop for the per-user accounts, so rebuild them from
 # the durable user table before the gateway can accept a request. The helper is
 # idempotent and never touches existing data.
-if [[ -f "${DATA_ROOT}/users.json" ]]; then
-  node -e '
-    const { readFileSync } = require("node:fs");
+if [[ -f "${STATE_ROOT}/users.json" ]]; then
+  DATA_ROOT="$DATA_ROOT" STATE_ROOT="$STATE_ROOT" node -e '
+    const { readFileSync, existsSync, renameSync } = require("node:fs");
     const path = "/opt/v-harness/bin/vh-userctl";
-    const table = JSON.parse(readFileSync(`${process.env.DATA_ROOT}/users.json`, "utf8"));
+    const dataRoot = process.env.DATA_ROOT;
+    const table = JSON.parse(readFileSync(`${process.env.STATE_ROOT}/users.json`, "utf8"));
     const { execFileSync } = require("node:child_process");
     for (const record of Object.values(table)) {
-      execFileSync(path, ["ensure", record.linuxName, String(record.uid), `${process.env.DATA_ROOT}/users/${record.namespace}`], { stdio: "inherit" });
+      const account = record.account ?? record.linuxName;
+      const target = `${dataRoot}/${account}`;
+      const legacy = `${dataRoot}/users/${record.namespace}`;
+      // One boot moves a home written by the previous layout; later boots find
+      // the target already there and leave it alone.
+      if (!existsSync(target) && existsSync(legacy)) renameSync(legacy, target);
+      execFileSync(path, ["ensure", account, String(record.uid), target], {
+        stdio: "inherit",
+        env: { ...process.env, HOME_ROOT: dataRoot },
+      });
     }
   '
 fi

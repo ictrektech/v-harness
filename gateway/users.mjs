@@ -20,7 +20,9 @@ const FIRST_PORT = 3_101;
  * @property {string} subject - VOS immutable subject.
  * @property {string} namespace - 40-hex directory name derived from subject.
  * @property {string} username - display name, refreshed on every sign-in.
- * @property {string} linuxName - `vh-xxxxxxxx`, stable OS account.
+ * @property {string} account - stable, human-readable OS account and home name.
+ * @property {string} linuxName - the OS account; equal to `account` for records
+ *   created after the rename, `vh-xxxxxxxx` for older ones.
  * @property {number} uid - filesystem owner, allocated once.
  * @property {number} port - loopback port of this user's dsh instance.
  * @property {number} createdAt - epoch milliseconds.
@@ -84,6 +86,59 @@ export function linuxNameOf(namespace) {
   return `vh-${namespace.slice(0, 8)}`;
 }
 
+/** Names the image or the platform already uses; a tenant may never take one. */
+const RESERVED_ACCOUNTS = new Set([
+  'root', 'bin', 'daemon', 'nobody', 'nogroup', 'node', 'npm', 'dsh', 'mail', 'news',
+  'uucp', 'proxy', 'www-data', 'backup', 'list', 'irc', 'games', 'man', 'lp', 'sync',
+  'sys', 'adm', 'operator', 'ssh', 'systemd', 'polkitd', 'messagebus',
+]);
+
+const ACCOUNT_MAX = 32;
+const ACCOUNT_RE = /^[a-z_][a-z0-9_-]*$/;
+
+/**
+ * Reduce a display name to an account-shaped slug.
+ * @param {string} username
+ * @returns {string} `''` when nothing ASCII survives (a CJK-only name).
+ */
+export function accountSlug(username) {
+  const normalized = String(username ?? '').normalize('NFKC').toLowerCase();
+  let slug = normalized
+    .replace(/[^a-z0-9_-]+/gu, '-')
+    .replace(/-{2,}/gu, '-')
+    .replace(/^[-_]+|[-_]+$/gu, '');
+  if (slug === '') return '';
+  if (!/^[a-z_]/u.test(slug)) slug = `u${slug}`;
+  return slug.slice(0, ACCOUNT_MAX).replace(/[-_]+$/u, '');
+}
+
+/**
+ * Allocate the account this user keeps for life.
+ *
+ * Two accounts may share a display name (renames, homonyms, CJK names that
+ * slug to nothing), so the name is only a starting point: the allocator
+ * suffixes it until it is unique in the table. `namespace` stays the internal
+ * key; `account` is what the home directory, the OS user, and the prompt use.
+ * @param {string} username - display name as reported by VOS.
+ * @param {Record<string, UserRecord>} table - current table, used for uniqueness.
+ * @returns {string} a legal Linux account name, unique among existing records.
+ */
+export function accountOf(username, table) {
+  const taken = new Set(
+    Object.values(table).map((record) => record.account ?? record.linuxName),
+  );
+  let base = accountSlug(username);
+  if (base === '') base = 'user';
+  if (RESERVED_ACCOUNTS.has(base)) base = `${base}-user`;
+  let candidate = base;
+  let counter = 1;
+  while (taken.has(candidate) || !ACCOUNT_RE.test(candidate)) {
+    counter += 1;
+    candidate = `${base.slice(0, ACCOUNT_MAX - String(counter).length - 1)}-${counter}`;
+  }
+  return candidate;
+}
+
 /**
  * @param {Record<string, UserRecord>} table
  * @param {'uid' | 'port'} field
@@ -115,8 +170,14 @@ export async function upsertUser(path, identity, now = Date.now()) {
     const table = await readTable(path);
     const existing = table[identity.subject];
     if (existing) {
+      // Records written before accounts existed keep the name they are already
+      // addressed by, so upgrading never renames a live tenant's home.
+      const others = { ...table };
+      delete others[identity.subject];
+      const account = existing.account ?? existing.linuxName ?? accountOf(identity.username, others);
       const updated = {
         ...existing,
+        account,
         username: identity.username,
         ...identity.locale ? { locale: identity.locale } : {},
         lastSeenAt: now,
@@ -126,12 +187,14 @@ export async function upsertUser(path, identity, now = Date.now()) {
       return { record: updated, created: false };
     }
 
+    const account = accountOf(identity.username, table);
     /** @type {UserRecord} */
     const record = {
       subject: identity.subject,
       namespace: identity.namespace,
       username: identity.username,
-      linuxName: linuxNameOf(identity.namespace),
+      account,
+      linuxName: account,
       uid: nextFree(table, 'uid', FIRST_UID),
       port: nextFree(table, 'port', FIRST_PORT),
       createdAt: now,

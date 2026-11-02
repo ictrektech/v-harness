@@ -24,6 +24,8 @@ import { bwrapProfileArgs, landlockProfileArgs, seatbeltProfileArgs } from '../s
 
 const RO: SandboxPolicy = { mode: 'read-only', workspaceRoot: '/ws' }
 const WW: SandboxPolicy = { mode: 'workspace-write', workspaceRoot: '/ws' }
+const TENANT_RO: SandboxPolicy = { mode: 'read-only', workspaceRoot: '/home/alice/ws', tenantRoot: '/home/alice' }
+const TENANT_WW: SandboxPolicy = { mode: 'workspace-write', workspaceRoot: '/home/alice/ws', tenantRoot: '/home/alice' }
 
 /** Every temp dir created by this file (fake launchers and runner entries), removed after each test. */
 const tempDirs: string[] = []
@@ -81,6 +83,24 @@ describe('profile dialects', () => {
     expect(bwrapProfileArgs(WW)).toEqual([
       '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
       '--tmpfs', '/tmp', '--bind', '/ws', '/ws',
+    ])
+  })
+
+  it('bwrap tenant root: every sibling tree becomes empty and the account root is bound back', () => {
+    expect(bwrapProfileArgs(TENANT_WW)).toEqual([
+      '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
+      '--tmpfs', '/home', '--tmpfs', '/root', '--tmpfs', '/data', '--tmpfs', '/srv', '--tmpfs', '/mnt', '--tmpfs', '/media',
+      '--tmpfs', '/tmp',
+      '--bind', '/home/alice', '/home/alice',
+      '--bind', '/home/alice/ws', '/home/alice/ws',
+    ])
+  })
+
+  it('bwrap read-only with a tenant root: the account root comes back read-only, never writable', () => {
+    expect(bwrapProfileArgs(TENANT_RO)).toEqual([
+      '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
+      '--tmpfs', '/home', '--tmpfs', '/root', '--tmpfs', '/data', '--tmpfs', '/srv', '--tmpfs', '/mnt', '--tmpfs', '/media',
+      '--ro-bind', '/home/alice', '/home/alice',
     ])
   })
 

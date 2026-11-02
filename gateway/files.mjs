@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 
 const HELPER = process.env.FILE_HELPER ?? '/opt/v-harness/bin/vh-file';
-const DATA_ROOT = process.env.DATA_ROOT ?? '/data';
+const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/home';
 
 /**
  * Build the helper invocation for the current privilege level.
@@ -35,7 +35,7 @@ function helper(args) {
  * @returns {string}
  */
 export function homeOf(record) {
-  return `${DATA_ROOT}/users/${record.namespace}`;
+  return `${HOME_ROOT}/${record.account ?? record.linuxName}`;
 }
 
 /**

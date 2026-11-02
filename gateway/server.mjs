@@ -55,12 +55,16 @@ import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
 import { closeWeknoraCapabilities, ensureWeknoraCapability, handleWeknoraControl } from './weknora.mjs';
 import { handleScheduler } from './scheduler.mjs';
 
-const DATA_ROOT = process.env.DATA_ROOT ?? '/data';
+// Tenant homes live in /home/<account>, and nothing else does: the gateway's
+// own state (user table, instance cookies, logs, capability sockets) sits in
+// one hidden sibling that no tenant can reach.
+const DATA_ROOT = process.env.DATA_ROOT ?? '/home';
+const STATE_ROOT = process.env.STATE_ROOT ?? join(DATA_ROOT, '.vh');
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';
-const USERS_FILE = process.env.USERS_FILE ?? join(DATA_ROOT, 'users.json');
-const STATE_FILE = process.env.STATE_FILE ?? join(DATA_ROOT, 'state-instances.json');
-const SECRET_FILE = process.env.SECRET_FILE ?? join(DATA_ROOT, 'session-secret');
+const USERS_FILE = process.env.USERS_FILE ?? join(STATE_ROOT, 'users.json');
+const STATE_FILE = process.env.STATE_FILE ?? join(STATE_ROOT, 'state-instances.json');
+const SECRET_FILE = process.env.SECRET_FILE ?? join(STATE_ROOT, 'session-secret');
 const DSH_BIN = process.env.DSH_BIN ?? '/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js';
 const NODE_BIN = process.env.NODE_BIN ?? process.execPath;
 const USER_HELPER = process.env.USER_HELPER ?? '/opt/v-harness/bin/vh-userctl';
@@ -266,15 +270,13 @@ function showRenew(error){
 }
 async function boot(){
   const cfg=await(await fetch('/__vh/session',{credentials:'same-origin',cache:'no-store'})).json();
+  // Re-prove the signed-in VOS account on every load. The cookie only names
+  // the tenant served last, so trusting it here is how two accounts in one
+  // browser ended up sharing an instance. VOS silent auth answers "who is
+  // signed in now", and /__vh/auth re-issues the cookie for that account.
   if(cfg.authenticated){
-    // The session cookie outlives a gateway restart, but the VOS token lives
-    // only in gateway memory. Replay it so capability endpoints (V-Office,
-    // albums) keep working; a failed replay offers an explicit way out
-    // instead of silently entering with dead capabilities.
-    if(cfg.tokenReady===false){
-      try{await authorize(cfg);}
-      catch(error){showRenew(error);return;}
-    }
+    try{await authorize(cfg);}
+    catch(error){showRenew(error);return;}
     location.replace('./');
     return;
   }
@@ -523,16 +525,19 @@ async function handleControl(req, res, url) {
       // capability routes left the map empty until the user opened a file.
       rememberOrigin(req.headers, session.namespace);
       console.log(`session ${session.username}: tokenReady=${String(hasUsableTokens(session.namespace))}`);
-      if (hasUsableTokens(session.namespace)) {
-        json(res, 200, { authenticated: true, user, tokenReady: true });
-        return;
-      }
-      // The cookie outlived the gateway's in-memory token: hand the page the
-      // CSRF token and the client identity it needs to replay the VOS login
-      // without asking the user. Omitting clientId/scope here fails the replay
-      // with "client_id 必须非空" after every restart.
+      // The page re-proves who is signed in on every load, so this endpoint
+      // always hands back the CSRF token and client identity that replay
+      // needs. The cookie names the tenant we served last; it is not evidence
+      // of the account that is signed in now.
       const csrf = newCsrfToken();
-      json(res, 200, { authenticated: true, user, tokenReady: false, clientId: CLIENT_ID, scope: SCOPE, csrf }, {
+      json(res, 200, {
+        authenticated: true,
+        user,
+        tokenReady: hasUsableTokens(session.namespace),
+        clientId: CLIENT_ID,
+        scope: SCOPE,
+        csrf,
+      }, {
         'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
       });
       return;
@@ -630,7 +635,7 @@ async function handleControl(req, res, url) {
       });
       await ensureInstance({
         record,
-        dataRoot: DATA_ROOT,
+        dataRoot: STATE_ROOT,
         dshBin: DSH_BIN,
         nodeBin: NODE_BIN,
         statePath: STATE_FILE,
@@ -710,7 +715,7 @@ async function startCapabilities(record) {
   const options = {
     namespace: record.namespace,
     linuxName: record.linuxName,
-    home: userPaths(DATA_ROOT, record.namespace).home,
+    home: userPaths(STATE_ROOT, record.account ?? record.linuxName).home,
     userHelper: USER_HELPER,
   };
   const settled = await Promise.allSettled([
@@ -738,7 +743,7 @@ async function instanceFor(session) {
   if (!record) return undefined;
   const instance = await ensureInstance({
     record,
-    dataRoot: DATA_ROOT,
+    dataRoot: STATE_ROOT,
     dshBin: DSH_BIN,
     nodeBin: NODE_BIN,
     statePath: STATE_FILE,
