@@ -278,8 +278,11 @@ COPY --from=plugins /build/apps/web/dist/ /usr/local/lib/node_modules/@deepseek-
 COPY --from=agent-plugins /build/agent-plugins/ /opt/v-harness/agent-plugins/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
-      /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
+      /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/vh-service.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
  && chmod 0755 /opt/v-harness/skills/voffice/scripts/voffice.mjs /opt/v-harness/skills/album/scripts/album.mjs /opt/v-harness/skills/weknora/scripts/weknora.mjs \
+ # The tenant CLI must be on the jail PATH; /usr is bound read-only into every
+ # jail, so /usr/local/bin is the one location that needs no jail change.
+ && install -m 0755 /opt/v-harness/bin/vh-service.mjs /usr/local/bin/vh-service \
  && chown -R root:root /opt/v-harness/bin \
  && printf 'root ALL=(root) NOPASSWD: /opt/v-harness/bin/vh-userctl, /opt/v-harness/bin/vh-file\n' > /etc/sudoers.d/vh \
  && chmod 0440 /etc/sudoers.d/vh

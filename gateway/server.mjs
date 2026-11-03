@@ -57,7 +57,20 @@ import {
 } from './session.mjs';
 import { findUser, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
-import { closeWeknoraCapabilities, ensureWeknoraCapability, handleWeknoraControl } from './weknora.mjs';
+import {
+  closeWeknoraCapabilities,
+  ensureWeknoraCapability,
+  handleWeknoraControl,
+} from './weknora.mjs';
+import {
+  closeServicesCapabilities,
+  ensureServicesCapability,
+  initServices,
+  listServices,
+  restartService,
+  resolveService,
+  stopService,
+} from './services.mjs';
 import { handleScheduler } from './scheduler.mjs';
 
 // Tenant homes live in <DATA_ROOT>/<account>, and nothing else does: the gateway's
@@ -93,6 +106,9 @@ const sessions = await openSessionStore(SESSION_DB_FILE, { ttlMs: SESSION_TTL_MS
 // One boot finishes the persistent-state key migration (namespace → subject);
 // later boots find nothing to move and leave the file alone.
 await migrateInstanceStateKeys(STATE_FILE, USERS_FILE);
+// Tenant service registrations survive a gateway restart; a stopped service
+// stays listed so the UI can offer restart.
+await initServices({ stateRoot: STATE_ROOT });
 
 /**
  * Whether the browser reached us over HTTPS (terminated by the VOS ingress).
@@ -491,6 +507,186 @@ async function handleFiles(req, res, url) {
 }
 
 /**
+ * The tenant services list, for the browser panel: `GET /__vh/services`.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @param {URL} url
+ * @returns {Promise<void>}
+ */
+async function handleServices(req, res, url) {
+  const record = await requireUser(req, res);
+  if (!record) return;
+  if (url.pathname === '/__vh/services' && req.method === 'GET') {
+    json(res, 200, { services: listServices(record.subject) });
+    return;
+  }
+  json(res, 404, { error: 'not found' });
+}
+
+/**
+ * One state change on the tenant's own service: `POST /__vh/services/<port>/restart|stop`.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @param {URL} url
+ * @returns {Promise<void>}
+ */
+async function handleServiceAction(req, res, url) {
+  const record = await requireUser(req, res);
+  if (!record) return;
+  const site = req.headers['sec-fetch-site'];
+  if (site === 'cross-site') {
+    json(res, 403, { error: 'cross-site request rejected' });
+    return;
+  }
+  const match = /^\/__vh\/services\/(\d+)\/(restart|stop)$/.exec(url.pathname);
+  if (match === null || req.method !== 'POST') {
+    json(res, 404, { error: 'not found' });
+    return;
+  }
+  const port = Number(match[1]);
+  const result = match[2] === 'restart'
+    ? restartService(record.subject, port)
+    : stopService(record.subject, port);
+  console.log(`service ${match[2]}: ${record.account ?? record.linuxName} port=${String(port)} -> ${String(result.status)}`);
+  json(res, result.status, result.status === 200 ? { ok: true } : { error: result.error, message: result.message });
+}
+
+/**
+ * Build upstream headers for one tenant-service request.
+ *
+ * The browser Cookie is dropped: the service belongs to the same tenant, but a
+ * portal session cookie has no business being handed to whatever the tenant
+ * happened to run.
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} port
+ * @returns {Record<string, string | string[]>}
+ */
+function serviceHeaders(req, port) {
+  /** @type {Record<string, string | string[]>} */
+  const headers = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value === undefined) continue;
+    if (HOP_BY_HOP.has(name)) continue;
+    if (name === 'host' || name === 'cookie') continue;
+    headers[name] = value;
+  }
+  headers.host = `127.0.0.1:${String(port)}`;
+  const forwarded = req.socket.remoteAddress;
+  if (forwarded) headers['x-forwarded-for'] = forwarded;
+  headers['x-forwarded-proto'] = isSecure(req) ? 'https' : 'http';
+  return headers;
+}
+
+/**
+ * Proxy one request to a service the session's subject registered.
+ * `/__vh/svc/<port>/<rest>` forwards to `127.0.0.1:<port>/<rest>`; a port that
+ * subject never registered answers 404 here — the registry, not the network,
+ * decides what is reachable.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @param {URL} url
+ * @returns {Promise<void>}
+ */
+async function proxyServiceRequest(req, res, url) {
+  const session = authenticate(req);
+  if (!session) {
+    if (isDocumentRequest(req)) {
+      sendBootstrap(res);
+      return;
+    }
+    json(res, 401, { error: 'unauthenticated' });
+    return;
+  }
+  const match = /^\/__vh\/svc\/(\d+)(\/.*)?$/.exec(url.pathname);
+  if (match === null) {
+    json(res, 404, { error: 'not found' });
+    return;
+  }
+  const record = resolveService(session.subject, Number(match[1]));
+  if (!record) {
+    json(res, 404, { error: 'unknown-service', message: '该端口没有登记为你自己的服务' });
+    return;
+  }
+  const port = Number(match[1]);
+  const path = `${match[2] ?? '/'}${url.search}`;
+  await new Promise((resolve) => {
+    const upstream = httpRequest({
+      host: '127.0.0.1',
+      port,
+      method: req.method,
+      path,
+      headers: serviceHeaders(req, port),
+    }, (upstreamRes) => {
+      /** @type {Record<string, string | string[]>} */
+      const responseHeaders = {};
+      for (const [name, value] of Object.entries(upstreamRes.headers)) {
+        if (value === undefined) continue;
+        if (HOP_BY_HOP.has(name) && name !== 'upgrade') continue;
+        responseHeaders[name] = value;
+      }
+      res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+      upstreamRes.pipe(res);
+      upstreamRes.on('end', resolve);
+      upstreamRes.on('error', resolve);
+    });
+    upstream.setTimeout(0);
+    upstream.on('error', () => {
+      if (!res.headersSent) json(res, 502, { error: 'service-unreachable', message: '服务没有在运行' });
+      else res.destroy();
+      resolve();
+    });
+    res.on('close', () => { upstream.destroy(); resolve(); });
+    req.pipe(upstream);
+  });
+}
+
+/**
+ * Tunnel one WebSocket upgrade aimed at a registered tenant service.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:stream').Duplex} socket
+ * @param {Buffer} head
+ * @returns {Promise<void>}
+ */
+async function proxyServiceUpgrade(req, socket, head) {
+  const session = authenticate(req);
+  const match = session === undefined
+    ? undefined
+    : /^\/__vh\/svc\/(\d+)(?:\/|$)/.exec(stripPrefix(req.url ?? '/'));
+  if (session === undefined || match === null || match === undefined) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  const record = resolveService(session.subject, Number(match[1]));
+  if (!record) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  const port = Number(match[1]);
+  const headers = serviceHeaders(req, port);
+  headers.connection = 'Upgrade';
+  headers.upgrade = String(req.headers.upgrade ?? 'websocket');
+
+  const lines = [`${req.method ?? 'GET'} ${stripPrefix(req.url ?? '/').slice(`/__vh/svc/${String(port)}`.length) || '/'} HTTP/1.1`];
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) for (const item of value) lines.push(`${name}: ${item}`);
+    else lines.push(`${name}: ${value}`);
+  }
+  lines.push('', '');
+  const upstream = connect(port, '127.0.0.1', () => {
+    upstream.write(lines.join('\r\n'));
+    if (head?.length) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.on('error', () => socket.destroy());
+  socket.on('error', () => upstream.destroy());
+  socket.on('close', () => upstream.destroy());
+}
+
+/**
  * Control endpoints owned by the gateway itself.
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
@@ -507,6 +703,19 @@ async function handleControl(req, res, url) {
     return;
   }
 
+  if (url.pathname === '/__vh/services') {
+    await handleServices(req, res, url);
+    return;
+  }
+  if (url.pathname.startsWith('/__vh/services/')) {
+    await handleServiceAction(req, res, url);
+    return;
+  }
+  // Tenant-run web services: forward to a port the subject registered.
+  if (url.pathname.startsWith('/__vh/svc/')) {
+    await proxyServiceRequest(req, res, url);
+    return;
+  }
   if (url.pathname.startsWith('/__vh/weknora/')) {
     const record = await requireUser(req, res);
     if (!record) return;
@@ -801,6 +1010,9 @@ function upstreamHeaders(req, port, instanceCookie) {
 async function startCapabilities(record) {
   const options = {
     namespace: record.namespace,
+    subject: record.subject,
+    account: record.account ?? record.linuxName,
+    uid: record.uid,
     linuxName: record.linuxName,
     home: userPaths(STATE_ROOT, record.account ?? record.linuxName).home,
     userHelper: USER_HELPER,
@@ -810,6 +1022,7 @@ async function startCapabilities(record) {
     ensureWeknoraCapability(options),
     ensureAlbumCapability(options),
     ensurePhotocraftCapability(options),
+    ensureServicesCapability(options),
   ]);
   for (const result of settled) {
     if (result.status === 'rejected') {
@@ -1058,6 +1271,14 @@ const server = createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
+  const pathname = new URL(req.url ?? '/', 'http://localhost').pathname.replace(new RegExp(`^${APP_BASE_PATH}`), '');
+  if (pathname.startsWith('/__vh/svc/')) {
+    void proxyServiceUpgrade(req, socket, head).catch((error) => {
+      console.error('service upgrade failed:', error);
+      socket.destroy();
+    });
+    return;
+  }
   void proxyUpgrade(req, socket, head).catch((error) => {
     console.error('upgrade failed:', error);
     socket.destroy();
@@ -1076,7 +1297,7 @@ function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closePhotocraftCapabilities()]).finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closePhotocraftCapabilities(), closeServicesCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });

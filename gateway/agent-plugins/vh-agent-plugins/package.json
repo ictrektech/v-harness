@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-client-ui-knowledge": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-services": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-tool-cards": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-user-questions": "0.2.1-rc.2",
     "@deepseek-ai/dsh-skill-image-studio": "0.2.1-rc.2",

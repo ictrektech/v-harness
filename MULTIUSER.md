@@ -83,6 +83,37 @@ skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access t
 
 `VH_OFFICE_BASE` 可覆盖上游地址（默认 `http://10.144.144.232:1182/api/com.ictrek.v-office`）。
 
+## 服务插件（租户自建服务的界面入口）
+
+用户在 jail 里起一个 Web 服务（比如 `127.0.0.1:3004`），浏览器摸不到——它监听在容器 loopback 上，iframe 外的人看不见。服务插件把它变成产品能力：**界面上能看到、点一下就打开、关掉还能找回重启**。
+
+```
+用户终端   vh-service run --name 我的应用 --port 3004 -- myapp --port 3004
+           （CLI 拉起服务 + 经 $HOME/.dsh/vh-services.sock 持续心跳 + 退出即停跳）
+网关       gateway/services.mjs 在该 socket 上起端点，登记 {subject, port, name, cmd, lastSeen}
+界面       会话侧栏「服务」：名字 / 端口 / 运行中 · 已停止（心跳停 → 已停止）
+打开       点一下 → /__vh/svc/3004/** → 网关校验会话 subject = 属主 → 反代 127.0.0.1:3004（改 Host、支持 WS）
+重启       已停止的服务点「重启」→ 网关以该租户身份单独跑一次 vh-jail 执行登记的 cmd
+```
+
+关键决定：
+
+- **注册与心跳一体，不扫端口**：`vh-service run` 包裹启动，被包裹的命令就是注册信息和重启命令，进程退出心跳即停——状态不用猜。root 扫端口扫得出监听，扫不出"哪个该展示、叫什么、怎么重启"。
+- **鉴权绑定 subject**：A 注册的服务 B 列表里没有，URL 直开也 401（反代先比 subject 再转发，不接受任意端口透传）。
+- **重启 = 独立 jail**：网关对该租户再跑一次 `vh-jail`（workspace 同源，`/tmp` 与实例各自私有）；实例停了服务也没了，面板重启先拉实例再拉服务，对用户是一步。
+- **端口约定**：`3100-3999` 是实例保留段（nft 挡租户直连），服务端口避开这段即可（如 `3004`，或 `≥30000`）。
+- **打开形态**：子路径反代要求应用支持 base path；不支持的应用在注册时声明 `basePath`，确实需要再谈子域。
+- **命令留痕边界**：`cmd` 只存网关 state（`$STATE_ROOT`），不进租户 home、不进会话日志；注册/重启动作写实例日志。
+
+代码落点（对齐上面代码地图）：
+
+| 文件 | 职责 |
+|---|---|
+| `gateway/services.mjs` | 注册表（持久化到 `$STATE_ROOT/services.json`）+ 每租户 `$HOME/.dsh/vh-services.sock` 端点（socket 由 `vh-userctl claim` 交租户，同 office.sock）+ 重启用的独立 jail |
+| `bin/vh-service.mjs` | 租户 CLI（零依赖，镜像里装在 `/usr/local/bin/vh-service`，jail 内经 `/usr` 只读绑定直接可用）：run（包裹启动 + 心跳）/ list / stop，无需 root |
+| `gateway/server.mjs` | `GET /__vh/services`、`POST /__vh/services/<port>/restart|stop`、`/__vh/svc/<port>/**` 反代（HTTP + WS，先比 subject 再转发） |
+| `packages/client/ui-services/` | 右侧栏「服务」标签页：列表轮询、打开（新标签）、重启/停止；carrier 补丁挂载行 `ui-services` |
+
 ## 镜像内置插件
 
 镜像在构建时编译两类本仓库新增、未发布到 npm 的插件，租户 profile 从 registry 装不到，由网关补齐：

@@ -51,3 +51,8 @@
     # creates the profile copy and this row is what mounts it.
     - id: ui-voffice
       name: '@deepseek-ai/dsh-client-ui-voffice'
+
+    # The tenant services panel: list, open, stop and restart the web services
+    # the tenant registered through the gateway's vh-services capability.
+    - id: ui-services
+      name: '@deepseek-ai/dsh-client-ui-services'

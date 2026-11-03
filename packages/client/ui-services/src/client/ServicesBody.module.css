@@ -1,0 +1,78 @@
+.status {
+  padding: 1rem;
+}
+
+.statusLine {
+  margin: 0;
+  opacity: 0.75;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem;
+  display: grid;
+  gap: 0.375rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--dsh-border-color, #2a2e35);
+  border-radius: 0.5rem;
+}
+
+.dot {
+  flex: none;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--dsh-text-muted, #6b7280);
+}
+
+.dotOn {
+  background: var(--dsh-success-color, #34c06b);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.port {
+  flex: none;
+  font-size: 0.85rem;
+  opacity: 0.65;
+}
+
+.state {
+  flex: none;
+  font-size: 0.85rem;
+  opacity: 0.65;
+}
+
+.tool {
+  flex: none;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--dsh-border-color, #2a2e35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tool:hover {
+  border-color: var(--dsh-border-hover-color, #3d434c);
+}
+
+.note {
+  padding: 0.5rem 0.75rem;
+  opacity: 0.7;
+}
