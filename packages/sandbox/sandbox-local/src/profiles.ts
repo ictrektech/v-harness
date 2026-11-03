@@ -48,14 +48,41 @@ export function tenantMaskRoots(policy: SandboxPolicy): string[] {
  * @returns profile arguments before the trailing separator and command argv.
  */
 export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
-  const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent']
+  const args = [
+    '--ro-bind', '/', '/',
+    '--unshare-pid',
+    // The jail already unshares IPC; repeat it here so a deployment that runs
+    // the sandbox outside the jail does not share one 0666 shm key space.
+    '--unshare-ipc',
+    '--proc', '/proc',
+    '--die-with-parent',
+  ]
+  if (policy.tenantRoot !== undefined) {
+    // Reuse the jail's private dev tree (own devpts, size-capped shm) instead
+    // of letting bwrap mint a fresh one whose shm is an unbounded tmpfs.
+    args.push('--dev-bind', '/dev', '/dev')
+  } else {
+    // Fresh devtree: outside the jail /dev carries the host's own devices,
+    // and a read-only-root sandbox must not hand them out writable.
+    args.push('--dev', '/dev')
+  }
   const masks = tenantMaskRoots(policy)
   // Visibility first: an empty tmpfs over each foreign tree, then the tenant's
   // own root bound back in. The bind must follow the mask — bwrap applies
   // mounts in argument order, so binding first would be buried by the tmpfs.
   for (const mask of masks) args.push('--tmpfs', mask)
   if (policy.mode === 'workspace-write') {
-    args.push('--tmpfs', '/tmp')
+    if (policy.tenantRoot !== undefined) {
+      // Inside the jail: bind its private size-capped tmpfs back read-write,
+      // so /tmp state survives across commands instead of dying with each
+      // sandbox. Explicit rather than inherited: the writability of a submount
+      // under a read-only root is a mount-semantics detail not worth betting on.
+      args.push('--bind', '/tmp', '/tmp')
+    } else {
+      // Outside the jail: a fresh tmpfs, so a confined command can neither
+      // read nor write the host's own /tmp contents.
+      args.push('--tmpfs', '/tmp')
+    }
   }
   // Widest bind first, then the narrower one: a later bind wins for its path.
   // Under read-only the account root comes back read-only; the mask removed

@@ -232,6 +232,8 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates \
+      nftables \
+      docker.io \
       build-essential python3 \
       git openssh-client \
  && rm -rf /var/lib/apt/lists/*

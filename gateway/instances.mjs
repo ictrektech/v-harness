@@ -19,6 +19,7 @@ import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'n
 import { join } from 'node:path';
 import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
+import { listUsers } from './users.mjs';
 
 const LAUNCH_TIMEOUT_MS = 45_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -37,7 +38,7 @@ const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 
 /**
  * @typedef {object} Instance
- * @property {string} namespace
+ * @property {string} subject - VOS immutable subject; the instance map key.
  * @property {string} linuxName
  * @property {number} port
  * @property {import('node:child_process').ChildProcess | undefined} child
@@ -97,6 +98,33 @@ async function writeState(path, state) {
   const temporary = `${path}.tmp-${String(process.pid)}`;
   await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await rename(temporary, path);
+}
+
+/**
+ * Convert the persistent instance state from namespace keys to subject keys.
+ *
+ * Instances used to be addressed by the tenant's internal namespace; sessions
+ * and routing now key on the immutable subject. The cookie each entry holds
+ * belongs to the tenant's own `.credentials.yaml`, so it stays valid under the
+ * new key. Entries naming no current user are dropped.
+ * @param {string} statePath
+ * @param {string} usersPath
+ * @returns {Promise<void>}
+ */
+export async function migrateInstanceStateKeys(statePath, usersPath) {
+  const state = await readState(statePath);
+  let changed = false;
+  for (const record of await listUsers(usersPath)) {
+    if (record.namespace === record.subject) continue;
+    const legacy = state[record.namespace];
+    if (legacy === undefined) continue;
+    if (state[record.subject] === undefined) {
+      state[record.subject] = legacy;
+    }
+    delete state[record.namespace];
+    changed = true;
+  }
+  if (changed) await writeState(statePath, state);
 }
 
 /**
@@ -183,16 +211,17 @@ async function exchangeCookie(launchUrl) {
 }
 
 /**
- * Rewrite session and workspace records that still point at the physical host
- * path.
+ * Rewrite session and workspace records that still point at a path the jail no
+ * longer presents.
  *
- * The jail used to mirror /data, so dsh stored `/data/users/<ns>/workspace/...`
- * in its storages. Inside the jail that prefix no longer exists, and dsh treats
- * the missing directory as one it must create: `mkdir('/data')` fails with
- * EACCES before the first request ever reaches the session. Rewriting the
- * prefix makes the migration idempotent, including for tenants that were
- * created before the layout changed; the marker file keeps the scan to the
- * first start rather than reading every storage file on each one.
+ * dsh stores whatever home path its process saw. Three layouts produced three
+ * prefixes: the mirrored `/data/users/<namespace>` tree, the account-named
+ * `/data/<account>` one, and the current `/home/<account>` jail view (the
+ * physical volume has stayed `<HOME_ROOT>/<account>` throughout). Rewriting
+ * the prefixes makes the migration idempotent, including for tenants created
+ * before the layout changed; the marker names the layout it migrated to, so a
+ * future change re-runs the rewrite by bumping the version instead of
+ * silently skipping.
  *
  * The projected session cache is derived data: dropping it is both cheaper and
  * safer than rewriting it, and dsh rebuilds it from the storages.
@@ -203,15 +232,13 @@ async function exchangeCookie(launchUrl) {
  * @returns {Promise<void>}
  */
 async function rewriteJailPaths(dshHome, namespace, account) {
-  const current = join(HOME_ROOT, account);
-  // Both spellings predate the account-named home: the mirrored `/data/users`
-  // tree and the earlier `/home/<namespace>` one.
-  const stale = [`/data/users/${namespace}`, `/home/${namespace}`]
+  const current = `/home/${account}`;
+  const stale = [`/data/users/${namespace}`, `/home/${namespace}`, `/data/${account}`]
     .filter((prefix) => prefix !== current);
   const storages = join(dshHome, 'storages');
   // The marker names the layout it migrated to, so a future layout change
   // re-runs the rewrite by bumping the version instead of silently skipping.
-  const marker = join(dshHome, '.jail-paths-home-v2');
+  const marker = join(dshHome, '.jail-paths-home-v3');
   try {
     await access(marker);
     return;
@@ -219,21 +246,31 @@ async function rewriteJailPaths(dshHome, namespace, account) {
     // Not migrated yet.
   }
   await rm(join(storages, 'session_projcache'), { recursive: true, force: true });
-  let entries;
-  try {
-    entries = await readdir(storages, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    const file = join(storages, entry.name);
-    const text = await readFile(file, 'utf8').catch(() => undefined);
-    if (text === undefined) continue;
-    let rewritten = text;
-    for (const prefix of stale) rewritten = rewritten.split(prefix).join(current);
-    if (rewritten === text) continue;
-    await writeFile(file, rewritten, 'utf8');
+  // Walk recursively: sessions, attachments and plugin stores nest below the
+  // top level, and a one-level scan silently skipped every nested path.
+  const stack = [storages];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(path);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const text = await readFile(path, 'utf8').catch(() => undefined);
+      if (text === undefined) continue;
+      let rewritten = text;
+      for (const prefix of stale) rewritten = rewritten.split(prefix).join(current);
+      if (rewritten === text) continue;
+      await writeFile(path, rewritten, 'utf8');
+    }
   }
   await writeFile(marker, `${current}\n`, 'utf8');
 }
@@ -278,7 +315,7 @@ async function adoptTenantRoots(home, dshHome, uid, account) {
  * Start one dsh process and capture its cookie.
  * @param {{
  *   record: import('./users.mjs').UserRecord,
- *   dataRoot: string,
+ *   stateRoot: string,
  *   dshBin: string,
  *   nodeBin: string,
  *   statePath: string,
@@ -286,10 +323,10 @@ async function adoptTenantRoots(home, dshHome, uid, account) {
  * @returns {Promise<Instance>}
  */
 async function launch(options) {
-  const { record, dataRoot, dshBin, nodeBin, statePath } = options;
+  const { record, stateRoot, dshBin, nodeBin, statePath } = options;
   const account = record.account ?? record.linuxName;
-  const paths = userPaths(dataRoot, account);
-  await mkdir(join(dataRoot, LOG_DIR_NAME), { recursive: true, mode: 0o700 });
+  const paths = userPaths(stateRoot, account);
+  await mkdir(join(stateRoot, LOG_DIR_NAME), { recursive: true, mode: 0o700 });
 
   const state = await readState(statePath);
   await adoptTenantRoots(paths.home, paths.dshHome, record.uid, account);
@@ -297,9 +334,10 @@ async function launch(options) {
 
   // vh-jail drops to the user *after* entering a mount+pid+uts namespace. The
   // jailed paths are what the process sees and what dsh records, so HOME and
-  // everything derived from it use <data root>/<account>: the tenant's own
-  // name, not an internal identifier.
-  const jailHome = join(HOME_ROOT, account);
+  // everything derived from it use the jail's own view of the home —
+  // /home/<account>, bound from the physical <HOME_ROOT>/<account> — and never
+  // an internal identifier.
+  const jailHome = `/home/${account}`;
 
   const launchArgs = [
     account, String(record.uid), paths.home,
@@ -315,6 +353,10 @@ async function launch(options) {
       // vh-jail checks the host home against this root before entering the
       // jail; without it the jail refuses every launch on a /data deployment.
       HOME_ROOT,
+      // vh-jail's nft rule lets this tenant's uid reach only its own loopback
+      // instance port; the port is the one allocation vh-jail cannot derive
+      // from its argv (the dsh --port flag belongs to the wrapped command).
+      VH_JAIL_PORT: String(record.port),
       HOME: jailHome,
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,
@@ -336,6 +378,11 @@ async function launch(options) {
       ...(process.env.IMAGE_STUDIO_BASE_URL === undefined
         ? {}
         : { IMAGE_STUDIO_BASE_URL: process.env.IMAGE_STUDIO_BASE_URL }),
+      // Optional pull-through mirror for the per-tenant docker daemon; absent
+      // means the daemon talks to the registry directly.
+      ...(process.env.VH_DOCKER_REGISTRY_MIRROR === undefined
+        ? {}
+        : { VH_DOCKER_REGISTRY_MIRROR: process.env.VH_DOCKER_REGISTRY_MIRROR }),
       // User-level installs first: npm -g, bun, pip --user and friends must
       // land in the tenant home, never in the shared read-only runtime.
       PATH: [
@@ -380,10 +427,14 @@ async function launch(options) {
   try {
     const launchUrl = await waitForLaunchUrl(child, LAUNCH_TIMEOUT_MS);
     const { cookie, expiresAt } = await exchangeCookie(launchUrl);
-    state[record.namespace] = { cookie, cookieExpiresAt: expiresAt };
+    // Instances are keyed by the immutable subject. Drop the legacy namespace
+    // key the same time the subject key is written, so one launch finishes
+    // the persistent-state migration for its tenant.
+    if (record.namespace !== record.subject) delete state[record.namespace];
+    state[record.subject] = { cookie, cookieExpiresAt: expiresAt };
     await writeState(statePath, state);
     return {
-      namespace: record.namespace,
+      subject: record.subject,
       linuxName: account,
       port: record.port,
       child,
@@ -405,7 +456,7 @@ async function launch(options) {
  *
  * @param {{
  *   record: import('./users.mjs').UserRecord,
- *   dataRoot: string,
+ *   stateRoot: string,
  *   dshBin: string,
  *   nodeBin: string,
  *   statePath: string,
@@ -414,25 +465,25 @@ async function launch(options) {
  * @returns {Promise<Instance>}
  */
 export async function ensureInstance(options) {
-  const { record, dataRoot } = options;
+  const { record, stateRoot } = options;
   const account = record.account ?? record.linuxName;
-  const existing = instances.get(record.namespace);
+  const existing = instances.get(record.subject);
   if (existing?.starting) {
     await existing.starting;
-    return instances.get(record.namespace) ?? existing;
+    return instances.get(record.subject) ?? existing;
   }
   if (existing?.child && existing.child.exitCode === null && !existing.child.killed) {
     return existing;
   }
 
   await runUserHelper(options.userHelper, [
-    'ensure', account, String(record.uid), userPaths(dataRoot, account).home,
+    'ensure', account, String(record.uid), userPaths(stateRoot, account).home,
   ]);
 
 
   /** @type {Instance} */
   const placeholder = {
-    namespace: record.namespace,
+    subject: record.subject,
     linuxName: account,
     port: record.port,
     child: undefined,
@@ -447,41 +498,41 @@ export async function ensureInstance(options) {
     // stale value lands the browser on "authentication required".
     const launched = await launch(options);
     launched.child?.once('exit', () => {
-      const current = instances.get(record.namespace);
-      if (current?.child === launched.child) instances.delete(record.namespace);
+      const current = instances.get(record.subject);
+      if (current?.child === launched.child) instances.delete(record.subject);
     });
-    instances.set(record.namespace, launched);
+    instances.set(record.subject, launched);
   })();
-  instances.set(record.namespace, placeholder);
+  instances.set(record.subject, placeholder);
 
   try {
     await placeholder.starting;
   } catch (error) {
-    instances.delete(record.namespace);
+    instances.delete(record.subject);
     throw error;
   }
-  return instances.get(record.namespace) ?? placeholder;
+  return instances.get(record.subject) ?? placeholder;
 }
 
 /**
  * Return the live instance without starting one.
- * @param {string} namespace
+ * @param {string} subject
  * @returns {Instance | undefined}
  */
-export function liveInstance(namespace) {
-  return instances.get(namespace);
+export function liveInstance(subject) {
+  return instances.get(subject);
 }
 
 /**
  * Stop one instance; the next request starts it again.
- * @param {string} namespace
+ * @param {string} subject
  * @returns {boolean} whether an instance was running.
  */
-export function stopInstance(namespace) {
-  const instance = instances.get(namespace);
+export function stopInstance(subject) {
+  const instance = instances.get(subject);
   if (!instance?.child) return false;
   instance.child.kill('SIGTERM');
-  instances.delete(namespace);
+  instances.delete(subject);
   return true;
 }
 

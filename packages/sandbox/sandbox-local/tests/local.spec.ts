@@ -75,22 +75,33 @@ function fakeSeatbeltExec(status: number): string {
 const SEATBELT_RO_PROFILE = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))'
 
 describe('profile dialects', () => {
-  it('bwrap read-only: whole tree read-only with fresh /dev and private PID-scoped /proc, no writable mounts', () => {
-    expect(bwrapProfileArgs(RO)).toEqual(['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent'])
+  it('bwrap read-only: whole tree read-only with a fresh devtree and private PID-scoped /proc, no writable mounts', () => {
+    expect(bwrapProfileArgs(RO)).toEqual([
+      '--ro-bind', '/', '/', '--unshare-pid', '--unshare-ipc',
+      '--proc', '/proc', '--die-with-parent',
+      '--dev', '/dev',
+    ])
   })
 
-  it('bwrap workspace-write: adds an ephemeral /tmp and rebinds the workspace root', () => {
+  it('bwrap workspace-write without a tenant root: ephemeral /tmp and the workspace root rebound', () => {
     expect(bwrapProfileArgs(WW)).toEqual([
-      '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
+      '--ro-bind', '/', '/', '--unshare-pid', '--unshare-ipc',
+      '--proc', '/proc', '--die-with-parent',
+      '--dev', '/dev',
       '--tmpfs', '/tmp', '--bind', '/ws', '/ws',
     ])
   })
 
   it('bwrap tenant root: every sibling tree becomes empty and the account root is bound back', () => {
     expect(bwrapProfileArgs(TENANT_WW)).toEqual([
-      '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
+      '--ro-bind', '/', '/', '--unshare-pid', '--unshare-ipc',
+      '--proc', '/proc', '--die-with-parent',
+      // Reuse the jail's private dev tree, shm included.
+      '--dev-bind', '/dev', '/dev',
       '--tmpfs', '/home', '--tmpfs', '/root', '--tmpfs', '/data', '--tmpfs', '/srv', '--tmpfs', '/mnt', '--tmpfs', '/media',
-      '--tmpfs', '/tmp',
+      // Inside the jail /tmp is its private size-capped tmpfs: bound back
+      // read-write so state survives across commands.
+      '--bind', '/tmp', '/tmp',
       '--bind', '/home/alice', '/home/alice',
       '--bind', '/home/alice/ws', '/home/alice/ws',
     ])
@@ -98,7 +109,9 @@ describe('profile dialects', () => {
 
   it('bwrap read-only with a tenant root: the account root comes back read-only, never writable', () => {
     expect(bwrapProfileArgs(TENANT_RO)).toEqual([
-      '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
+      '--ro-bind', '/', '/', '--unshare-pid', '--unshare-ipc',
+      '--proc', '/proc', '--die-with-parent',
+      '--dev-bind', '/dev', '/dev',
       '--tmpfs', '/home', '--tmpfs', '/root', '--tmpfs', '/data', '--tmpfs', '/srv', '--tmpfs', '/mnt', '--tmpfs', '/media',
       '--ro-bind', '/home/alice', '/home/alice',
     ])

@@ -1,105 +1,135 @@
 /**
- * Stateless HMAC session cookie for v-harness.
+ * Server-side sessions for v-harness, persisted in SQLite.
  *
- * The cookie never carries a VOS access token: it only names the platform
- * subject and its derived namespace. Revocation is expiry-based; bumping
- * `SESSION_VERSION` invalidates every outstanding cookie.
+ * The cookie is only an index: it carries a random session id and nothing
+ * else, so no secret lives in the browser and revocation is one UPDATE away.
+ * Sessions bind to the browser's User-Agent hash — a copied cookie from
+ * another browser is refused. The cost is explicit: a browser upgrade or an
+ * agent that rewrites the UA signs the user out; that trade is accepted and
+ * reversible by relaxing `loadSession`.
+ *
+ * Requires `node:sqlite` (stable from Node 24, flag-gated on 22 —
+ * `bin/entrypoint` probes and adds `--experimental-sqlite` when needed).
  *
  * @module v-harness/gateway/session
  */
 
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export const SESSION_COOKIE = 'vh_session';
 export const CSRF_COOKIE = 'vh_csrf';
 export const CSRF_HEADER = 'x-vh-csrf';
 
-const COOKIE_VERSION = 1;
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS sessions (
+  sid        TEXT PRIMARY KEY,
+  subject    TEXT NOT NULL,
+  account    TEXT NOT NULL,
+  ua_hash    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_seen  INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS sessions_subject ON sessions(subject);
+`;
+
+/** Sessions refresh their sliding window at most this often. */
+const LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
 
 /**
- * @typedef {object} SessionPayload
+ * @typedef {object} Session
+ * @property {string} sid - random 32-byte id, base64url.
  * @property {string} subject - VOS immutable subject.
- * @property {string} namespace - directory/uid namespace derived from subject.
- * @property {string} username - display name at sign-in time.
- * @property {number} expiresAt - epoch milliseconds.
+ * @property {string} account - tenant account name at sign-in time.
+ * @property {number} expiresAt - epoch milliseconds (sliding window).
  */
 
 /**
- * Load the signing secret, generating one when the file is absent.
- * @param {string} path - absolute secret file path.
- * @param {import('node:fs/promises').FileHandle | undefined} [handle]
- * @returns {Promise<Buffer>}
+ * Open (creating when absent) the session database.
+ * @param {string} path - absolute SQLite file path.
+ * @param {{ ttlMs: number }} options - sliding session window.
+ * @returns {Promise<{
+ *   createSession: (identity: { subject: string, account: string, userAgent: string }, now?: number) => string,
+ *   loadSession: (sid: string | undefined, userAgent: string, now?: number) => Session | undefined,
+ *   revokeSession: (sid: string) => void,
+ *   revokeSubject: (subject: string) => void,
+ *   close: () => void,
+ * }>}
  */
-export async function loadSecret(path) {
-  const { mkdir, readFile, writeFile } = await import('node:fs/promises');
-  try {
-    const text = (await readFile(path, 'utf8')).trim();
-    if (text) return Buffer.from(text, 'base64url');
-  } catch {
-    // Absent on first boot; fall through to creation. Any other read error
-    // surfaces on the write below rather than being swallowed here.
-  }
-  // The data root may not exist yet when the gateway runs outside the image
-  // entrypoint (local debugging, tests).
+export async function openSessionStore(path, { ttlMs }) {
+  const { DatabaseSync } = await import('node:sqlite');
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const generated = randomBytes(32);
-  await writeFile(path, `${generated.toString('base64url')}\n`, { mode: 0o600, flag: 'wx' })
-    .catch((error) => {
-      if (error?.code !== 'EEXIST') throw error;
-    });
-  const text = (await readFile(path, 'utf8')).trim();
-  return Buffer.from(text, 'base64url');
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec(SCHEMA);
+
+  const insert = db.prepare(
+    'INSERT INTO sessions (sid, subject, account, ua_hash, created_at, last_seen, expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+  );
+  const bySid = db.prepare(
+    'SELECT sid, subject, account, ua_hash, last_seen, expires_at, revoked FROM sessions WHERE sid = ?',
+  );
+  const touch = db.prepare('UPDATE sessions SET last_seen = ?, expires_at = ? WHERE sid = ? AND revoked = 0');
+  const revokeOne = db.prepare('UPDATE sessions SET revoked = 1 WHERE sid = ?');
+  const revokeSubject = db.prepare('UPDATE sessions SET revoked = 1 WHERE subject = ?');
+  const prune = db.prepare('DELETE FROM sessions WHERE expires_at < ?');
+
+  /**
+   * Mint one session and store it.
+   * @param {{ subject: string, account: string, userAgent: string }} identity
+   * @param {number} [now]
+   * @returns {string} the session id to set as the cookie value.
+   */
+  function createSession(identity, now = Date.now()) {
+    prune.run(now);
+    const sid = randomBytes(32).toString('base64url');
+    insert.run(
+      sid, identity.subject, identity.account,
+      userAgentHash(identity.userAgent), now, now, now + ttlMs,
+    );
+    return sid;
+  }
+
+  /**
+   * Load one live session.
+   * @param {string | undefined} sid
+   * @param {string} userAgent
+   * @param {number} [now]
+   * @returns {Session | undefined}
+   */
+  function loadSession(sid, userAgent, now = Date.now()) {
+    if (typeof sid !== 'string' || sid === '') return undefined;
+    const row = bySid.get(sid);
+    if (!row || row.revoked || row.expires_at <= now) return undefined;
+    // Strict UA binding: the hash must match the presenting browser. See the
+    // module comment for the accepted cost.
+    if (row.ua_hash !== userAgentHash(userAgent)) return undefined;
+    // Slide the window, throttled so a chatty client is not one write per
+    // request.
+    if (now - Number(row.last_seen) > LAST_SEEN_WRITE_INTERVAL_MS) {
+      touch.run(now, now + ttlMs, sid);
+    }
+    return { sid: row.sid, subject: row.subject, account: row.account, expiresAt: Number(row.expires_at) };
+  }
+
+  return {
+    createSession,
+    loadSession,
+    revokeSession: (sid) => { revokeOne.run(sid); },
+    revokeSubject: (subject) => { revokeSubject.run(subject); },
+    close: () => { db.close(); },
+  };
 }
 
 /**
- * Sign one session payload.
- * @param {SessionPayload} payload
- * @param {Buffer} secret
- * @returns {string} `v1.<body>.<signature>`
+ * @param {string} userAgent
+ * @returns {string}
  */
-export function signSession(payload, secret) {
-  const body = Buffer.from(JSON.stringify({ v: COOKIE_VERSION, ...payload }), 'utf8')
-    .toString('base64url');
-  return `v${COOKIE_VERSION}.${body}.${signature(secret, body)}`;
-}
-
-/**
- * Verify one session cookie.
- * @param {string | undefined} value
- * @param {Buffer} secret
- * @param {number} [now] - epoch milliseconds, injectable for tests.
- * @returns {SessionPayload | undefined}
- */
-export function verifySession(value, secret, now = Date.now()) {
-  if (typeof value !== 'string') return undefined;
-  const parts = value.split('.');
-  if (parts.length !== 3) return undefined;
-  const [version, body, encoded] = parts;
-  if (version !== `v${COOKIE_VERSION}` || !body || !encoded) return undefined;
-
-  // `signature` returns base64url text for the cookie; compare raw bytes, not
-  // the string against a Buffer (that comparison is always false).
-  const expected = Buffer.from(signature(secret, body), 'base64url');
-  const actual = Buffer.from(encoded, 'base64url');
-  if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected)) {
-    return undefined;
-  }
-
-  let decoded;
-  try {
-    decoded = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-  } catch {
-    return undefined;
-  }
-  if (!decoded || typeof decoded !== 'object' || decoded.v !== COOKIE_VERSION) return undefined;
-  const { subject, namespace, username, expiresAt } = decoded;
-  if (typeof subject !== 'string' || !subject
-    || typeof namespace !== 'string' || !namespace
-    || typeof username !== 'string'
-    || typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt)) return undefined;
-  if (expiresAt <= now) return undefined;
-  return { subject, namespace, username, expiresAt };
+function userAgentHash(userAgent) {
+  return createHash('sha256').update(userAgent).digest('hex');
 }
 
 /**
@@ -159,13 +189,4 @@ export function csrfMatches(actual, expected) {
   const left = Buffer.from(actual, 'utf8');
   const right = Buffer.from(expected, 'utf8');
   return left.byteLength === right.byteLength && timingSafeEqual(left, right);
-}
-
-/**
- * @param {Buffer} secret
- * @param {string} body
- * @returns {string}
- */
-function signature(secret, body) {
-  return createHmac('sha256', secret).update(body).digest('base64url');
 }

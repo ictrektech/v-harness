@@ -127,9 +127,16 @@ export function accountOf(username, table) {
   const taken = new Set(
     Object.values(table).map((record) => record.account ?? record.linuxName),
   );
+  const reserved = (name) => RESERVED_ACCOUNTS.has(name) || name.startsWith('vh-');
   let base = accountSlug(username);
-  if (base === '') base = 'user';
-  if (RESERVED_ACCOUNTS.has(base)) base = `${base}-user`;
+  if (base === '') {
+    // A CJK-only name slugs to nothing; fall back to a numbered identity,
+    // `u1001` upward, that is still a legal account name.
+    let seq = 1001;
+    while (reserved(`u${String(seq)}`) || taken.has(`u${String(seq)}`)) seq += 1;
+    return `u${String(seq)}`;
+  }
+  if (reserved(base)) base = `${base}-user`;
   let candidate = base;
   let counter = 1;
   while (taken.has(candidate) || !ACCOUNT_RE.test(candidate)) {

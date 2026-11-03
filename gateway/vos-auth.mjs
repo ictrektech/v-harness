@@ -19,11 +19,13 @@ export class VosAuthError extends Error {
   /**
    * @param {string} code - stable failure code for the HTTP layer.
    * @param {string} message - operator-facing detail; never rendered to users.
+   * @param {number} [status] - HTTP status of the userinfo answer, when one arrived.
    */
-  constructor(code, message) {
+  constructor(code, message, status) {
     super(message);
     this.name = 'VosAuthError';
     this.code = code;
+    this.status = status;
   }
 }
 
@@ -165,7 +167,7 @@ export async function verifyVosToken(accessToken, options = {}) {
     );
   }
   if (!response.ok) {
-    throw new VosAuthError('vos-userinfo-status', `VOS userinfo returned HTTP ${String(response.status)}`);
+    throw new VosAuthError('vos-userinfo-status', `VOS userinfo returned HTTP ${String(response.status)}`, response.status);
   }
 
   let payload;

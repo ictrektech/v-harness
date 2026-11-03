@@ -48,4 +48,10 @@ if [[ -f "${STATE_ROOT}/users.json" ]]; then
   '
 fi
 
-exec node /opt/v-harness/gateway/server.mjs
+# node:sqlite is flag-gated on Node 22 and stable from Node 24; probe once so
+# the same image line runs on either base.
+SQLITE_FLAGS=()
+if ! node -e "import('node:sqlite').then(() => process.exit(0), () => process.exit(1))" 2>/dev/null; then
+  SQLITE_FLAGS=(--experimental-sqlite)
+fi
+exec node "${SQLITE_FLAGS[@]}" /opt/v-harness/gateway/server.mjs

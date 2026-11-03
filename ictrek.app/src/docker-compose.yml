@@ -23,11 +23,14 @@ x-v-harness-base: &v-harness-base
   restart: unless-stopped
   environment: *v-harness-env
   # bin/vh-jail needs mount and pid namespaces so one tenant cannot see another
-  # tenant's home or processes. Docker's default capability set lacks
-  # CAP_SYS_ADMIN, and the default seccomp profile blocks the syscalls.
+  # tenant's home or processes, and CAP_NET_ADMIN so its nft rule can keep a
+  # tenant's uid off every other instance's loopback port. Docker's default
+  # capability set lacks CAP_SYS_ADMIN, and the default seccomp profile blocks
+  # the syscalls.
   cap_add:
     - SYS_ADMIN
     - SYS_PTRACE
+    - NET_ADMIN
   security_opt:
     - seccomp:unconfined
     - apparmor:unconfined

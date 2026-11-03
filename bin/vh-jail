@@ -3,7 +3,7 @@
 #
 # The jail layout mirrors an ordinary Linux server:
 #
-#   /data/<account>     the tenant's own content (bound from the data root)
+#   /home/<account>     the tenant's own content (bound from the data root)
 #   /usr /bin /lib ...  shared runtime, mounted read-only
 #   (nothing else)
 #
@@ -60,6 +60,59 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   mount --make-rprivate /
   hostname "$VH_JAIL_HOSTNAME" 2>/dev/null || true
 
+  # Loopback isolation: the tenant uid may reach only its own instance port
+  # on 127.0.0.1 / ::1. The jail keeps the shared network (model calls need the
+  # outside), so the rule lives in the host ruleset and matches on the tenant
+  # uid: the gateway (root) and every external endpoint are untouched. uid and
+  # port are allocated once and never reused, so a rule left behind by a
+  # stopped instance is inert; the next launch of the same account replaces it
+  # instead of accumulating.
+  net_isolate() {
+    local port="${VH_JAIL_PORT:-}"
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+      printf "vh-jail: VH_JAIL_PORT not set, loopback isolation skipped\n" >&2
+      return 0
+    fi
+    if ! command -v nft >/dev/null 2>&1; then
+      printf "vh-jail: nft not found, loopback isolation skipped\n" >&2
+      return 0
+    fi
+    # Two tenants cold-starting at once race on table creation: the loser of
+    # `add` must re-check instead of degrading, or it runs without any rule.
+    if ! nft list table inet vh-tenant >/dev/null 2>&1 \
+      && ! nft add table inet vh-tenant >/dev/null 2>&1 \
+      && ! nft list table inet vh-tenant >/dev/null 2>&1; then
+      printf "vh-jail: cannot create nft table (missing CAP_NET_ADMIN?), loopback isolation skipped\n" >&2
+      return 0
+    fi
+    if ! nft list chain inet vh-tenant out >/dev/null 2>&1 \
+      && ! nft add chain inet vh-tenant out "{ type filter hook output priority filter; policy accept; }" >/dev/null 2>&1 \
+      && ! nft list chain inet vh-tenant out >/dev/null 2>&1; then
+      printf "vh-jail: cannot create nft chain, loopback isolation skipped\n" >&2
+      return 0
+    fi
+    # Replace the stale rules tagged for this account before adding fresh
+    # ones, so relaunches never duplicate.
+    nft -a list chain inet vh-tenant out 2>/dev/null \
+      | grep -F "comment \"vh-$VH_JAIL_ACCOUNT\"" \
+      | grep -o "# handle [0-9]*" \
+      | cut -d" " -f3 \
+      | while read -r handle; do
+          nft delete rule inet vh-tenant out handle "$handle" >/dev/null 2>&1 || true
+        done
+    # 3100-3999 is the reserved instance range: the rules let the tenant uid
+    # reach only its own port inside it, so a service the tenant runs that
+    # listens there gets cut off from its own clients. Tenant-run services
+    # must use ports from 30000 up.
+    nft add rule inet vh-tenant out \
+      meta skuid "$VH_JAIL_UID" ip daddr 127.0.0.1 tcp dport 3100-3999 tcp dport != "$port" drop comment "\"vh-$VH_JAIL_ACCOUNT\"" \
+      || printf "vh-jail: could not add the IPv4 loopback isolation rule\n" >&2
+    nft add rule inet vh-tenant out \
+      meta skuid "$VH_JAIL_UID" ip6 daddr ::1 tcp dport 3100-3999 tcp dport != "$port" drop comment "\"vh-$VH_JAIL_ACCOUNT\"" \
+      || printf "vh-jail: could not add the IPv6 loopback isolation rule\n" >&2
+  }
+  net_isolate
+
   # The jail root is a fresh tmpfs; only what is bound below is reachable.
   root="/run/vh-root-$VH_JAIL_ACCOUNT"
   rm -rf "$root"
@@ -115,8 +168,8 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # Identity as this tenant sees it: the account itself, and localhost only.
   # A missing getpwuid entry breaks os.userInfo() and every group lookup, so the
   # tenant must be present; the rest of the container must not be.
-  printf "%s:x:%s:%s::%s:/usr/sbin/nologin\n" \
-    "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" "$VH_JAIL_UID" "$VH_JAIL_HOME" \
+  printf "%s:x:%s:%s::/home/%s:/usr/sbin/nologin\n" \
+    "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" "$VH_JAIL_UID" "$VH_JAIL_ACCOUNT" \
     > "$root/etc/passwd"
   printf "%s:x:%s:\n" "$VH_JAIL_ACCOUNT" "$VH_JAIL_UID" > "$root/etc/group"
   printf "%s\n" "$VH_JAIL_ACCOUNT" > "$root/etc/hostname"
@@ -159,16 +212,39 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # this instance lists only this tenant.
   mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
 
+  # Writable cgroup2 for the tenant docker daemon. The /sys/fs/cgroup the
+  # container sees is read-only, so sideload a fresh cgroup2 — the kernel
+  # scopes it to this container own cgroup subtree, never the host hierarchy —
+  # and bind it over the jail /sys/fs/cgroup. Without it, runc cannot create
+  # cgroups and nested containers cannot start.
+  if mkdir -p /tmp/vh-cg2 "$root/sys/fs/cgroup" \
+    && mount -t cgroup2 none /tmp/vh-cg2 2>/dev/null \
+    && mount --bind /tmp/vh-cg2 "$root/sys/fs/cgroup"; then
+    VH_JAIL_CGROUP_OK=1
+  else
+    VH_JAIL_CGROUP_OK=0
+    printf "vh-jail: no writable cgroup2, tenant docker will be unavailable\n" >&2
+  fi
+
+  # The tenant docker graph root, persistent on the volume and private per
+  # tenant: images and container state live in <home root>/<account>/.docker
+  # and are bind-mounted at /var/lib/docker. Everything else under /var stays
+  # nonexistent.
+  mkdir -p "$VH_JAIL_HOME/.docker" "$root/var/lib/docker"
+  mount --bind "$VH_JAIL_HOME/.docker" "$root/var/lib/docker"
+
   # Bounded private scratch: an unbounded tmpfs lets one tenant exhaust the
   # container memory and slow every other tenant down — which is itself a way to
   # learn that someone else is there.
   mount -t tmpfs -o mode=1777,nosuid,nodev,size=512m tmpfs "$root/tmp"
   mount -t tmpfs -o mode=0755,nosuid,nodev,size=16m tmpfs "$root/run"
 
-  # The tenant home, at the same path the gateway advertises as HOME.
-  mkdir -p "$root$VH_JAIL_HOME"
-  mount --bind "$VH_JAIL_HOME" "$root$VH_JAIL_HOME"
-  chmod 0700 "$root$VH_JAIL_HOME"
+  # The tenant home at /home/<account>: a private /home means a sibling tenant
+  # is not merely unreadable but nonexistent, and nothing creates /data, so a
+  # probe of it answers ENOENT instead of a permission error.
+  mkdir -p "$root/home/$VH_JAIL_ACCOUNT"
+  mount --bind "$VH_JAIL_HOME" "$root/home/$VH_JAIL_ACCOUNT"
+  chmod 0700 "$root/home/$VH_JAIL_ACCOUNT"
 
   # Everything above is root-side setup. The command starts unprivileged and
   # without CAP_SYS_CHROOT, so it cannot climb out of the jail root. The bounding
@@ -182,11 +258,11 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     # late, so it is treated as a refusal.
     fail() { printf \"vh-jail: isolation check failed: %s\n\" \"\$1\" >&2; exit 97; }
     [ \"\$(wc -l < /etc/passwd)\" -eq 1 ] || fail \"etc/passwd lists more than one account\"
-    [ \"\$(ls $HOME_ROOT | wc -l)\" -eq 1 ] || fail \"the data root lists more than one tenant\"
-    [ \"\$(ls $HOME_ROOT)\" = \"$VH_JAIL_ACCOUNT\" ] || fail \"the data root does not name this tenant\"
-    if [ -e /home ]; then fail \"a system home is visible\"; fi
+    [ \"\$(ls /home | wc -l)\" -eq 1 ] || fail \"the home root lists more than one tenant\"
+    [ \"\$(ls /home)\" = \"$VH_JAIL_ACCOUNT\" ] || fail \"the home root does not name this tenant\"
+    if [ -e /data ]; then fail \"the data root is visible\"; fi
     if [ -e /root ]; then fail \"the root home is visible\"; fi
-    export HOME=\"$VH_JAIL_HOME\"
+    export HOME=\"/home/$VH_JAIL_ACCOUNT\"
     export USER=\"$VH_JAIL_ACCOUNT\"
     export LOGNAME=\"$VH_JAIL_ACCOUNT\"
     export HOSTNAME=\"$VH_JAIL_HOSTNAME\"
@@ -210,6 +286,31 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     ulimit -u 1024 2>/dev/null || true
     ulimit -n 4096 2>/dev/null || true
     ulimit -f 2097152 2>/dev/null || true
+    # Per-tenant docker daemon: root inside the jail, so nested containers
+    # inherit the jail mount/pid/ipc namespaces and can never reach another
+    # tenant world (their / is this jail). Bridge and iptables are off: the
+    # container network is shared by every tenant, and one daemon must not
+    # rewrite rules the others depend on - tenants run containers with
+    # --network host. The daemon dies with the instance: it is a child of the
+    # pid-namespace init that exits when the tenant command ends.
+    if [ -x /usr/bin/dockerd ] && [ -w /sys/fs/cgroup ]; then
+      /usr/bin/dockerd \
+        --data-root=/var/lib/docker \
+        --exec-root=/run/docker-exec \
+        --host=unix:///run/docker.sock \
+        --pidfile=/run/docker.pid \
+        --iptables=false --ip6tables=false --bridge=none \
+        ${VH_DOCKER_REGISTRY_MIRROR:+--registry-mirror=$VH_DOCKER_REGISTRY_MIRROR} \
+        >/run/dockerd.log 2>&1 &
+      i=0
+      while [ ! -S /run/docker.sock ] && [ \"\$i\" -lt 100 ]; do sleep 0.2; i=\$((i+1)); done
+      if [ -S /run/docker.sock ]; then
+        chown "$VH_JAIL_UID:$VH_JAIL_UID" /run/docker.sock
+        export DOCKER_HOST=unix:///run/docker.sock
+      else
+        printf \"vh-jail: dockerd did not come up; docker disabled for this session\n\" >&2
+      fi
+    fi
     cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
     exec /usr/bin/setpriv \
       --no-new-privs \

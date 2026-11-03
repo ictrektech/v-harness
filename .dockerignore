@@ -12,6 +12,8 @@
 !tsdown.config.ts
 !gateway/
 !gateway/**
+# Tests never run inside the image; keep them out of the runtime layer.
+gateway/*.test.mjs
 !bin/
 !bin/**
 !skills/

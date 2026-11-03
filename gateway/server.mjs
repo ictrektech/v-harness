@@ -25,7 +25,14 @@ import {
   statWorkspace,
   uploadWorkspaceFile,
 } from './files.mjs';
-import { ensureInstance, liveInstance, stopAll, userPaths } from './instances.mjs';
+import {
+  ensureInstance,
+  liveInstance,
+  migrateInstanceStateKeys,
+  stopAll,
+  stopInstance,
+  userPaths,
+} from './instances.mjs';
 import {
   accessTokenFor,
   closeOfficeCapabilities,
@@ -44,11 +51,9 @@ import {
   SESSION_COOKIE,
   cookie,
   csrfMatches,
-  loadSecret,
   newCsrfToken,
+  openSessionStore,
   parseCookies,
-  signSession,
-  verifySession,
 } from './session.mjs';
 import { findUser, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
@@ -64,7 +69,7 @@ const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';
 const USERS_FILE = process.env.USERS_FILE ?? join(STATE_ROOT, 'users.json');
 const STATE_FILE = process.env.STATE_FILE ?? join(STATE_ROOT, 'state-instances.json');
-const SECRET_FILE = process.env.SECRET_FILE ?? join(STATE_ROOT, 'session-secret');
+const SESSION_DB_FILE = process.env.SESSION_DB_FILE ?? join(STATE_ROOT, 'sessions.db');
 const DSH_BIN = process.env.DSH_BIN ?? '/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js';
 const NODE_BIN = process.env.NODE_BIN ?? process.execPath;
 const USER_HELPER = process.env.USER_HELPER ?? '/opt/v-harness/bin/vh-userctl';
@@ -84,7 +89,10 @@ const HOP_BY_HOP = new Set([
   'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
 ]);
 
-const secret = await loadSecret(SECRET_FILE);
+const sessions = await openSessionStore(SESSION_DB_FILE, { ttlMs: SESSION_TTL_MS });
+// One boot finishes the persistent-state key migration (namespace → subject);
+// later boots find nothing to move and leave the file alone.
+await migrateInstanceStateKeys(STATE_FILE, USERS_FILE);
 
 /**
  * Whether the browser reached us over HTTPS (terminated by the VOS ingress).
@@ -99,10 +107,62 @@ function isSecure(req) {
 
 /**
  * @param {import('node:http').IncomingMessage} req
- * @returns {import('./session.mjs').SessionPayload | undefined}
+ * @returns {import('./session.mjs').Session | undefined}
  */
 function authenticate(req) {
-  return verifySession(parseCookies(req.headers.cookie)[SESSION_COOKIE], secret);
+  return sessions.loadSession(parseCookies(req.headers.cookie)[SESSION_COOKIE], String(req.headers['user-agent'] ?? ''));
+}
+
+/** Per-session VOS subject re-check results: sid → { subject, checkedAt }. */
+const SUB_RECHECK_MS = Number(process.env.SUB_RECHECK_MS ?? 5 * 60 * 1_000);
+const subChecks = new Map();
+
+/**
+ * Re-prove that the stored VOS token still belongs to the session's subject.
+ *
+ * The cookie outlives the VOS token in memory, and an account kicked on the
+ * VOS side must not keep routing. Throttled: one userinfo round trip per
+ * session per window. A down endpoint fails open (throttled by the same
+ * window); a subject mismatch revokes the session and fails closed.
+ * @param {import('./session.mjs').Session} session
+ * @param {import('./users.mjs').UserRecord} record
+ * @returns {Promise<boolean>} whether the request may proceed.
+ */
+async function subjectRecheck(session, record) {
+  const now = Date.now();
+  const cached = subChecks.get(session.sid);
+  if (cached && cached.subject === session.subject && now - cached.checkedAt < SUB_RECHECK_MS) {
+    return true;
+  }
+  subChecks.set(session.sid, { subject: session.subject, checkedAt: now });
+  if (AUTH_DISABLED) return true;
+  const token = accessTokenFor(record.namespace);
+  if (token === undefined) return true;
+  try {
+    const identity = await verifyVosToken(token);
+    if (identity.subject !== session.subject) {
+      sessions.revokeSession(session.sid);
+      console.warn(`sub recheck: session drift for ${record.account ?? record.linuxName}, revoked`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    // VOS answered and refused this identity (rejected token, 401/403 from
+    // userinfo): the session's subject is gone. Fail closed for this session
+    // only — the other tenants keep theirs.
+    if (error instanceof VosAuthError
+      && (error.code === 'vos-token-rejected'
+        || (error.code === 'vos-userinfo-status' && (error.status === 401 || error.status === 403)))) {
+      sessions.revokeSession(session.sid);
+      console.warn(`sub recheck: token refused for ${record.account ?? record.linuxName} (${error.code}), session revoked`);
+      return false;
+    }
+    // Everything else — unreachable endpoint, 5xx, malformed payload — is a
+    // VOS outage, not an identity verdict. A hiccup must not sign every
+    // tenant out, so fail open; the recheck window throttles the retry.
+    console.warn(`sub recheck unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return true;
+  }
 }
 
 /**
@@ -330,6 +390,10 @@ async function requireUser(req, res) {
     json(res, 401, { error: 'unknown user' });
     return undefined;
   }
+  if (!(await subjectRecheck(session, record))) {
+    json(res, 401, { error: 'session revoked' });
+    return undefined;
+  }
   // Handed-out links must be absolute on the domain this tenant is browsing,
   // and only this tenant's requests may say what that domain is.
   rememberOrigin(req.headers, record.namespace);
@@ -515,32 +579,34 @@ async function handleControl(req, res, url) {
   if (url.pathname === '/__vh/session' && req.method === 'GET') {
     const session = authenticate(req);
     if (session) {
-      // `locale` is the surface's own language as VOS reported it; the page
-      // reads the same value through the shell injection, so this is the
-      // diagnostic copy of it.
-      const locale = (await findUser(USERS_FILE, session.subject))?.locale ?? '';
-      const user = { username: session.username, namespace: session.namespace, locale };
-      // The page calls this on every load, which makes it the one place that
-      // reliably sees each tenant's real domain; recording it only on
-      // capability routes left the map empty until the user opened a file.
-      rememberOrigin(req.headers, session.namespace);
-      console.log(`session ${session.username}: tokenReady=${String(hasUsableTokens(session.namespace))}`);
-      // The page re-proves who is signed in on every load, so this endpoint
-      // always hands back the CSRF token and client identity that replay
-      // needs. The cookie names the tenant we served last; it is not evidence
-      // of the account that is signed in now.
-      const csrf = newCsrfToken();
-      json(res, 200, {
-        authenticated: true,
-        user,
-        tokenReady: hasUsableTokens(session.namespace),
-        clientId: CLIENT_ID,
-        scope: SCOPE,
-        csrf,
-      }, {
-        'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
-      });
-      return;
+      const record = await findUser(USERS_FILE, session.subject);
+      if (record) {
+        const locale = record.locale ?? '';
+        // The page calls this on every load, which makes it the one place that
+        // reliably sees each tenant's real domain; recording it only on
+        // capability routes left the map empty until the user opened a file.
+        rememberOrigin(req.headers, record.namespace);
+        console.log(`session ${record.username}: tokenReady=${String(hasUsableTokens(record.namespace))}`);
+        // The page re-proves who is signed in on every load, so this endpoint
+        // always hands back the CSRF token and client identity that replay
+        // needs. The cookie names the tenant we served last; it is not evidence
+        // of the account that is signed in now.
+        const csrf = newCsrfToken();
+        json(res, 200, {
+          authenticated: true,
+          user: { username: record.username, namespace: record.namespace, locale },
+          tokenReady: hasUsableTokens(record.namespace),
+          clientId: CLIENT_ID,
+          scope: SCOPE,
+          csrf,
+        }, {
+          'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
+        });
+        return;
+      }
+      // The user table no longer knows this subject: the session cannot route
+      // anywhere, so retire it and fall through to the bootstrap flow.
+      sessions.revokeSubject(session.subject);
     }
     if (AUTH_DISABLED) {
       // Local debugging: mint a session for one fixed user so the UI can be
@@ -550,19 +616,18 @@ async function handleControl(req, res, url) {
         namespace: DEV_NAMESPACE,
         username: 'dev',
       });
-      const value = signSession({
+      const sid = sessions.createSession({
         subject: record.subject,
-        namespace: record.namespace,
-        username: record.username,
-        expiresAt: Date.now() + SESSION_TTL_MS,
-      }, secret);
+        account: record.account ?? record.linuxName,
+        userAgent: String(req.headers['user-agent'] ?? ''),
+      });
       console.warn('VH_AUTH_DISABLED is set: signing in as the local dev user');
       json(res, 200, {
         authenticated: true,
         tokenReady: true,
         user: { username: record.username, namespace: record.namespace },
       }, {
-        'set-cookie': cookie(SESSION_COOKIE, value, {
+        'set-cookie': cookie(SESSION_COOKIE, sid, {
           maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
           secure: isSecure(req),
         }),
@@ -605,7 +670,9 @@ async function handleControl(req, res, url) {
     return;
   }
 
-  if (url.pathname === '/__vh/auth' && req.method === 'POST') {
+  // Session creation. `/__vh/session` is the documented endpoint; `/__vh/auth`
+  // stays accepted so a bootstrap page from an older deployment still signs in.
+  if ((url.pathname === '/__vh/session' || url.pathname === '/__vh/auth') && req.method === 'POST') {
     const cookies = parseCookies(req.headers.cookie);
     const presented = req.headers['x-vh-csrf'];
     if (!csrfMatches(String(presented ?? ''), cookies[CSRF_COOKIE] ?? '')) {
@@ -618,6 +685,7 @@ async function handleControl(req, res, url) {
         acceptLanguage: String(req.headers['accept-language'] ?? ''),
       });
       const { record, created } = await upsertUser(USERS_FILE, identity);
+      console.log(`identity user=${record.account ?? record.linuxName} sub=${record.subject} created=${String(created)}`);
       if (created) {
         console.log(`user created namespace=${record.namespace} port=${String(record.port)}`);
       }
@@ -635,24 +703,23 @@ async function handleControl(req, res, url) {
       });
       await ensureInstance({
         record,
-        dataRoot: STATE_ROOT,
+        stateRoot: STATE_ROOT,
         dshBin: DSH_BIN,
         nodeBin: NODE_BIN,
         statePath: STATE_FILE,
         userHelper: USER_HELPER,
       });
       await startCapabilities(record);
-      const value = signSession({
+      const sid = sessions.createSession({
         subject: record.subject,
-        namespace: record.namespace,
-        username: record.username,
-        expiresAt: Date.now() + SESSION_TTL_MS,
-      }, secret);
+        account: record.account ?? record.linuxName,
+        userAgent: String(req.headers['user-agent'] ?? ''),
+      });
       json(res, 200, {
         authenticated: true,
         user: { username: record.username, namespace: record.namespace },
       }, {
-        'set-cookie': cookie(SESSION_COOKIE, value, {
+        'set-cookie': cookie(SESSION_COOKIE, sid, {
           maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
           secure: isSecure(req),
         }),
@@ -667,8 +734,28 @@ async function handleControl(req, res, url) {
   }
 
   if (url.pathname === '/__vh/logout' && req.method === 'POST') {
+    const session = authenticate(req);
+    if (session) {
+      // Revoking alone leaves the dsh process (and its VOS capabilities)
+      // running for whoever holds the instance cookie next; stopping the
+      // instance closes the tenant's whole world, not just the browser door.
+      sessions.revokeSession(session.sid);
+      stopInstance(session.subject);
+    }
     json(res, 200, { authenticated: false }, {
       'set-cookie': cookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, secure: isSecure(req) }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/__vh/whoami' && req.method === 'GET') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    json(res, 200, {
+      subject: record.subject,
+      account: record.account ?? record.linuxName,
+      username: record.username,
+      locale: record.locale ?? '',
     });
     return;
   }
@@ -737,13 +824,13 @@ async function startCapabilities(record) {
  * @returns {Promise<{ port: number, cookie: string | undefined } | undefined>}
  */
 async function instanceFor(session) {
-  const cached = liveInstance(session.namespace);
+  const cached = liveInstance(session.subject);
   if (cached?.cookie) return cached;
   const record = await findUser(USERS_FILE, session.subject);
   if (!record) return undefined;
   const instance = await ensureInstance({
     record,
-    dataRoot: STATE_ROOT,
+    stateRoot: STATE_ROOT,
     dshBin: DSH_BIN,
     nodeBin: NODE_BIN,
     statePath: STATE_FILE,
@@ -794,20 +881,43 @@ async function proxyRequest(req, res) {
     return;
   }
 
+  const record = await findUser(USERS_FILE, session.subject);
+  if (!record) {
+    // The session names a subject the user table dropped: it can never route,
+    // so retire it wholesale instead of 401-ing every request forever.
+    sessions.revokeSubject(session.subject);
+    if (isDocumentRequest(req)) {
+      sendBootstrap(res);
+      return;
+    }
+    json(res, 401, { error: 'unknown user' });
+    return;
+  }
+  if (!(await subjectRecheck(session, record))) {
+    // The VOS subject drifted (account kicked / switched): send the browser
+    // back through bootstrap, which re-proves identity and re-issues a session.
+    if (isDocumentRequest(req)) {
+      sendBootstrap(res);
+      return;
+    }
+    json(res, 401, { error: 'session revoked' });
+    return;
+  }
+
   // The cookie outlives the gateway's in-memory VOS token, so a reload after a
   // restart would otherwise enter the app with every capability endpoint
   // unauthorized and no way back. A navigation goes through the bootstrap page
   // instead, which replays the VOS login and then returns here. Resolving the
   // token here — not just checking for one — also covers a refresh token VOS no
   // longer accepts: the page then re-authorizes instead of entering dead.
-  if (isDocumentRequest(req) && await accessTokenFor(session.namespace) === undefined) {
+  if (isDocumentRequest(req) && await accessTokenFor(record.namespace) === undefined) {
     sendBootstrap(res);
     return;
   }
 
   // This is the browser itself, not the instance behind it: its headers carry
   // the domain this tenant is actually on.
-  rememberOrigin(req.headers, session.namespace);
+  rememberOrigin(req.headers, record.namespace);
 
   const instance = await instanceFor(session);
   if (!instance?.cookie) {
@@ -823,9 +933,7 @@ async function proxyRequest(req, res) {
   // must not come back compressed.
   const documentRequest = isDocumentRequest(req);
   if (documentRequest) delete headers['accept-encoding'];
-  const locale = documentRequest
-    ? (await findUser(USERS_FILE, session.subject))?.locale
-    : undefined;
+  const locale = documentRequest ? record.locale : undefined;
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
