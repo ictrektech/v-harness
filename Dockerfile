@@ -237,7 +237,8 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       build-essential python3 python3-pip python3-venv \
       postgresql-client sqlite3 \
       git openssh-client \
-      procps iproute2 lsof zip pkg-config \
+      procps iproute2 net-tools iputils-ping netcat-openbsd bind9-dnsutils \
+      lsof zip pkg-config \
       rsync unzip less jq ripgrep vim-tiny \
  && rm -rf /var/lib/apt/lists/*
 
