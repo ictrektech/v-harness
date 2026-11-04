@@ -6,9 +6,10 @@
  *      the VOS Fastpath exchange and posts the access token to `/__vh/auth`.
  *   2. `/__vh/auth` verifies the token through VOS userinfo, ensures the user's
  *      instance exists, and mints a signed `vh_session` cookie.
- *   3. Every later request is forwarded to that user's loopback instance with
- *      the browser Cookie replaced by the instance's own dsh cookie and Host
- *      rewritten to `127.0.0.1:<port>`.
+ *   3. Every later request is forwarded to that user's instance over the
+ *      address its network namespace is published on, with the browser Cookie
+ *      replaced by the instance's own dsh cookie and Host rewritten to
+ *      `127.0.0.1:<port>` (the authority dsh signed that cookie for).
  *
  * @module v-harness/gateway/server
  */
@@ -33,6 +34,7 @@ import {
   stopInstance,
   userPaths,
 } from './instances.mjs';
+import { previewIp } from './netns.mjs';
 import {
   accessTokenFor,
   closeOfficeCapabilities,
@@ -545,7 +547,7 @@ async function handleServiceAction(req, res, url) {
   }
   const port = Number(match[1]);
   const result = match[2] === 'restart'
-    ? restartService(record.subject, port)
+    ? restartService(record.subject, port, record.port)
     : stopService(record.subject, port);
   console.log(`service ${match[2]}: ${record.account ?? record.linuxName} port=${String(port)} -> ${String(result.status)}`);
   json(res, result.status, result.status === 200 ? { ok: true } : { error: result.error, message: result.message });
@@ -580,9 +582,10 @@ function serviceHeaders(req, port) {
 
 /**
  * Proxy one request to a service the session's subject registered.
- * `/__vh/svc/<port>/<rest>` forwards to `127.0.0.1:<port>/<rest>`; a port that
- * subject never registered answers 404 here — the registry, not the network,
- * decides what is reachable.
+ * `/__vh/svc/<port>/<rest>` forwards to `<tenant address>:<port>/<rest>`, where
+ * the service listens on `127.0.0.1` inside the tenant's own namespace; a port
+ * that subject never registered answers 404 here — the registry, not the
+ * network, decides what is reachable.
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
  * @param {URL} url
@@ -612,7 +615,7 @@ async function proxyServiceRequest(req, res, url) {
   const path = `${match[2] ?? '/'}${url.search}`;
   await new Promise((resolve) => {
     const upstream = httpRequest({
-      host: '127.0.0.1',
+      host: previewIp(record.uid),
       port,
       method: req.method,
       path,
@@ -675,7 +678,7 @@ async function proxyServiceUpgrade(req, socket, head) {
     else lines.push(`${name}: ${value}`);
   }
   lines.push('', '');
-  const upstream = connect(port, '127.0.0.1', () => {
+  const upstream = connect(port, previewIp(record.uid), () => {
     upstream.write(lines.join('\r\n'));
     if (head?.length) upstream.write(head);
     upstream.pipe(socket);
@@ -1261,7 +1264,7 @@ async function proxyUpgrade(req, socket, head) {
   lines.push('', '');
   const raw = lines.join('\r\n');
 
-  const upstream = connect(instance.port, '127.0.0.1', () => {
+  const upstream = connect(instance.port, previewIp(instance.uid), () => {
     upstream.write(raw);
     if (head?.length) upstream.write(head);
     upstream.pipe(socket);

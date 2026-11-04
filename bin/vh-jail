@@ -52,7 +52,107 @@ export VH_JAIL_HOSTNAME="$JAIL_HOSTNAME"
 # shared System V / POSIX IPC key space, which would otherwise let two tenants
 # attach to the same 0666 shared-memory segment. --uts exists only so the
 # hostname below stays inside this session.
-exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
+# Per-tenant network namespace. Every tenant gets its own loopback, so a service
+# on :3000 in one account is invisible to the next, and nothing a tenant starts
+# can claim an address the gateway itself uses. The namespace outlives the
+# instance: restarting dsh must not kill the services still running inside it.
+NETNS_NAME="vh-${account}"
+NETNS_PATH="/var/run/netns/${NETNS_NAME}"
+mkdir -p /var/run/netns
+if [[ ! -e "$NETNS_PATH" ]]; then
+  ip netns add "$NETNS_NAME" || die "cannot create network namespace ${NETNS_NAME}"
+fi
+
+# pasta (passt) is user-mode networking: outbound access, a DNS forwarder and a
+# private loopback, with no bridge, no veth pair and no iptables rule. It is the
+# *namespace's* network, not the instance's, so it outlives every jail that
+# joins the namespace: a tenant's services keep listening there while dsh
+# restarts, and a service restart must not leave the instance unreachable. One
+# pasta per namespace, shared by all of its jails.
+#
+# Both addresses below belong to the gateway, the only side that connects:
+#   VH_PREVIEW_IP  the host address this namespace is published on
+#   VH_GATEWAY_IP  the address a tenant dials to reach the gateway's loopback
+[[ -n "${VH_PREVIEW_IP:-}" ]] || die 'VH_PREVIEW_IP is missing: the gateway must name this tenant address'
+[[ -n "${VH_GATEWAY_IP:-}" ]] || die 'VH_GATEWAY_IP is missing: the gateway must name its tenant-visible address'
+PREVIEW_IP="$VH_PREVIEW_IP"
+GATEWAY_IP="$VH_GATEWAY_IP"
+export VH_PREVIEW_IP VH_GATEWAY_IP
+command -v pasta >/dev/null 2>&1 || die 'pasta is missing from the image'
+
+# Every option below is load-bearing: without --config-net the namespace gets no
+# route, without --map-host-loopback a tenant cannot call the gateway, and
+# without --dns-forward the resolver in /etc/resolv.conf has no upstream. A
+# pasta too old to know them is a broken image, reported as such rather than as
+# a namespace that mysteriously never came up.
+pasta_help="$(pasta --help 2>&1 || true)"
+for option in --config-net --map-host-loopback --dns-forward; do
+  grep -q -- "$option" <<<"$pasta_help" \
+    || die "pasta in this image does not support ${option}; the tenant network cannot be published"
+done
+
+# Outside /var/run/netns on purpose: `ip netns list` reports every file in that
+# directory as a namespace, so a pidfile there would show up as a fake one.
+mkdir -p /run/vh-netns
+PASTA_PIDFILE="/run/vh-netns/${NETNS_NAME}.pasta.pid"
+
+# The pid holding this namespace's forwards, but only if that pid really is the
+# pasta for this namespace: pids are recycled, and trusting a stale number would
+# either kill a stranger or leave the namespace without a network.
+pasta_pid() {
+  local pid
+  pid="$(cat "$PASTA_PIDFILE" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -qF -- "--netns ${NETNS_PATH}" || return 1
+  printf '%s\n' "$pid"
+}
+
+start_pasta() {
+  local -a args=(--foreground --config-net --netns "$NETNS_PATH" -4 --dns-forward 10.0.2.3)
+  # A tenant reaches the gateway (model calls, scheduled follow-ups) through this
+  # mapping; the gateway itself keeps listening on its own loopback.
+  args+=(--map-host-loopback "$GATEWAY_IP")
+  # The instance's own web port lives inside this namespace: without a forward
+  # the gateway has no route to it at all.
+  if [[ "${VH_JAIL_PORT:-}" =~ ^[0-9]+$ ]]; then
+    args+=(-t "${PREVIEW_IP}/${VH_JAIL_PORT}:${VH_JAIL_PORT}")
+  fi
+  # Ports a tenant service is expected to listen on. pasta binds every forwarded
+  # port eagerly, so the list stays short rather than covering 1-65535.
+  local spec
+  for spec in 3000-3099 5173-5173 8000-8099 9000-9099; do
+    args+=(-t "${PREVIEW_IP}/${spec}:${spec}")
+  done
+  # 9>&- : the lock stays with the launching jail, not with the daemon it spawns.
+  pasta "${args[@]}" >>"/var/log/vh-pasta-${account}.log" 2>&1 9>&- &
+  printf '%s\n' "$!" >"$PASTA_PIDFILE"
+}
+
+# Two jails of one tenant can start together (dsh and a service restart); the
+# lock keeps them from starting two pasta processes for the same forwards.
+exec 9>"${PASTA_PIDFILE}.lock"
+flock -w 60 9 || die "another launch is starting the network for ${NETNS_NAME}"
+if [[ -z "$(pasta_pid)" ]]; then
+  start_pasta
+fi
+
+# The namespace is only usable once pasta has configured its interface. Running
+# without it would silently fall back to the shared container network, which is
+# exactly the state this layer exists to end, so the instance refuses to start.
+for _ in $(seq 1 100); do
+  ip netns exec "$NETNS_NAME" ip route 2>/dev/null | grep -q '^default' && break
+  sleep 0.1
+done
+flock -u 9
+exec 9>&-
+if ! ip netns exec "$NETNS_NAME" ip route 2>/dev/null | grep -q '^default'; then
+  printf 'vh-jail: pasta did not configure %s; refusing to run without a network\n' "$NETNS_NAME" >&2
+  printf 'vh-jail: see /var/log/vh-pasta-%s.log\n' "$account" >&2
+  exit 78
+fi
+
+ip netns exec "$NETNS_NAME" unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   set -euo pipefail
   cd /
   # Keep these mounts inside this namespace; propagating them would corrupt the
@@ -60,62 +160,6 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   mount --make-rprivate /
   hostname "$VH_JAIL_HOSTNAME" 2>/dev/null || true
 
-  # Loopback isolation: the tenant uid may reach only its own instance port
-  # on 127.0.0.1 / ::1. The jail keeps the shared network (model calls need the
-  # outside), so the rule lives in the host ruleset and matches on the tenant
-  # uid: the gateway (root) and every external endpoint are untouched. uid and
-  # port are allocated once and never reused, so a rule left behind by a
-  # stopped instance is inert; the next launch of the same account replaces it
-  # instead of accumulating.
-  net_isolate() {
-    local port="${VH_JAIL_PORT:-}"
-    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-      printf "vh-jail: VH_JAIL_PORT not set, loopback isolation skipped\n" >&2
-      return 0
-    fi
-    if ! command -v nft >/dev/null 2>&1; then
-      printf "vh-jail: nft not found, loopback isolation skipped\n" >&2
-      return 0
-    fi
-    # Two tenants cold-starting at once race on table creation: the loser of
-    # `add` must re-check instead of degrading, or it runs without any rule.
-    if ! nft list table inet vh-tenant >/dev/null 2>&1 \
-      && ! nft add table inet vh-tenant >/dev/null 2>&1 \
-      && ! nft list table inet vh-tenant >/dev/null 2>&1; then
-      printf "vh-jail: cannot create nft table (missing CAP_NET_ADMIN?), loopback isolation skipped\n" >&2
-      return 0
-    fi
-    if ! nft list chain inet vh-tenant out >/dev/null 2>&1 \
-      && ! nft add chain inet vh-tenant out "{ type filter hook output priority filter; policy accept; }" >/dev/null 2>&1 \
-      && ! nft list chain inet vh-tenant out >/dev/null 2>&1; then
-      printf "vh-jail: cannot create nft chain, loopback isolation skipped\n" >&2
-      return 0
-    fi
-    # Replace the stale rules tagged for this account before adding fresh
-    # ones, so relaunches never duplicate. `grep` exits 1 when the chain holds
-    # no rule for this account yet — the ordinary first launch — and under
-    # `set -o pipefail` that aborts the jail with no message, before dsh even
-    # starts. The trailing `|| true` is the difference between a first sign-in
-    # and a tenant that can never sign in at all.
-    nft -a list chain inet vh-tenant out 2>/dev/null \
-      | grep -F "comment \"vh-$VH_JAIL_ACCOUNT\"" \
-      | grep -o "# handle [0-9]*" \
-      | cut -d" " -f3 \
-      | while read -r handle; do
-          nft delete rule inet vh-tenant out handle "$handle" >/dev/null 2>&1 || true
-        done || true
-    # 3100-3999 is the reserved instance range: the rules let the tenant uid
-    # reach only its own port inside it, so a service the tenant runs that
-    # listens there gets cut off from its own clients. Anything outside the
-    # range is fair game for tenant-run services (5173, 8000, docker 32768+).
-    nft add rule inet vh-tenant out \
-      meta skuid "$VH_JAIL_UID" ip daddr 127.0.0.1 tcp dport 3100-3999 tcp dport != "$port" drop comment "\"vh-$VH_JAIL_ACCOUNT\"" \
-      || printf "vh-jail: could not add the IPv4 loopback isolation rule\n" >&2
-    nft add rule inet vh-tenant out \
-      meta skuid "$VH_JAIL_UID" ip6 daddr ::1 tcp dport 3100-3999 tcp dport != "$port" drop comment "\"vh-$VH_JAIL_ACCOUNT\"" \
-      || printf "vh-jail: could not add the IPv6 loopback isolation rule\n" >&2
-  }
-  net_isolate
 
   # The jail root is a fresh tmpfs; only what is bound below is reachable.
   root="/run/vh-root-$VH_JAIL_ACCOUNT"
@@ -216,32 +260,16 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # this instance lists only this tenant.
   mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
 
-  # Writable cgroup2 for the tenant docker daemon. The /sys/fs/cgroup the
-  # container sees is read-only, so sideload a fresh cgroup2 — the kernel
-  # scopes it to this container own cgroup subtree, never the host hierarchy —
-  # and bind it over the jail /sys/fs/cgroup. Without it, runc cannot create
-  # cgroups and nested containers cannot start.
-  if mkdir -p /tmp/vh-cg2 "$root/sys/fs/cgroup" \
-    && mount -t cgroup2 none /tmp/vh-cg2 2>/dev/null \
-    && mount --bind /tmp/vh-cg2 "$root/sys/fs/cgroup"; then
-    VH_JAIL_CGROUP_OK=1
-  else
-    VH_JAIL_CGROUP_OK=0
-    printf "vh-jail: no writable cgroup2, tenant docker will be unavailable\n" >&2
-  fi
-
-  # The tenant docker graph root, persistent on the volume and private per
-  # tenant: images and container state live in <home root>/<account>/.docker
-  # and are bind-mounted at /var/lib/docker. Everything else under /var stays
-  # nonexistent.
-  mkdir -p "$VH_JAIL_HOME/.docker" "$root/var/lib/docker"
-  mount --bind "$VH_JAIL_HOME/.docker" "$root/var/lib/docker"
 
   # Bounded private scratch: an unbounded tmpfs lets one tenant exhaust the
   # container memory and slow every other tenant down — which is itself a way to
   # learn that someone else is there.
   mount -t tmpfs -o mode=1777,nosuid,nodev,size=512m tmpfs "$root/tmp"
   mount -t tmpfs -o mode=0755,nosuid,nodev,size=16m tmpfs "$root/run"
+  # pasta answers 10.0.2.3 for this namespace (--dns-forward) and resolves
+  # against the container resolver, which the namespace cannot reach directly.
+  printf 'nameserver 10.0.2.3\n' > "$root/run/resolv.conf"
+  mount --bind "$root/run/resolv.conf" "$root/etc/resolv.conf"
 
   # The tenant home at /home/<account>: a private /home means a sibling tenant
   # is not merely unreadable but nonexistent, and nothing creates /data, so a
@@ -290,48 +318,6 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     ulimit -u 1024 2>/dev/null || true
     ulimit -n 4096 2>/dev/null || true
     ulimit -f 2097152 2>/dev/null || true
-    # Per-tenant docker daemon: root inside the jail, so nested containers
-    # inherit the jail mount/pid/ipc namespaces and can never reach another
-    # tenant world (their / is this jail). Bridge and iptables are off: the
-    # container network is shared by every tenant, and one daemon must not
-    # rewrite rules the others depend on - tenants run containers with
-    # --network host. The daemon dies with the instance: it is a child of the
-    # pid-namespace init that exits when the tenant command ends.
-    # Debian ships the daemon as /usr/sbin/dockerd, not /usr/bin/dockerd: a
-    # guard on the wrong path skipped every tenant daemon silently, and the
-    # agent then reasonably concluded the box has no docker at all.
-    dockerd=\$(command -v dockerd || echo /usr/sbin/dockerd)
-    if [ -x \"\$dockerd\" ] && [ -w /sys/fs/cgroup ]; then
-      export DOCKER_HOST=unix:///run/docker.sock
-      \"\$dockerd\" \
-        --data-root=/var/lib/docker \
-        --exec-root=/run/docker-exec \
-        --host=unix:///run/docker.sock \
-        --pidfile=/run/docker.pid \
-        --iptables=false --ip6tables=false --bridge=none \
-        ${VH_DOCKER_REGISTRY_MIRROR:+--registry-mirror=$VH_DOCKER_REGISTRY_MIRROR} \
-        >/run/dockerd.log 2>&1 &
-      # The tenant command must never wait for the daemon. Waiting for the
-      # socket here used to cost the launch budget up to 20s, and the gateway
-      # kills a launch that does not announce its URL within 45s: nested docker
-      # was silently making sign-in fail. The socket is only needed by `docker`
-      # itself, so the readiness check and the chown run in the background.
-      (
-        i=0
-        while [ ! -S /run/docker.sock ] && [ \"\$i\" -lt 150 ]; do sleep 0.2; i=\$((i+1)); done
-        if [ -S /run/docker.sock ]; then
-          chown "$VH_JAIL_UID:$VH_JAIL_UID" /run/docker.sock
-          # The CLI reads ~/.docker/config.json, which lives inside the daemon
-          # data root: dockerd creates it as root, and the tenant then reads a
-          # permission-denied warning on every docker call.
-          chown "$VH_JAIL_UID:$VH_JAIL_UID" /var/lib/docker 2>/dev/null || true
-          [ -f /var/lib/docker/config.json ] \
-            && chown "$VH_JAIL_UID:$VH_JAIL_UID" /var/lib/docker/config.json 2>/dev/null || true
-        else
-          printf \"vh-jail: dockerd did not come up; docker disabled for this session\n\" >&2
-        fi
-      ) &
-    fi
     cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
     exec /usr/bin/setpriv \
       --no-new-privs \

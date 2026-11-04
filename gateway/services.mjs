@@ -2,8 +2,9 @@
  * Tenant-run web services, surfaced in the portal UI.
  *
  * A tenant may run its own web app inside the jail (say, `127.0.0.1:3004`).
- * The browser can never reach it — the port listens on the container loopback
- * that only jail processes share — so the gateway does three jobs here:
+ * That address belongs to the tenant's own network namespace, so neither the
+ * browser nor another tenant can reach it; the gateway publishes the namespace
+ * on a per-tenant host address (see `netns.mjs`) and does three jobs here:
  *
  *   1. Accept registrations and heartbeats on a per-tenant Unix socket
  *      (`<home>/.dsh/vh-services.sock`, 0600, owner = the tenant). The tenant's
@@ -29,6 +30,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
+import { GATEWAY_IP, previewIp } from './netns.mjs';
 
 const SOCKET_NAME = 'vh-services.sock';
 const STATE_FILE = 'services.json';
@@ -41,9 +43,9 @@ const MAX_CMD_ITEMS = 32;
 const MAX_CMD_ITEM_LENGTH = 512;
 const MAX_NAME_LENGTH = 64;
 
-// The instance ports are a reserved range: the tenant's own nft rule cuts its
-// uid off from every port there but its own instance, so a "service" there
-// could only ever be the instance itself.
+// The instance ports are a reserved range: `/__vh/svc/<port>` reaches whatever
+// listens on the tenant's address, and inside that range the listener is the
+// tenant's own dsh, not a service the panel could sensibly own.
 const RESERVED_PORT_MIN = 3100;
 const RESERVED_PORT_MAX = 3999;
 
@@ -320,11 +322,17 @@ export function resolveService(subject, port) {
  * Restart one service as its tenant: a fresh jail running the registered
  * command. Independent of the dsh instance — workspace files come from the
  * same physical home, while /tmp stays private to each jail.
+ *
+ * The jail joins the tenant's existing network namespace, so it is handed the
+ * same network values an instance launch is: pasta forwards the instance port
+ * for whichever jail starts it, and a restart that omitted the port would leave
+ * the running instance unreachable from the gateway.
  * @param {string} subject
- * @param {number} port
+ * @param {number} port - the service's own port inside the namespace.
+ * @param {number} instancePort - the tenant's dsh port, forwarded by the same pasta.
  * @returns {{ status: number, error?: string, message?: string }}
  */
-export function restartService(subject, port) {
+export function restartService(subject, port, instancePort) {
   const record = registry.get(subject)?.get(port);
   if (!record) return { status: 404, error: 'not-found', message: '服务不存在' };
   if (isRunning(record)) return { status: 409, error: 'already-running', message: `「${record.name}」正在运行` };
@@ -339,7 +347,17 @@ export function restartService(subject, port) {
   const child = spawn(
     JAIL_BIN,
     [record.account, String(record.uid), join(HOME_ROOT, record.account), ...record.cmd],
-    { env: { HOME_ROOT, PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin' }, stdio: 'ignore', detached: true },
+    {
+      env: {
+        HOME_ROOT,
+        PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+        VH_JAIL_PORT: String(instancePort),
+        VH_PREVIEW_IP: previewIp(record.uid),
+        VH_GATEWAY_IP: GATEWAY_IP,
+      },
+      stdio: 'ignore',
+      detached: true,
+    },
   );
   child.unref();
   restartedJails.set(`${subject}:${String(port)}`, child);

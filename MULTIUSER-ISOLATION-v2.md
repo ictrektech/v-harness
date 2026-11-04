@@ -10,7 +10,7 @@ v1 是目标态描述；v2 以当前代码为基线，修正了 v1 与实现不�
 
 ## 任务列表
 
-状态：P1–P5 ✅ 已完成并验证；P6（§5.1–5.3）仅有设计，未实施。每阶段独立可回滚；P3 与 P4 有依赖顺序（先有 `/home` 视图，`tenantRoot` 解析才正确）。验收命令见 §9。
+状态：P1–P5 ✅ 已完成并验证；P6（§5.1–5.3）仅有设计，未实施；P7 ✅ 已完成（私有网络命名空间，取代 P5 的 nft 规则）。每阶段独立可回滚；P3 与 P4 有依赖顺序（先有 `/home` 视图，`tenantRoot` 解析才正确）。验收命令见 §9。
 
 ### ~~P1 独立修复~~ ✅
 
@@ -40,9 +40,26 @@ v1 是目标态描述；v2 以当前代码为基线，修正了 v1 与实现不�
 - [x] `tenantRoot` 下发链路核对：`sandbox-policy` Config、`sandbox` 类型、`vos.patch.yml` 的 `tenantRoot: process.env.HOME` **均已在位**，无需改动
 - [x] `danger-full-access`：VOS 部署的 preset 替换已在 `vos.patch.yml` 生效；base `cordis.patch.yml` 保持不动（非部署形态仍可用），已核对 approval policy 不受影响
 
-### ~~P5 nft 端口屏蔽~~ ✅
+### ~~P5 nft 端口屏蔽~~ ✅（已被 P7 取代）
 
 - [x] `bin/vh-jail` `net_isolate()`；`gateway/instances.mjs` 下发 `VH_JAIL_PORT`；`Dockerfile` 装 `nftables`；compose 加 `NET_ADMIN` —— 细节见 §5
+
+P7 落地后 `net_isolate()` 已删除：命名空间隔离的是整张网络表，不再需要按 uid 丢弃保留段的规则。
+
+### ~~P7 私有网络命名空间~~ ✅
+
+每个租户一个持久 `ip netns`（`vh-<account>`），pasta（passt）以用户态方式提供外网、DNS 与独立 loopback；实例与服务都在其中监听自己的 `127.0.0.1`，跨租户同名端口不再相遇。
+
+- [x] `bin/vh-jail`：建/复用命名空间；pasta 按命名空间单例（pidfile + `flock`，跨 jail 存活，服务重启不会掐断实例）；`--config-net` 配地址路由、`--map-host-loopback` 让租户能回到网关、`--dns-forward 10.0.2.3` 接管 resolv.conf 里的上游；缺 `VH_PREVIEW_IP` / `VH_GATEWAY_IP` 或 pasta 不支持上述选项时拒绝启动
+- [x] `gateway/netns.mjs`：`previewIp(uid)`（宿主回环 `127.<n>.<m>.1`，两端唯一真源）、`GATEWAY_IP`（租户视角的网关地址，默认 `10.0.2.2`）、`netnsName(account)`
+- [x] `gateway/instances.mjs`：实例带 `uid`；cookie 交换与端口回收（`ip netns exec … ss`）都改走命名空间视角；`VH_PREVIEW_IP` / `VH_GATEWAY_IP` 随启动下发
+- [x] `gateway/server.mjs`：实例反代/WS 隧道与 `/__vh/svc/<port>` 反代一律连租户发布地址（Host 头仍是 `127.0.0.1:<port>`，那是 cookie 的 authority）
+- [x] `gateway/scheduler.mjs`：`VH_SCHEDULER_URL` 用 `GATEWAY_IP` 而非 `127.0.0.1`（命名空间里的 `127.0.0.1` 是租户自己的）
+- [x] `gateway/services.mjs`：重启 jail 带上 `VH_JAIL_PORT` / `VH_PREVIEW_IP` / `VH_GATEWAY_IP`，否则它启的 pasta 会漏掉实例端口的转发
+- [x] `Dockerfile` 装 `passt`、去掉 `nftables`；compose 加 `/dev/net/tun` 设备；`CAP_NET_ADMIN` 保留（pasta 建 tap、配地址）
+- [x] `bin/network-probe.mjs` + `bin/entrypoint`：启动时清理遗留命名空间与 pasta pidfile，然后用临时命名空间做一次双向实测（网关→租户 loopback、租户→`GATEWAY_IP`），失败即拒绝启动并打印结构化报告——pasta 的转发语义、`--map-host-loopback` 的方向、镜像里的 pasta 版本都不再是"上线后才知道"
+
+已知边界：pasta 启动即绑定每条转发，所以浏览器可达端口是固定清单（实例端口 + `3000-3099` / `5173` / `8000-8099` / `9000-9099`）；清单外的服务租户自己能连，面板打不开。
 
 ### P6 私有 Docker + 服务面板 + 预览反代（设计已定，未实施）
 

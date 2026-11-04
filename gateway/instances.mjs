@@ -1,22 +1,28 @@
 /**
  * Per-user dsh instance lifecycle.
  *
- * Each user owns one `dsh --profile web` process running as `vh-xxxxxxxx` on a
- * fixed loopback port. The gateway never speaks dsh's auth protocol itself: it
- * reads the launch URL the process prints, exchanges it for dsh's own signed
- * cookie, and replays that cookie on every forwarded request.
+ * Each user owns one `dsh --profile web` process running as `vh-xxxxxxxx`, on a
+ * fixed port inside that user's own network namespace. The gateway never speaks
+ * dsh's auth protocol itself: it reads the launch URL the process prints,
+ * exchanges it for dsh's own signed cookie, and replays that cookie on every
+ * forwarded request. Both the exchange and the replay travel over the address
+ * pasta publishes the namespace on (see `netns.mjs`), because the instance's
+ * `127.0.0.1` belongs to the tenant.
  *
  * The cookie outlives the process because its signing key lives in the user's
- * `.credentials.yaml` and its authority is the fixed loopback port. Only the
+ * `.credentials.yaml` and its authority is the fixed instance port. Only the
  * 30-day expiry forces a re-exchange.
  *
  * @module v-harness/gateway/instances
  */
 
-import { execFile, spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { createWriteStream, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
+import { GATEWAY_IP, netnsName, previewIp } from './netns.mjs';
 import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
@@ -26,6 +32,8 @@ import { listUsers } from './users.mjs';
 // sign-in failure, and the retry it triggers competes with the boot it just
 // abandoned.
 const LAUNCH_TIMEOUT_MS = 90_000;
+/** One loopback round trip: a slow exchange means the instance is not answering. */
+const EXCHANGE_TIMEOUT_MS = 15_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const LOG_DIR_NAME = 'logs';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
@@ -44,7 +52,8 @@ const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
  * @typedef {object} Instance
  * @property {string} subject - VOS immutable subject; the instance map key.
  * @property {string} linuxName
- * @property {number} port
+ * @property {number} uid - tenant uid; also the source of its published address.
+ * @property {number} port - the port dsh listens on inside the tenant namespace.
  * @property {import('node:child_process').ChildProcess | undefined} child
  * @property {string | undefined} cookie - dsh `dsh-auth-*` value.
  * @property {number} cookieExpiresAt
@@ -198,19 +207,44 @@ function waitForLaunchUrl(child, timeoutMs) {
 
 /**
  * Exchange the launch URL for dsh's signed browser cookie.
- * @param {string} launchUrl
+ *
+ * dsh announces a `127.0.0.1:<port>` URL from inside its own namespace, where
+ * that address is the tenant's, not the gateway's. The request therefore goes
+ * to the tenant's published address, while the Host header keeps naming
+ * `127.0.0.1:<port>`: that authority is what the handed-back cookie is bound
+ * to, and what every later forwarded request replays.
+ * @param {string} launchUrl - the URL dsh printed on its own stdout.
+ * @param {number} uid - tenant uid, which selects its published address.
  * @returns {Promise<{ cookie: string, expiresAt: number }>}
  */
-async function exchangeCookie(launchUrl) {
-  const response = await fetch(launchUrl, { redirect: 'manual' });
+async function exchangeCookie(launchUrl, uid) {
+  const target = new URL(launchUrl);
+  const secure = target.protocol === 'https:';
+  const port = Number(target.port === '' ? (secure ? 443 : 80) : target.port);
+  const response = await new Promise((resolve, reject) => {
+    const request = secure ? httpsRequest : httpRequest;
+    const upstream = request({
+      host: previewIp(uid),
+      port,
+      method: 'GET',
+      path: `${target.pathname}${target.search}`,
+      headers: { host: `127.0.0.1:${String(port)}` },
+      ...(secure ? { servername: '127.0.0.1' } : {}),
+    }, (reply) => {
+      resolve({ status: reply.statusCode ?? 0, cookies: reply.headers['set-cookie'] ?? [] });
+      reply.resume();
+    });
+    upstream.setTimeout(EXCHANGE_TIMEOUT_MS, () => {
+      upstream.destroy(new Error('timed out exchanging the dsh launch URL'));
+    });
+    upstream.on('error', reject);
+    upstream.end();
+  });
   // A valid exchange answers 303 with exactly one Set-Cookie.
   if (response.status !== 303) {
     throw new Error(`dsh launch exchange returned HTTP ${String(response.status)}`);
   }
-  const values = typeof response.headers.getSetCookie === 'function'
-    ? response.headers.getSetCookie()
-    : [response.headers.get('set-cookie')].filter((value) => value !== null);
-  const raw = values.find((value) => value.trimStart().startsWith('dsh-auth-'));
+  const raw = response.cookies.find((value) => value.trimStart().startsWith('dsh-auth-'));
   if (!raw) throw new Error('dsh launch exchange returned no dsh-auth cookie');
   const pair = raw.split(';', 1)[0]?.trim();
   if (!pair) throw new Error('dsh launch exchange returned a malformed cookie');
@@ -319,6 +353,78 @@ async function adoptTenantRoots(home, dshHome, uid, account) {
 }
 
 /**
+ * Who listens on one port inside a tenant's namespace.
+ *
+ * The host-side socket table never lists a listener that lives in another
+ * network namespace, so the question has to be asked from inside the tenant's
+ * own: `ip netns exec` swaps the namespace of `ss` only, leaving `/proc` as the
+ * host's, which is what makes the reported pid usable here.
+ * @param {string} netns - namespace name; absent on a tenant's first launch.
+ * @param {number} port
+ * @returns {{ pid: number, uid: number } | undefined}
+ */
+function listenerIn(netns, port) {
+  let output;
+  try {
+    output = execFileSync('ip', ['netns', 'exec', netns, 'ss', '-lntpH'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (error) {
+    // No namespace yet, or no ss to ask: the launch reports its own port
+    // conflict if there is one.
+    void error;
+    return undefined;
+  }
+  const pattern = new RegExp(`:${String(port)}\\s`);
+  const line = output.split('\n').find((entry) => pattern.test(entry));
+  const pid = line === undefined ? undefined : /pid=(\d+)/.exec(line)?.[1];
+  if (pid === undefined) return undefined;
+  let status;
+  try {
+    status = readFileSync(`/proc/${pid}/status`, 'utf8');
+  } catch (error) {
+    void error;
+    return undefined;
+  }
+  const uid = /^Uid:\s+(\d+)/m.exec(status)?.[1];
+  return { pid: Number(pid), uid: Number(uid) };
+}
+
+/**
+ * Reclaim the instance port from a daemon this gateway no longer owns.
+ *
+ * The gateway restarts far more often than its container, and a launched jail
+ * outlives it: the instance map is empty while the old dsh still holds the
+ * port inside the tenant namespace, so the next dsh dies on EADDRINUSE and the
+ * workspace never opens. The namespace is the tenant's for good, so the port
+ * conflict is always between two of *this* tenant's processes.
+ * @param {number} port
+ * @param {number} uid
+ * @param {string} account
+ * @returns {Promise<void>}
+ */
+async function reclaimPort(port, uid, account) {
+  const netns = netnsName(account);
+  const owner = listenerIn(netns, port);
+  if (owner === undefined) return;
+  // A listener belonging to another uid is never ours to kill: the namespace is
+  // per tenant, so this is a deployment mistake to report, not to silence.
+  if (owner.uid !== uid) {
+    throw new Error(
+      `port ${String(port)} is held by pid ${String(owner.pid)} (uid ${String(owner.uid)}), not tenant ${account}`,
+    );
+  }
+  console.warn(`instance launch: reclaiming port ${String(port)} from pid ${String(owner.pid)} (${account})`);
+  process.kill(owner.pid, 'SIGTERM');
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (listenerIn(netns, port) === undefined) return;
+  }
+  throw new Error(`port ${String(port)} is still held after reclaiming it from pid ${String(owner.pid)}`);
+}
+
+/**
  * Start one dsh process and capture its cookie.
  * @param {{
  *   record: import('./users.mjs').UserRecord,
@@ -360,10 +466,14 @@ async function launch(options) {
       // vh-jail checks the host home against this root before entering the
       // jail; without it the jail refuses every launch on a /data deployment.
       HOME_ROOT,
-      // vh-jail's nft rule lets this tenant's uid reach only its own loopback
-      // instance port; the port is the one allocation vh-jail cannot derive
-      // from its argv (the dsh --port flag belongs to the wrapped command).
+      // The tenant's network: pasta publishes its namespace on this tenant's
+      // own host address, and maps the gateway address onto the gateway's
+      // loopback. Neither is derivable from vh-jail's argv, so both are named
+      // here; the instance port joins them because pasta binds one forward per
+      // port at startup.
       VH_JAIL_PORT: String(record.port),
+      VH_PREVIEW_IP: previewIp(record.uid),
+      VH_GATEWAY_IP: GATEWAY_IP,
       HOME: jailHome,
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,
@@ -385,11 +495,6 @@ async function launch(options) {
       ...(process.env.IMAGE_STUDIO_BASE_URL === undefined
         ? {}
         : { IMAGE_STUDIO_BASE_URL: process.env.IMAGE_STUDIO_BASE_URL }),
-      // Optional pull-through mirror for the per-tenant docker daemon; absent
-      // means the daemon talks to the registry directly.
-      ...(process.env.VH_DOCKER_REGISTRY_MIRROR === undefined
-        ? {}
-        : { VH_DOCKER_REGISTRY_MIRROR: process.env.VH_DOCKER_REGISTRY_MIRROR }),
       // User-level installs first: npm -g, bun, pip --user and friends must
       // land in the tenant home, never in the shared read-only runtime.
       PATH: [
@@ -432,6 +537,7 @@ async function launch(options) {
   // then stage the agent-side tool plugins and their carrier: the loader reads
   // the carrier row list at this same boot.
   await syncPlugins({ home: paths.home, linuxName: account, uid: record.uid });
+  await reclaimPort(record.port, record.uid, account);
   const child = spawn(JAIL_BIN, launchArgs, launchOptions);
 
   const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });
@@ -440,7 +546,7 @@ async function launch(options) {
 
   try {
     const launchUrl = await waitForLaunchUrl(child, LAUNCH_TIMEOUT_MS);
-    const { cookie, expiresAt } = await exchangeCookie(launchUrl);
+    const { cookie, expiresAt } = await exchangeCookie(launchUrl, record.uid);
     // Instances are keyed by the immutable subject. Drop the legacy namespace
     // key the same time the subject key is written, so one launch finishes
     // the persistent-state migration for its tenant.
@@ -450,6 +556,7 @@ async function launch(options) {
     return {
       subject: record.subject,
       linuxName: account,
+      uid: record.uid,
       port: record.port,
       child,
       cookie,
@@ -502,6 +609,7 @@ export async function ensureInstance(options) {
   const placeholder = {
     subject: record.subject,
     linuxName: account,
+    uid: record.uid,
     port: record.port,
     child: undefined,
     cookie: undefined,

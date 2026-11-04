@@ -2,17 +2,24 @@
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { GATEWAY_IP } from './netns.mjs';
 import { accessTokenFor } from './office.mjs';
 
 const ORIGIN = process.env.V_SCHEDULER_URL ?? 'http://v-scheduler:8080';
 const keys = new Map();
 
-/** Create one inference-only capability for a tenant process. */
+/**
+ * Create one inference-only capability for a tenant process.
+ *
+ * The URL names the gateway as the tenant sees it: inside its own network
+ * namespace `127.0.0.1` is the tenant's loopback, not the gateway's, so pasta
+ * maps a fixed address onto the gateway instead (see `netns.mjs`).
+ */
 export function schedulerEnvironment(namespace) {
   let key = keys.get(namespace);
   if (!key) { key = randomBytes(32).toString('hex'); keys.set(namespace, key); }
   return {
-    VH_SCHEDULER_URL: `http://127.0.0.1:${process.env.PORT ?? 8080}/__vh/scheduler`,
+    VH_SCHEDULER_URL: `http://${GATEWAY_IP}:${process.env.PORT ?? 8080}/__vh/scheduler`,
     VH_SCHEDULER_KEY: key,
   };
 }

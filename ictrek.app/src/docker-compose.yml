@@ -27,10 +27,11 @@ x-v-harness-env: &v-harness-env
 x-v-harness-base: &v-harness-base
   restart: unless-stopped
   environment: *v-harness-env
-  # bin/vh-jail needs mount and pid namespaces so one tenant cannot see another
-  # tenant's home or processes, and CAP_NET_ADMIN so its nft rule can keep a
-  # tenant's uid off every other instance's loopback port. Docker's default
-  # capability set lacks CAP_SYS_ADMIN, and the default seccomp profile blocks
+  # bin/vh-jail needs mount, pid and network namespaces so one tenant cannot see
+  # another tenant's home, processes or loopback. CAP_NET_ADMIN lets pasta
+  # create the tap device and configure addresses inside the tenant namespace;
+  # CAP_SYS_ADMIN covers the namespace syscalls and the jail mounts. Docker's
+  # default capability set has neither, and the default seccomp profile blocks
   # the syscalls.
   cap_add:
     - SYS_ADMIN
@@ -39,6 +40,11 @@ x-v-harness-base: &v-harness-base
   security_opt:
     - seccomp:unconfined
     - apparmor:unconfined
+  # pasta's tap device is created through this node; without it no tenant
+  # namespace gets a network. The host must have /dev/net/tun (the `tun` module
+  # loaded), otherwise the container fails to start rather than degrading.
+  devices:
+    - /dev/net/tun:/dev/net/tun
   volumes:
     - ${VOS_APP_STORAGE_PATH}/data:/data
   networks:

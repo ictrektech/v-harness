@@ -222,6 +222,12 @@ ENV NODE_ENV=production \
 # install aborts with ERR_PNPM_GIT_RESOLVE_FAILED ("git ... not found on PATH"),
 # which reads like a broken repository rather than a missing image dependency.
 # openssh-client covers the `git+ssh://` form of the same specs.
+#
+# passt supplies `pasta`, which is the network of each tenant namespace: it needs
+# no bridge, no veth pair and no iptables rule, while still giving the tenant
+# outbound access, DNS and its own loopback. `iproute2` above creates and joins
+# the namespaces. pasta creates a tap device, so the container needs /dev/net/tun
+# (see ictrek.app/src/docker-compose.yml).
 RUN if [ -n "${APT_MIRROR}" ]; then \
       for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
         if [ -f "$source" ]; then \
@@ -232,8 +238,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates curl wget \
-      nftables \
-      docker.io docker-compose \
+      passt \
       build-essential python3 python3-pip python3-venv \
       postgresql-client sqlite3 \
       git openssh-client \
