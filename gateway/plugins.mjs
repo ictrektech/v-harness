@@ -18,7 +18,8 @@
  * @module
  */
 import { execFile } from 'node:child_process'
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** Where the image puts built client plugins; a deployment may relocate both roots. */
@@ -133,6 +134,39 @@ export async function syncPlugins(user) {
 }
 
 /**
+ * Replace one profile package directory with the image's build.
+ *
+ * The copy is staged beside the target and renamed into place. `rm` then `cp`
+ * leaves the package missing for the whole copy, and any tenant process still
+ * importing from that path dies on it; the rename window is a single syscall.
+ * It also makes two writers converge: the loser of a rename retries instead of
+ * failing the launch (`EEXIST` on the package directory).
+ *
+ * @param {string} source - image build of the package.
+ * @param {string} target - profile copy to replace.
+ * @returns {Promise<void>}
+ */
+async function replaceDirectory(source, target) {
+  const staged = `${target}.vh-${String(process.pid)}-${randomUUID().slice(0, 8)}`
+  await rm(staged, { recursive: true, force: true })
+  await cp(source, staged, { recursive: true })
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(target, { recursive: true, force: true })
+      await rename(staged, target)
+      return
+    } catch (error) {
+      const retryable = ['EEXIST', 'ENOTEMPTY', 'EBUSY'].includes(error?.code)
+      if (!retryable || attempt >= 2) {
+        await rm(staged, { recursive: true, force: true }).catch(() => {})
+        throw error
+      }
+      await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)))
+    }
+  }
+}
+
+/**
  * Copy the image's build of each deployed plugin over one profile's copy.
  *
  * The payload directory is the list: whatever the image built is what a tenant
@@ -179,8 +213,7 @@ export async function syncClientPlugins(user) {
       // and its `node_modules` parent belong to the tenant, not to root.
       await chownDir(join(user.home, '.dsh', 'profiles', 'web', 'node_modules'), user.uid, user.linuxName)
       await chownDir(modules, user.uid, user.linuxName)
-      await rm(target, { recursive: true, force: true })
-      await cp(source, target, { recursive: true })
+      await replaceDirectory(source, target)
       await chownTo(target, user.uid, user.linuxName)
     } catch (error) {
       throw new Error(`plugin sync failed: ${name}`, { cause: error })
@@ -238,8 +271,7 @@ async function syncAgentPlugins(user) {
     const target = join(modules, relative)
     if (overwrite || !(await exists(join(target, 'package.json')))) {
       try {
-        await rm(target, { recursive: true, force: true })
-        await cp(join(payloadModules, relative), target, { recursive: true })
+        await replaceDirectory(join(payloadModules, relative), target)
         await chownTo(target, user.uid, user.linuxName)
       } catch (error) {
         console.error(`agent plugin sync failed for ${name} in ${user.linuxName}:`, error.message)

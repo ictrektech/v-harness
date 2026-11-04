@@ -17,6 +17,11 @@ x-v-harness-env: &v-harness-env
   WEKNORA_URL: ${WEKNORA_URL:-http://hybrag-app:8080}
   SESSION_TTL_MS: ${SESSION_TTL_MS:-43200000}
   DSH_PERMISSION_MODE: workspace-write
+  # Docker Hub is not reachable from these hosts: `registry-1.docker.io` and
+  # `auth.docker.io` resolve to unrelated addresses (185.60.216.36, 199.59.149.231)
+  # and every pull times out. Each tenant's dockerd gets this mirror instead;
+  # `docker pull hello-world` through it was verified on a live tenant.
+  VH_DOCKER_REGISTRY_MIRROR: ${VH_DOCKER_REGISTRY_MIRROR:-https://docker.1ms.run}
   NODE_ENV: production
 
 x-v-harness-base: &v-harness-base

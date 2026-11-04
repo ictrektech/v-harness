@@ -231,11 +231,13 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      sudo util-linux ca-certificates \
+      sudo util-linux ca-certificates curl wget \
       nftables \
-      docker.io \
-      build-essential python3 \
+      docker.io docker-compose \
+      build-essential python3 python3-pip python3-venv \
+      postgresql-client sqlite3 \
       git openssh-client \
+      procps rsync unzip less jq ripgrep vim-tiny \
  && rm -rf /var/lib/apt/lists/*
 
 # pnpm is needed the first time a user's profile installs its bundles.

@@ -21,7 +21,11 @@ import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
 
-const LAUNCH_TIMEOUT_MS = 45_000;
+// A cold dsh boot spends tens of seconds on plugin and session setup before it
+// announces its listener. A tight budget turns a merely slow boot into a
+// sign-in failure, and the retry it triggers competes with the boot it just
+// abandoned.
+const LAUNCH_TIMEOUT_MS = 90_000;
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const LOG_DIR_NAME = 'logs';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
@@ -49,6 +53,9 @@ const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 
 /** @type {Map<string, Instance>} */
 const instances = new Map();
+
+/** @type {Map<string, Promise<unknown>>} */
+const launchChains = new Map();
 
 /**
  * Directory layout for one tenant. The home is `<DATA_ROOT>/<account>` and nothing
@@ -444,7 +451,10 @@ async function launch(options) {
     };
   } catch (error) {
     child.kill('SIGTERM');
-    throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    // The jail can die without writing anything to its own log, so the log path
+    // is the only pointer an operator has from the gateway's line.
+    throw new Error(`${detail} (log: ${paths.log})`);
   }
 }
 
@@ -491,18 +501,25 @@ export async function ensureInstance(options) {
     cookieExpiresAt: 0,
     starting: undefined,
   };
-  placeholder.starting = (async () => {
+  // Launches for one tenant are serialized even across failures. A timed-out
+  // attempt leaves the map before its jail has exited, so a retry that arrived
+  // in that window used to start a second launch beside the dying one — two
+  // processes writing the same profile (`plugin sync failed` with EEXIST) and
+  // racing for the same port.
+  const previous = launchChains.get(record.subject) ?? Promise.resolve();
+  const attempt = previous.catch(() => {}).then(() => launch(options));
+  launchChains.set(record.subject, attempt);
+  placeholder.starting = attempt.then((launched) => {
     // Every process start exchanges its own launch URL for a cookie. A cached
     // cookie belongs to the `.credentials.yaml` that signed it: once the home
     // was moved or replaced by a new image, that key is gone and replaying the
     // stale value lands the browser on "authentication required".
-    const launched = await launch(options);
     launched.child?.once('exit', () => {
       const current = instances.get(record.subject);
       if (current?.child === launched.child) instances.delete(record.subject);
     });
     instances.set(record.subject, launched);
-  })();
+  });
   instances.set(record.subject, placeholder);
 
   try {

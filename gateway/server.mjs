@@ -888,16 +888,32 @@ async function handleControl(req, res, url) {
       json(res, 403, { authenticated: false, error: 'CSRF 校验失败' });
       return;
     }
+    let body;
+    let record;
     try {
-      const body = await readJsonBody(req);
+      body = await readJsonBody(req);
       const identity = await verifyVosToken(body.access_token, {
         acceptLanguage: String(req.headers['accept-language'] ?? ''),
       });
-      const { record, created } = await upsertUser(USERS_FILE, identity);
-      console.log(`identity user=${record.account ?? record.linuxName} sub=${record.subject} created=${String(created)}`);
-      if (created) {
+      const upserted = await upsertUser(USERS_FILE, identity);
+      record = upserted.record;
+      console.log(`identity user=${record.account ?? record.linuxName} sub=${record.subject} created=${String(upserted.created)}`);
+      if (upserted.created) {
         console.log(`user created namespace=${record.namespace} port=${String(record.port)}`);
       }
+    } catch (error) {
+      const code = error instanceof VosAuthError ? error.code : 'auth-failed';
+      const status = code === 'vos-userinfo-unreachable' ? 502 : 401;
+      console.warn(`auth rejected: ${code} ${error instanceof Error ? error.message : String(error)}`);
+      json(res, status, { authenticated: false, error: '身份验证失败' });
+      return;
+    }
+
+    // From here on the identity is proven and the tenant is known. A failure is
+    // the instance's, not the login's: reporting it as 401 is what made a dead
+    // dsh surface as "身份验证失败" on the bootstrap page, where the message is
+    // relayed verbatim and no amount of retrying can fix the real cause.
+    try {
       // The answer language is baked into the tenant's dsh process at launch.
       // It is deliberately NOT restarted here: dsh closes gracefully over
       // several seconds, and a relaunch racing that shutdown dies on the
@@ -919,26 +935,29 @@ async function handleControl(req, res, url) {
         userHelper: USER_HELPER,
       });
       await startCapabilities(record);
-      const sid = sessions.createSession({
-        subject: record.subject,
-        account: record.account ?? record.linuxName,
-        userAgent: String(req.headers['user-agent'] ?? ''),
-      });
-      json(res, 200, {
-        authenticated: true,
-        user: { username: record.username, namespace: record.namespace },
-      }, {
-        'set-cookie': cookie(SESSION_COOKIE, sid, {
-          maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
-          secure: isSecure(req),
-        }),
-      });
     } catch (error) {
-      const code = error instanceof VosAuthError ? error.code : 'auth-failed';
-      const status = code === 'vos-userinfo-unreachable' ? 502 : 401;
-      console.warn(`auth rejected: ${code} ${error instanceof Error ? error.message : String(error)}`);
-      json(res, status, { authenticated: false, error: '身份验证失败' });
+      console.error(
+        `instance start failed user=${record.username} account=${record.account ?? record.linuxName}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      json(res, 503, { authenticated: false, error: '实例启动失败，请稍后重试' });
+      return;
     }
+
+    const sid = sessions.createSession({
+      subject: record.subject,
+      account: record.account ?? record.linuxName,
+      userAgent: String(req.headers['user-agent'] ?? ''),
+    });
+    json(res, 200, {
+      authenticated: true,
+      user: { username: record.username, namespace: record.namespace },
+    }, {
+      'set-cookie': cookie(SESSION_COOKIE, sid, {
+        maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
+        secure: isSecure(req),
+      }),
+    });
     return;
   }
 

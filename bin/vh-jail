@@ -92,18 +92,22 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
       return 0
     fi
     # Replace the stale rules tagged for this account before adding fresh
-    # ones, so relaunches never duplicate.
+    # ones, so relaunches never duplicate. `grep` exits 1 when the chain holds
+    # no rule for this account yet — the ordinary first launch — and under
+    # `set -o pipefail` that aborts the jail with no message, before dsh even
+    # starts. The trailing `|| true` is the difference between a first sign-in
+    # and a tenant that can never sign in at all.
     nft -a list chain inet vh-tenant out 2>/dev/null \
       | grep -F "comment \"vh-$VH_JAIL_ACCOUNT\"" \
       | grep -o "# handle [0-9]*" \
       | cut -d" " -f3 \
       | while read -r handle; do
           nft delete rule inet vh-tenant out handle "$handle" >/dev/null 2>&1 || true
-        done
+        done || true
     # 3100-3999 is the reserved instance range: the rules let the tenant uid
     # reach only its own port inside it, so a service the tenant runs that
-    # listens there gets cut off from its own clients. Tenant-run services
-    # must use ports from 30000 up.
+    # listens there gets cut off from its own clients. Anything outside the
+    # range is fair game for tenant-run services (5173, 8000, docker 32768+).
     nft add rule inet vh-tenant out \
       meta skuid "$VH_JAIL_UID" ip daddr 127.0.0.1 tcp dport 3100-3999 tcp dport != "$port" drop comment "\"vh-$VH_JAIL_ACCOUNT\"" \
       || printf "vh-jail: could not add the IPv4 loopback isolation rule\n" >&2
@@ -293,8 +297,13 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     # rewrite rules the others depend on - tenants run containers with
     # --network host. The daemon dies with the instance: it is a child of the
     # pid-namespace init that exits when the tenant command ends.
-    if [ -x /usr/bin/dockerd ] && [ -w /sys/fs/cgroup ]; then
-      /usr/bin/dockerd \
+    # Debian ships the daemon as /usr/sbin/dockerd, not /usr/bin/dockerd: a
+    # guard on the wrong path skipped every tenant daemon silently, and the
+    # agent then reasonably concluded the box has no docker at all.
+    dockerd=\$(command -v dockerd || echo /usr/sbin/dockerd)
+    if [ -x \"\$dockerd\" ] && [ -w /sys/fs/cgroup ]; then
+      export DOCKER_HOST=unix:///run/docker.sock
+      \"\$dockerd\" \
         --data-root=/var/lib/docker \
         --exec-root=/run/docker-exec \
         --host=unix:///run/docker.sock \
@@ -302,14 +311,26 @@ exec unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
         --iptables=false --ip6tables=false --bridge=none \
         ${VH_DOCKER_REGISTRY_MIRROR:+--registry-mirror=$VH_DOCKER_REGISTRY_MIRROR} \
         >/run/dockerd.log 2>&1 &
-      i=0
-      while [ ! -S /run/docker.sock ] && [ \"\$i\" -lt 100 ]; do sleep 0.2; i=\$((i+1)); done
-      if [ -S /run/docker.sock ]; then
-        chown "$VH_JAIL_UID:$VH_JAIL_UID" /run/docker.sock
-        export DOCKER_HOST=unix:///run/docker.sock
-      else
-        printf \"vh-jail: dockerd did not come up; docker disabled for this session\n\" >&2
-      fi
+      # The tenant command must never wait for the daemon. Waiting for the
+      # socket here used to cost the launch budget up to 20s, and the gateway
+      # kills a launch that does not announce its URL within 45s: nested docker
+      # was silently making sign-in fail. The socket is only needed by `docker`
+      # itself, so the readiness check and the chown run in the background.
+      (
+        i=0
+        while [ ! -S /run/docker.sock ] && [ \"\$i\" -lt 150 ]; do sleep 0.2; i=\$((i+1)); done
+        if [ -S /run/docker.sock ]; then
+          chown "$VH_JAIL_UID:$VH_JAIL_UID" /run/docker.sock
+          # The CLI reads ~/.docker/config.json, which lives inside the daemon
+          # data root: dockerd creates it as root, and the tenant then reads a
+          # permission-denied warning on every docker call.
+          chown "$VH_JAIL_UID:$VH_JAIL_UID" /var/lib/docker 2>/dev/null || true
+          [ -f /var/lib/docker/config.json ] \
+            && chown "$VH_JAIL_UID:$VH_JAIL_UID" /var/lib/docker/config.json 2>/dev/null || true
+        else
+          printf \"vh-jail: dockerd did not come up; docker disabled for this session\n\" >&2
+        fi
+      ) &
     fi
     cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
     exec /usr/bin/setpriv \
