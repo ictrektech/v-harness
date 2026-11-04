@@ -18,14 +18,14 @@ The CLI ships with this skill. These are the defaults; the environment may overr
 | Setting | Default | Override |
 |---|---|---|
 | CLI | `/opt/v-harness/skills/image-studio/scripts/image-studio.mjs` | `IMAGE_STUDIO_CLI` |
-| Base URL | `http://image-studio-backend:5000` | `IMAGE_STUDIO_BASE_URL` |
+| Endpoint | `~/.dsh/image-studio.sock`（由 v-harness 网关转发，沙箱内默认走它） | `VH_IMAGE_STUDIO_SOCK` |
+| Base URL | `http://image-studio-backend:5000`，仅在 socket 不存在或 `IMAGE_STUDIO_FORCE_HTTP=1` 时使用 | `IMAGE_STUDIO_BASE_URL` |
 | Auth file | `~/.config/dsh/image-studio.json` | `IMAGE_STUDIO_AUTH_FILE` |
 
 Invoke through the shell:
 
 ```bash
 node "${IMAGE_STUDIO_CLI:-/opt/v-harness/skills/image-studio/scripts/image-studio.mjs}" \
-  --base-url "${IMAGE_STUDIO_BASE_URL:-http://image-studio-backend:5000}" \
   --auth-file "${IMAGE_STUDIO_AUTH_FILE:-$HOME/.config/dsh/image-studio.json}" <command>
 ```
 
@@ -46,7 +46,6 @@ A job is created immediately (`queued`) and runs in the background. `--wait` pol
 
 ```bash
 node "${IMAGE_STUDIO_CLI:-/opt/v-harness/skills/image-studio/scripts/image-studio.mjs}" \
-  --base-url "${IMAGE_STUDIO_BASE_URL:-http://image-studio-backend:5000}" \
   --auth-file "${IMAGE_STUDIO_AUTH_FILE:-$HOME/.config/dsh/image-studio.json}" generate \
   --prompt "a quiet tea house by the lake, morning mist" \
   --model-key sdxl --width 1024 --height 1024 --wait

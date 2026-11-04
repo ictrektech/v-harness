@@ -20,10 +20,21 @@ cargo install <pkg>     # → ~/.cargo/bin
 
 ## 起服务
 
-命令工具在调用结束时回收整个进程组，裸的 `cmd &` 活不过这一次调用。要让服务跨调用存活，用：
+**要给用户点开的服务，必须用 `vh-service` 启动。** 它同时完成登记和保活，服务才会出现在面板里、才有对外地址：
 
 ```sh
-setsid nohup node server.js > ~/workspace/server.log 2>&1 < /dev/null &
+vh-service run --name <名称> --port <端口> -- <启动命令>
+# 例：vh-service run --name demo --port 8000 -- node server.js
+```
+
+只用 `setsid nohup ... &` 起的服务**不会出现在面板里**，用户也打不开——那个进程只活在你自己的网络命名空间里。
+
+`vh-service list` 查看已登记的服务，`vh-service stop --port <端口>` 停止。
+
+不需要给用户看的后台进程才用：
+
+```sh
+setsid nohup node worker.js > ~/workspace/worker.log 2>&1 < /dev/null &
 ```
 
 然后轮询 `curl -sS localhost:<port>/health` 确认起来了。
@@ -33,9 +44,35 @@ setsid nohup node server.js > ~/workspace/server.log 2>&1 < /dev/null &
 ## 网络
 
 - 你的服务只在这个账号自己的网络里：别人连不进来，你也连不到别人的 `127.0.0.1`。
-- 浏览器（服务面板的「打开」）只转发这些端口段：`3000-3099`、`5173`、`8000-8099`、`9000-9099`。监听在别处的服务自己能访问，面板里也看得到，但「打开」连不上——换一个段内的端口。
+- **你看到的 `127.0.0.1:<port>` 只有你自己能访问。** 它属于你这个账号的网络命名空间，用户的浏览器在另一个网络里，直接点这个地址永远打不开。把地址告诉用户时，不要给 `127.0.0.1`，给下面两种之一：
+  - 让用户点服务面板里的「打开」；
+  - 或者给相对路径 `/__vh/svc/<port>/`（用户当前站点的域名 + 这个路径，例如 `https://当前域名/__vh/svc/8000/`）。
+- 浏览器只转发这些端口段：`3000-3099`、`5173`、`8000-8099`、`9000-9099`。监听在别处的服务自己能访问，面板里也看得到，但外部连不上——换一个段内的端口。
 - npm registry、GitHub、npmmirror、jsdelivr 可访问。
-- 这台机器内**没有 docker**，也没有容器运行时：`docker`、`podman` 都不可用。需要运行的东西直接以进程方式启动（`node`、`python`、`java -jar` 等）。
+- 有浏览器：`chromium`（`/usr/bin/chromium`，全机器共用一份只读副本）。抓页面、截图、跑无头自动化时用
+  `chromium --headless=new --no-sandbox --disable-dev-shm-usage --user-data-dir="$HOME/.cache/chromium" <url>`：
+  jail 的 `/dev/shm` 只有 64MB，不带 `--disable-dev-shm-usage` 渲染进程会被 OOM；沙箱起不来时靠 `--no-sandbox`。
+  用户数据目录必须放在自己的 `$HOME` 下，那是你私有的。
+- 有 `docker` CLI，连的是宿主机 daemon，容器与镜像落在宿主上（运维 `docker ps` 看得到）。用法见下节。
+
+## 容器
+
+`docker` 直接可用（`DOCKER_HOST` 已指向你自己的能力 socket，不用设）。这是真 docker：拉镜像、`docker run`、`docker ps` 都正常，产物落在宿主机上（运维看得到）。
+
+```sh
+docker run -d --name web -p 8080:80 nginx:alpine
+docker ps
+docker logs web
+```
+
+- **端口**：`-p 8080:80` 里宿主侧那个端口会被换成你自己段内的一个端口（别人用不了），但 `8080` 这个号仍然记得住——用户打开 `/__vh/svc/8080/` 或 `/__vh/svc/80/`（容器端口）都能到，两者等价。`docker port web` 看到的是宿主侧的真实端口，不用把它给用户。
+- **名字**：`--name web` 在宿主上叫 `vh-<你的账号>-web`，你这边 `docker ps` / `docker inspect web` 看到的仍然是 `web`。
+- **网络**：不指定 `--network` 时落在你自己的 `vh-<账号>-default` 上，和别的租户二层隔离；需要多容器互通就 `docker network create app-net`（同样会被加上前缀）。
+- **权限**：`--privileged`、`--cap-add ALL`、`--net host`、`--pid host`、`-v /:/host`（除自己 home 外的任何宿主路径）、把端口绑到 `0.0.0.0`、`docker system prune`、读别人的镜像，都会被网关拒绝并返回 403。
+- **资源**：单容器的内存/CPU/PID 有上限，超了会被拒或起不来。
+- `docker exec`（含 `-it`）和 `docker run -it` **不可用**：它们要把连接切成裸流，网关只做普通 HTTP 转发，一律立刻返回 501。调试靠 `docker logs`、`docker cp`，或把要排查的动作写进镜像/启动命令里重跑。
+- **构建**：`DOCKER_BUILDKIT=0 docker build ...` 可用。默认（BuildKit）不行——镜像里没有 buildx，而且它也要劫持连接。
+- 容器端口能打开，但**不出现在右侧服务面板里**（面板列的是 `vh-service` 登记的进程服务）。要让用户从面板点开，仍然用 `vh-service`；容器适合跑数据库、Redis、别人的镜像这类现成组件。
 
 ## 别做的事
 

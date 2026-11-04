@@ -19,8 +19,8 @@
  */
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { cp, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 
 /** Where the image puts built client plugins; a deployment may relocate both roots. */
 const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
@@ -262,6 +262,7 @@ async function syncAgentPlugins(user) {
   const modules = join(profile, 'node_modules')
   await mkdir(modules, { recursive: true })
   await chownDir(modules, user.uid, user.linuxName)
+  await materializePayloadLinks(modules, payloadModules, user)
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
@@ -276,6 +277,53 @@ async function syncAgentPlugins(user) {
       } catch (error) {
         console.error(`agent plugin sync failed for ${name} in ${user.linuxName}:`, error.message)
       }
+    }
+  }
+}
+
+/**
+ * Replace symlinks that point into the image payload with real directories.
+ *
+ * `link:` dependencies from an earlier revision left these in a profile's
+ * `node_modules`. They resolve inside the container, so the "already installed"
+ * check in {@link syncAgentPlugins} skips them, but the tenant's jail never
+ * mounts the payload root: inside the jail every one of them is a broken import
+ * ("Cannot find package …") that silently drops whichever plugin needed it.
+ *
+ * @param {string} modules - the profile's node_modules directory.
+ * @param {string} payloadModules - the payload's node_modules directory.
+ * @param {{ linuxName: string, uid: number }} user - the tenant being repaired.
+ * @returns {Promise<void>}
+ */
+async function materializePayloadLinks(modules, payloadModules, user) {
+  /** @type {string[]} */
+  const candidates = []
+  for (const entry of await readdir(modules, { withFileTypes: true }).catch(() => [])) {
+    if (entry.name.startsWith('@')) {
+      for (const child of await readdir(join(modules, entry.name)).catch(() => [])) {
+        candidates.push(`${entry.name}/${child}`)
+      }
+    } else {
+      candidates.push(entry.name)
+    }
+  }
+  for (const relative of candidates) {
+    const target = join(modules, relative)
+    const link = await readlink(target).catch(() => undefined)
+    if (link === undefined) continue
+    const resolved = resolve(modules, link)
+    const insidePayload = [PLUGIN_ROOT, AGENT_PLUGIN_ROOT].some(
+      (root) => resolved === root || resolved.startsWith(`${root}/`),
+    )
+    if (!insidePayload) continue
+    const source = join(payloadModules, relative)
+    if (!await exists(join(source, 'package.json'))) continue
+    try {
+      await rm(target, { recursive: true, force: true })
+      await replaceDirectory(source, target)
+      await chownTo(target, user.uid, user.linuxName)
+    } catch (error) {
+      console.error(`payload link repair failed for ${relative} in ${user.linuxName}:`, error.message)
     }
   }
 }

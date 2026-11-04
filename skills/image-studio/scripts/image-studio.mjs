@@ -2,13 +2,17 @@
 // Image Studio CLI: one-shot generation, job polling, output download, and model preparation.
 // Zero dependencies; requests go through the global fetch implementation of the host Node runtime.
 
-import { createWriteStream, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
 const DEFAULT_BASE_URL = 'http://image-studio-backend:5000'
+/** Overrides the socket path; explicit HTTP mode is selected instead when set. */
+const SOCKET_ENV = 'VH_IMAGE_STUDIO_SOCK'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 1800
 const DEFAULT_INTERVAL_SECONDS = 3
@@ -51,7 +55,9 @@ Usage:
   image-studio.mjs [global options] <command> [options]
 
 Global options:
-  --base-url <url>          Backend or VOS gateway prefix (env IMAGE_STUDIO_BASE_URL)
+  --base-url <url>          Service address used when no tenant socket exists
+                            (env IMAGE_STUDIO_BASE_URL; force it with
+                            IMAGE_STUDIO_FORCE_HTTP=1)
   --auth-file <path>        JSON file with { "baseUrl"?: string, "token"?: string }
   --token-file <path>       File whose trimmed content is the bearer token
   --request-timeout-ms <n>  Per-request HTTP timeout (default ${DEFAULT_REQUEST_TIMEOUT_MS})
@@ -133,7 +139,16 @@ function resolveConnection(flags) {
     ? readFileSync(tokenFile, 'utf8').trim()
     : (typeof auth.token === 'string' && auth.token ? auth.token : (process.env.IMAGE_STUDIO_AUTH ?? ''))
   const requestTimeoutMs = numberFlag(flags, 'request-timeout-ms') ?? DEFAULT_REQUEST_TIMEOUT_MS
-  return { baseUrl, token, authFile, requestTimeoutMs }
+  // In a v-harness deployment the gateway listens on a per-tenant socket and the
+  // sandbox has no route to the platform network. The socket therefore wins over
+  // every configured address — the plugin always passes `--base-url` with the
+  // deployment default, so treating that flag as "go direct" would route the call
+  // into the firewall. IMAGE_STUDIO_FORCE_HTTP is the way back for debugging.
+  const explicitSocket = process.env[SOCKET_ENV]
+  const socketPath = explicitSocket ?? join(homedir(), '.dsh', 'image-studio.sock')
+  const useSocket = process.env.IMAGE_STUDIO_FORCE_HTTP !== '1'
+    && (explicitSocket !== undefined || existsSync(socketPath))
+  return { baseUrl, socketPath: useSocket ? socketPath : undefined, token, authFile, requestTimeoutMs }
 }
 
 function stringFlag(flags, name) {
@@ -176,30 +191,83 @@ function sleep(ms) {
   return new Promise(done => setTimeout(done, ms))
 }
 
-async function request(connection, path, options = {}) {
-  const { method = 'GET', body, headers = {}, query } = options
-  const url = new URL(`${connection.baseUrl}${path}`)
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined) url.searchParams.set(key, String(value))
-    }
+function buildQuery(query) {
+  if (!query) return ''
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) params.set(key, String(value))
   }
+  const encoded = params.toString()
+  return encoded ? `?${encoded}` : ''
+}
+
+/**
+ * One request, over the tenant socket when there is one and plain HTTP
+ * otherwise. Node's fetch cannot dial a unix socket, so the transport is built
+ * by hand.
+ */
+function openRequest(connection, path, method, headers, query) {
+  if (connection.socketPath) {
+    return httpRequest({
+      socketPath: connection.socketPath, path: `${path}${buildQuery(query)}`, method, headers,
+    })
+  }
+  const url = new URL(`${connection.baseUrl}${path}`)
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined) url.searchParams.set(key, String(value))
+  }
+  const send = url.protocol === 'https:' ? httpsRequest : httpRequest
+  return send(url, { method, headers })
+}
+
+/** @returns {Buffer | string | undefined} payload to write, with length set. */
+function encodeBody(body, headers) {
+  if (body === undefined) return undefined
+  if (typeof body === 'string' || Buffer.isBuffer(body)) {
+    const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body)
+    if (headers['content-length'] === undefined) headers['content-length'] = String(buffer.byteLength)
+    return buffer
+  }
+  return body
+}
+
+function request(connection, path, options = {}) {
+  const { method = 'GET', body, headers = {}, query } = options
   const requestHeaders = { accept: 'application/json', ...headers }
   if (connection.token) requestHeaders.authorization = `Bearer ${connection.token}`
-  const response = await fetch(url, {
-    method, headers: requestHeaders, body,
-    signal: AbortSignal.timeout(connection.requestTimeoutMs),
+  const payload = encodeBody(body, requestHeaders)
+  return new Promise((resolvePromise, reject) => {
+    const outgoing = openRequest(connection, path, method, requestHeaders, query)
+    outgoing.setTimeout(connection.requestTimeoutMs, () => {
+      outgoing.destroy(new CliError(`${method} ${path} timed out after ${connection.requestTimeoutMs}ms`))
+    })
+    outgoing.on('error', (error) => {
+      reject(error instanceof CliError ? error : new CliError(`${method} ${path} failed: ${error.message}`))
+    })
+    outgoing.on('response', (response) => {
+      const chunks = []
+      response.on('data', (chunk) => { chunks.push(chunk) })
+      response.on('error', (error) => { reject(new CliError(`${method} ${path} failed: ${error.message}`)) })
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        const status = response.statusCode ?? 0
+        if (status < 200 || status >= 300) {
+          reject(new CliError(`${method} ${path} -> ${status}${errorDetail(text)}`, status))
+          return
+        }
+        if (!text) {
+          resolvePromise(undefined)
+          return
+        }
+        try {
+          resolvePromise(JSON.parse(text))
+        } catch {
+          reject(new CliError(`${method} ${path} returned non-JSON content`))
+        }
+      })
+    })
+    outgoing.end(payload)
   })
-  const text = await response.text()
-  if (!response.ok) {
-    throw new CliError(`${method} ${url.pathname} -> ${response.status}${errorDetail(text)}`, response.status)
-  }
-  if (!text) return undefined
-  try {
-    return JSON.parse(text)
-  } catch {
-    throw new CliError(`${method} ${url.pathname} returned non-JSON content`)
-  }
 }
 
 function errorDetail(text) {
@@ -310,12 +378,25 @@ function mimeType(path) {
   return 'image/png'
 }
 
+/** The backend takes one `file` field; FormData cannot be sent over http.request. */
+function multipartFile(data, filename, type) {
+  const boundary = `----vharness${randomBytes(12).toString('hex')}`
+  const name = filename.replace(/["\r\n]/gu, '_')
+  const head = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`,
+    'utf8',
+  )
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
+  return { body: Buffer.concat([head, data, tail]), contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
 async function uploadInput(connection, path) {
   const absolute = resolve(path)
   const data = readFileSync(absolute)
-  const form = new FormData()
-  form.append('file', new Blob([data], { type: mimeType(absolute) }), basename(absolute))
-  return request(connection, '/api/v1/inputs', { method: 'POST', body: form })
+  const { body, contentType } = multipartFile(data, basename(absolute), mimeType(absolute))
+  return request(connection, '/api/v1/inputs', {
+    method: 'POST', body, headers: { 'content-type': contentType },
+  })
 }
 
 async function waitForJob(connection, jobId, options) {
@@ -334,6 +415,32 @@ async function waitForJob(connection, jobId, options) {
   }
 }
 
+async function downloadTo(connection, path, target) {
+  const headers = connection.token ? { authorization: `Bearer ${connection.token}` } : {}
+  await new Promise((resolvePromise, reject) => {
+    const outgoing = openRequest(connection, path, 'GET', headers, undefined)
+    outgoing.setTimeout(DOWNLOAD_TIMEOUT_MS, () => {
+      outgoing.destroy(new CliError(`GET ${path} timed out after ${DOWNLOAD_TIMEOUT_MS}ms`))
+    })
+    outgoing.on('error', (error) => {
+      reject(error instanceof CliError ? error : new CliError(`GET ${path} failed: ${error.message}`))
+    })
+    outgoing.on('response', (response) => {
+      const status = response.statusCode ?? 0
+      if (status < 200 || status >= 300) {
+        const chunks = []
+        response.on('data', (chunk) => { chunks.push(chunk) })
+        response.on('end', () => {
+          reject(new CliError(`GET ${path} -> ${status}${errorDetail(Buffer.concat(chunks).toString('utf8'))}`, status))
+        })
+        return
+      }
+      pipeline(response, createWriteStream(target)).then(resolvePromise, reject)
+    })
+    outgoing.end()
+  })
+}
+
 async function downloadOutputs(connection, job, outDir, only) {
   const names = (job.outputs ?? []).map(name => basename(name))
   const selected = only === undefined ? names : names.filter(name => name === basename(only))
@@ -342,14 +449,8 @@ async function downloadOutputs(connection, job, outDir, only) {
   mkdirSync(directory, { recursive: true })
   const files = []
   for (const name of selected) {
-    const url = new URL(`${connection.baseUrl}/api/v1/outputs/${encodeURIComponent(job.job_id)}/${encodeURIComponent(name)}`)
-    const headers = connection.token ? { authorization: `Bearer ${connection.token}` } : {}
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
-    if (!response.ok) {
-      throw new CliError(`GET ${url.pathname} -> ${response.status}${errorDetail(await response.text())}`, response.status)
-    }
     const target = join(directory, name)
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(target))
+    await downloadTo(connection, `/api/v1/outputs/${encodeURIComponent(job.job_id)}/${encodeURIComponent(name)}`, target)
     files.push({ filename: name, path: target, bytes: statSync(target).size })
   }
   return { job_id: job.job_id, directory, files }

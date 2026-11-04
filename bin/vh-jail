@@ -76,17 +76,17 @@ fi
 [[ -n "${VH_PREVIEW_IP:-}" ]] || die 'VH_PREVIEW_IP is missing: the gateway must name this tenant address'
 [[ -n "${VH_GATEWAY_IP:-}" ]] || die 'VH_GATEWAY_IP is missing: the gateway must name its tenant-visible address'
 PREVIEW_IP="$VH_PREVIEW_IP"
-GATEWAY_IP="$VH_GATEWAY_IP"
 export VH_PREVIEW_IP VH_GATEWAY_IP
 command -v pasta >/dev/null 2>&1 || die 'pasta is missing from the image'
 
-# Every option below is load-bearing: without --config-net the namespace gets no
-# route, without --map-host-loopback a tenant cannot call the gateway, and
-# without --dns-forward the resolver in /etc/resolv.conf has no upstream. A
-# pasta too old to know them is a broken image, reported as such rather than as
-# a namespace that mysteriously never came up.
+# Both options below are load-bearing: without --config-net the namespace gets
+# no route, and without --dns-forward the resolver in /etc/resolv.conf has no
+# upstream. The gateway's loopback needs no flag, because pasta maps the gateway
+# address to the host's loopback unless `--no-map-gw` is passed. A pasta too old
+# to know these is a broken image, reported as such rather than as a namespace
+# that mysteriously never came up.
 pasta_help="$(pasta --help 2>&1 || true)"
-for option in --config-net --map-host-loopback --dns-forward; do
+for option in --config-net --dns-forward; do
   grep -q -- "$option" <<<"$pasta_help" \
     || die "pasta in this image does not support ${option}; the tenant network cannot be published"
 done
@@ -110,9 +110,16 @@ pasta_pid() {
 
 start_pasta() {
   local -a args=(--foreground --config-net --netns "$NETNS_PATH" -4 --dns-forward 10.0.2.3)
-  # A tenant reaches the gateway (model calls, scheduled follow-ups) through this
-  # mapping; the gateway itself keeps listening on its own loopback.
-  args+=(--map-host-loopback "$GATEWAY_IP")
+  # pasta drops root for `nobody` unless told which uid to run as, and `nobody`
+  # then cannot enter the namespace it was pointed at ("Couldn't switch to pasta
+  # namespaces: Operation not permitted"). The jail, not pasta's own uid, is the
+  # confinement boundary here, so it keeps the uid that can setns and own the tap.
+  args+=(--runas 0:0)
+  # A tenant reaches the gateway (model calls, scheduled follow-ups) by dialling
+  # "$GATEWAY_IP": pasta maps the gateway address to the host's loopback by
+  # default, and the gateway itself keeps listening on that loopback.
+  # `--map-host-loopback` is not an upstream option, so passing it only made an
+  # otherwise healthy image look broken.
   # The instance's own web port lives inside this namespace: without a forward
   # the gateway has no route to it at all.
   if [[ "${VH_JAIL_PORT:-}" =~ ^[0-9]+$ ]]; then
@@ -144,6 +151,48 @@ for _ in $(seq 1 100); do
   ip netns exec "$NETNS_NAME" ip route 2>/dev/null | grep -q '^default' && break
   sleep 0.1
 done
+
+# Outbound policy. The namespace shares the container's address, so without a
+# rule a tenant reaches every service on the platform's own network: the apps
+# behind the skills, other instances, the host. The jail needs the gateway and
+# the public internet and nothing else, so every directly-connected subnet is
+# blackholed. This is deliberately not a per-port allowance: the skills reach
+# their backends through unix sockets in the tenant home, never over the wire.
+#
+# `ip rule` rather than iptables: the image ships neither iptables nor nft, and
+# a destination table needs neither. The namespace outlives every jail in it, so
+# rules are replaced, not appended.
+EGRESS_TABLE=100
+
+# Directly-connected subnets are exactly the platform network. The container has
+# one interface; dockerd's bridges live in the host namespace, out of reach.
+internal_cidrs() {
+  ip -4 -o route show scope link 2>/dev/null \
+    | awk '$1 ~ /^[0-9]/ && $1 !~ /^(127|169\.254)\./ { print $1 }'
+}
+
+apply_egress_policy() {
+  local ns="$NETNS_NAME" cidr
+  ip netns exec "$ns" ip route flush table "$EGRESS_TABLE" 2>/dev/null || true
+  # Priority 89 carried the retired per-host allow-list. The namespace outlives
+  # every jail, so a rule left by an older binary would keep that host open
+  # forever; drain it before installing the current policy.
+  while ip netns exec "$ns" ip rule del priority 89 2>/dev/null; do :; done
+  ip netns exec "$ns" ip rule del priority 90 2>/dev/null || true
+  ip netns exec "$ns" ip rule del priority 100 2>/dev/null || true
+  for cidr in $(internal_cidrs); do
+    ip netns exec "$ns" ip route add blackhole "$cidr" table "$EGRESS_TABLE" 2>/dev/null || true
+  done
+  # The gateway sits on the internal network and must stay reachable: the tenant
+  # dials it for model calls and scheduled follow-ups.
+  ip netns exec "$ns" ip rule add to "$VH_GATEWAY_IP" priority 90 lookup main
+  # Everything else consults the blackhole table first. Public destinations are
+  # absent from it, so the lookup falls through to the main table unchanged.
+  ip netns exec "$ns" ip rule add lookup "$EGRESS_TABLE" priority 100
+}
+
+apply_egress_policy
+
 flock -u 9
 exec 9>&-
 if ! ip netns exec "$NETNS_NAME" ip route 2>/dev/null | grep -q '^default'; then
@@ -268,7 +317,10 @@ ip netns exec "$NETNS_NAME" unshare --mount --pid --ipc --uts --fork --mount-pro
   mount -t tmpfs -o mode=0755,nosuid,nodev,size=16m tmpfs "$root/run"
   # pasta answers 10.0.2.3 for this namespace (--dns-forward) and resolves
   # against the container resolver, which the namespace cannot reach directly.
-  printf 'nameserver 10.0.2.3\n' > "$root/run/resolv.conf"
+  # Double quotes are load-bearing: this line is inside the `bash -c '...'`
+  # body above, so a single quote here would end that body early and the rest
+  # of the jail would never run.
+  printf "nameserver 10.0.2.3\n" > "$root/run/resolv.conf"
   mount --bind "$root/run/resolv.conf" "$root/etc/resolv.conf"
 
   # The tenant home at /home/<account>: a private /home means a sibling tenant
@@ -312,6 +364,13 @@ ip netns exec "$NETNS_NAME" unshare --mount --pid --ipc --uts --fork --mount-pro
     export XDG_CACHE_HOME=\"\$HOME/.cache\"
     export XDG_STATE_HOME=\"\$HOME/.local/state\"
     export PATH=\"\$HOME/.npm-global/bin:\$HOME/.local/bin:\$HOME/.cargo/bin:\$HOME/.bun/bin:\$HOME/.nvm/current/bin:/usr/local/bin:/usr/bin:/bin\"
+    # The tenant gets a real docker CLI pointed at the filtered endpoint the
+    # gateway publishes. The host socket itself is never mounted, so this is
+    # the only path from here to the daemon; absent when not published. No
+    # single quotes in this block: the body is one single-quoted string.
+    if [ -S \"\$HOME/.dsh/docker.sock\" ]; then
+      export DOCKER_HOST=\"unix://\$HOME/.dsh/docker.sock\"
+    fi
     # Bound what one tenant can consume inside its own process tree. Without
     # these, a fork bomb or a multi-gigabyte file slows every other tenant,
     # which is itself a signal that somebody else is there.

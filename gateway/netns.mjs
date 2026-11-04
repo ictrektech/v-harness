@@ -10,6 +10,8 @@
  * @module v-harness/gateway/netns
  */
 
+import { spawnSync } from 'node:child_process';
+
 /**
  * The host address one tenant's namespace is published on.
  *
@@ -26,13 +28,27 @@ export function previewIp(uid) {
 }
 
 /**
+ * The address pasta configures as a namespace's gateway.
+ *
+ * `--config-net` copies the host's interface, so the only address a tenant can
+ * dial and have pasta map onto the gateway's loopback is the host's own default
+ * route gateway. `10.0.2.2` is passt's built-in default, not pasta's, and a
+ * namespace that dials it gets `ENETUNREACH` instead of the gateway.
+ * @returns {string}
+ */
+function hostDefaultGateway() {
+  const route = spawnSync('ip', ['-4', 'route', 'show', 'default'], { encoding: 'utf8' });
+  return /^default via (\S+)/m.exec(route.stdout ?? '')?.[1] ?? '10.0.2.2';
+}
+
+/**
  * The gateway as a tenant sees it from inside its namespace.
  *
  * pasta maps this address onto the gateway's loopback, which is how a tenant
  * reaches services the gateway keeps on `127.0.0.1` — the scheduler endpoint
  * behind every model call is the one that matters.
  */
-export const GATEWAY_IP = process.env.VH_GATEWAY_IP ?? '10.0.2.2';
+export const GATEWAY_IP = process.env.VH_GATEWAY_IP ?? hostDefaultGateway();
 
 /**
  * The namespace `bin/vh-jail` creates for one account.

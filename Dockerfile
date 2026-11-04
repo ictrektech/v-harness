@@ -228,6 +228,20 @@ ENV NODE_ENV=production \
 # outbound access, DNS and its own loopback. `iproute2` above creates and joins
 # the namespaces. pasta creates a tap device, so the container needs /dev/net/tun
 # (see ictrek.app/src/docker-compose.yml).
+#
+# A real browser is a product requirement for the browser-use and computer-use
+# plugins: they drive a page, not an HTTP client. Debian's `chromium` installs
+# to /usr/bin/chromium and /usr/lib/chromium, and the jail binds /usr read-only
+# (bin/vh-jail), so one root-owned copy serves every tenant and a rebuilt image
+# updates all of them at once. Only the profile directory is per tenant, which
+# is why it belongs under the tenant's own home.
+#
+# The launch flags are decided by the jail, not by chromium: /dev/shm there is a
+# 64 MB per-tenant tmpfs, so `--disable-dev-shm-usage` is required or renderer
+# processes die under load. When the zygote sandbox cannot start inside the jail,
+# `--no-sandbox` is the fallback -- the jail itself is the confinement boundary.
+# CJK fonts ship with it because a page of tofu boxes is not a rendered page for
+# the users this deployment serves.
 RUN if [ -n "${APT_MIRROR}" ]; then \
       for source in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
         if [ -f "$source" ]; then \
@@ -239,13 +253,31 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates curl wget \
       passt \
-      build-essential python3 python3-pip python3-venv \
+      build-essential python3 python3-pip python3-venv linux-libc-dev xz-utils \
       postgresql-client sqlite3 \
       git openssh-client \
       procps iproute2 net-tools iputils-ping netcat-openbsd bind9-dnsutils \
       lsof zip pkg-config \
       rsync unzip less jq ripgrep vim-tiny \
+      chromium fonts-liberation fonts-noto-cjk \
+      docker.io \
  && rm -rf /var/lib/apt/lists/*
+
+# Debian 12 ships passt 0.0~git20230309, from before `--map-host-loopback`
+# existed. `bin/vh-jail` needs that option to publish the gateway inside a
+# tenant namespace, and `bin/network-probe.mjs` refuses an image without it.
+# Building the upstream source here links this image's glibc 2.36, which the
+# trixie package cannot (it wants 2.38).
+ARG PASST_SOURCE=0.0~git20261002.cba3570
+RUN cd /tmp \
+ && curl -fsSLO "http://${APT_MIRROR}/debian/pool/main/p/passt/passt_${PASST_SOURCE}.orig.tar.xz" \
+ && tar -xf "passt_${PASST_SOURCE}.orig.tar.xz" \
+ && rm -f "passt_${PASST_SOURCE}.orig.tar.xz" \
+ && cd passt-*/ \
+ && make \
+ && install -m 0755 passt /usr/bin/passt \
+ && ln -sfn passt /usr/bin/pasta \
+ && rm -rf /tmp/passt-*
 
 # pnpm is needed the first time a user's profile installs its bundles.
 RUN corepack enable \

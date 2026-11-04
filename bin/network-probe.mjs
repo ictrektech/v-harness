@@ -25,11 +25,12 @@ const PROBE_NS_PATH = `/var/run/netns/${PROBE_NS}`;
 const REPLY = 'vh-network-probe';
 /** A tenant address of the probe's own; real ones are derived from uids. */
 const PROBE_IP = '127.241.241.241';
-const GATEWAY_IP = process.env.VH_GATEWAY_IP ?? '10.0.2.2';
-const REQUIRED_PASTA_OPTIONS = ['--config-net', '--map-host-loopback', '--dns-forward'];
+const REQUIRED_PASTA_OPTIONS = ['--config-net', '--dns-forward'];
 const COMMAND_TIMEOUT_MS = 5_000;
 const LISTEN_TIMEOUT_MS = 5_000;
 const REPLY_TIMEOUT_MS = 3_000;
+/** The same address `vh-jail`'s pasta maps onto the gateway's loopback. */
+const GATEWAY_IP = hostDefaultGateway();
 
 /**
  * A namespace-local listener: this is what a tenant service is, and pasta has
@@ -74,6 +75,17 @@ const checks = {
  */
 function run(command, args, options = {}) {
   return spawnSync(command, args, { encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, ...options });
+}
+
+/**
+ * The address pasta configures as a namespace's gateway: the host's own default
+ * route gateway, which `--config-net` copies into the namespace. `10.0.2.2` is
+ * passt's built-in default, not pasta's, so dialling it gets `ENETUNREACH`.
+ * @returns {string}
+ */
+function hostDefaultGateway() {
+  const route = run('ip', ['-4', 'route', 'show', 'default']);
+  return /^default via (\S+)/m.exec(route.stdout ?? '')?.[1] ?? '10.0.2.2';
 }
 
 /**
@@ -148,7 +160,14 @@ async function publishNamespace(port) {
   const pasta = track('pasta', [
     '--foreground', '--config-net', '--netns', PROBE_NS_PATH, '-4',
     '--dns-forward', '10.0.2.3',
-    '--map-host-loopback', GATEWAY_IP,
+    // pasta refuses root unless told otherwise and drops to nobody, which then
+    // cannot enter the namespace it was pointed at: `--runas 0:0` keeps the
+    // privileges `setns` and the tap device need. The jail is the confinement
+    // boundary here, not pasta's own uid.
+    '--runas', '0:0',
+    // No gateway mapping flag: pasta maps the gateway address to the host's
+    // loopback by default (`--no-map-gw` is what turns it off), so dialling
+    // GATEWAY_IP from the namespace already lands on the gateway's loopback.
     '-t', `${PROBE_IP}/${String(port)}:${String(port)}`,
   ]);
   let complaint = '';
@@ -197,7 +216,8 @@ async function probeGatewayDirection() {
     throw new Error(
       `${GATEWAY_IP} is not reachable from ${PROBE_NS} (exit ${String(code)})`
       + `${complaint.trim() === '' ? '' : `: ${complaint.trim()}`}`
-      + '; pasta --map-host-loopback is what makes the gateway reachable from a tenant',
+      + "; pasta's default gateway mapping is what makes the gateway reachable from a tenant"
+      + ' (--no-map-gw would break it)',
     );
   }
 }
@@ -253,9 +273,9 @@ async function cleanup() {
   for (const child of children) {
     if (child.exitCode === null) child.kill('SIGKILL');
   }
-  for (const server of servers) {
-    await new Promise((resolve) => server.close(() => resolve(undefined)));
-  }
+  // A probe connection can still be open, and waiting for close() would then
+  // never settle; the caller exits the process instead of draining them.
+  for (const server of servers) server.close();
   if (namespaceCreated) {
     run('ip', ['netns', 'del', PROBE_NS]);
   }
@@ -285,6 +305,7 @@ await cleanup();
 
 if (detail === undefined) {
   console.log(JSON.stringify(report('ok'), null, 2));
+  process.exit(0);
 } else {
   console.error(JSON.stringify(report('failed', detail), null, 2));
   process.exit(1);

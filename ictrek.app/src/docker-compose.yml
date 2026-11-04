@@ -19,9 +19,8 @@ x-v-harness-env: &v-harness-env
   DSH_PERMISSION_MODE: workspace-write
   # Docker Hub is not reachable from these hosts: `registry-1.docker.io` and
   # `auth.docker.io` resolve to unrelated addresses (185.60.216.36, 199.59.149.231)
-  # and every pull times out. Each tenant's dockerd gets this mirror instead;
-  # `docker pull hello-world` through it was verified on a live tenant.
-  VH_DOCKER_REGISTRY_MIRROR: ${VH_DOCKER_REGISTRY_MIRROR:-https://docker.1ms.run}
+  # and every pull times out. Tenants pull through the host daemon, so the
+  # mirror belongs in that daemon's `/etc/docker/daemon.json`, not here.
   NODE_ENV: production
 
 x-v-harness-base: &v-harness-base
@@ -47,6 +46,13 @@ x-v-harness-base: &v-harness-base
     - /dev/net/tun:/dev/net/tun
   volumes:
     - ${VOS_APP_STORAGE_PATH}/data:/data
+    # The tenant Docker capability. The gateway holds the host socket and hands
+    # each tenant a filtered Unix socket of its own (gateway/docker-proxy.mjs);
+    # the jail never sees this file, so a tenant cannot create a privileged
+    # container or mount the host. The mount is still a trust-boundary change:
+    # the socket is host root by another name, so root inside *this* container
+    # is root on the host. That is the same trade agent-room makes.
+    - /var/run/docker.sock:/var/run/docker.sock
   networks:
     vos_default:
       aliases:

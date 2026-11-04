@@ -80,7 +80,10 @@ function call(method, path, body) {
 
 /** @returns {{ name: string, port: number, basePath: string | undefined, cmd: string[] }} */
 function parseRunArgs() {
-  const argv = process.argv.slice(2);
+  // slice(3) skips node, the script and the `run` subcommand itself; keeping
+  // `run` here made the loop below reject it as an unknown flag, so no service
+  // could ever be registered.
+  const argv = process.argv.slice(3);
   let name = '';
   let port = 0;
   let basePath;
@@ -151,7 +154,11 @@ async function run() {
         child.kill('SIGTERM');
       }
     })().catch(() => {});
-  }, HEARTBEAT_MS).unref();
+    // Ref'd on purpose: the heartbeat is the only handle this process holds
+    // between ticks, and an unref'd timer let node exit right after spawn —
+    // leaving the service alive with nobody reporting it, which the panel then
+    // showed as "stopped".
+  }, HEARTBEAT_MS);
 
   process.stderr.write(`vh-service: 「${name}」已登记 (127.0.0.1:${String(port)})，Ctrl-C 停止\n`);
 }

@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-04-tenant-container-runtime.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/rejected/architecture/2026-11-04-tenant-container-runtime.md
+/agent-note-tenant-container-runtime:
+  en: 05729aa7ca8aed59
+  zh: 7209bab0b17c6d43
+/agent-note-tenant-container-runtime/problem:
+  en: 121a2d82e2597b83
+  zh: 442b6a05db9c7117
+/agent-note-tenant-container-runtime/proposal:
+  en: f2bd370113141417
+  zh: 560ce575185cf1bb
+/agent-note-tenant-container-runtime/what-the-measurements-say:
+  en: 11eb5ce0950f8223
+  zh: 3562f4b7dc7c9b23
+/agent-note-tenant-container-runtime/alternatives-considered:
+  en: f12799d717723867
+  zh: a57fc179c365ff6f
+/agent-note-tenant-container-runtime/revisit-condition:
+  en: 3152d312c7039da5
+  zh: 8e4a3b9f76e73362

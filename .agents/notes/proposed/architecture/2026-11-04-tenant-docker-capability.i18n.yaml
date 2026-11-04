@@ -1,0 +1,25 @@
+# Bilingual-pair consistency record for 2026-11-04-tenant-docker-capability.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/proposed/architecture/2026-11-04-tenant-docker-capability.md
+/agent-note-tenant-docker-capability:
+  en: 47e60745f1174667
+  zh: 592cf67e6b1bc975
+/agent-note-tenant-docker-capability/problem:
+  en: 1e8ce4d2989c9a16
+  zh: f53a6978c9c26a45
+/agent-note-tenant-docker-capability/proposal:
+  en: 8bfdbd99f817f365
+  zh: 71cd6757c048de2a
+/agent-note-tenant-docker-capability/work-items:
+  en: 857eef81aac57615
+  zh: 2d0a1e8bbfcedbf3
+/agent-note-tenant-docker-capability/acceptance-criteria:
+  en: a75e9440cd768c7d
+  zh: 4a7fec90b630eeba
+/agent-note-tenant-docker-capability/risks:
+  en: cd14fd51f8e0453c
+  zh: 5725c2b555a1b791
+/agent-note-tenant-docker-capability/alternatives-considered:
+  en: ec00b3906a96fcc9
+  zh: 7bf5e40b9a3636ce

@@ -47,6 +47,7 @@ import {
   rememberTokens,
 } from './office.mjs';
 import { closeAlbumCapabilities, ensureAlbumCapability } from './album.mjs';
+import { closeImageStudioCapabilities, ensureImageStudioCapability } from './image-studio.mjs';
 import { closePhotocraftCapabilities, ensurePhotocraftCapability } from './photocraft.mjs';
 import {
   CSRF_COOKIE,
@@ -73,6 +74,7 @@ import {
   resolveService,
   stopService,
 } from './services.mjs';
+import { closeDockerCapabilities, ensureDockerCapability, resolveContainerPort } from './docker-proxy.mjs';
 import { handleScheduler } from './scheduler.mjs';
 
 // Tenant homes live in <DATA_ROOT>/<account>, and nothing else does: the gateway's
@@ -581,10 +583,31 @@ function serviceHeaders(req, port) {
 }
 
 /**
- * Proxy one request to a service the session's subject registered.
- * `/__vh/svc/<port>/<rest>` forwards to `<tenant address>:<port>/<rest>`, where
- * the service listens on `127.0.0.1` inside the tenant's own namespace; a port
- * that subject never registered answers 404 here — the registry, not the
+ * Resolve `/__vh/svc/<port>` to the address the gateway dials.
+ *
+ * A registered service comes first: registering is the tenant's explicit
+ * statement about that port, and it listens on `127.0.0.1` inside the tenant's
+ * own namespace, reachable only at the address pasta publishes the namespace
+ * on. Everything else is a container the tenant started: those publish on the
+ * host's loopback instead (the create filter pins `HostIp` there), because the
+ * host daemon, not the tenant namespace, runs them.
+ * @param {string} subject
+ * @param {number} port
+ * @returns {Promise<{ host: string, port: number } | undefined>}
+ */
+async function serviceTarget(subject, port) {
+  const record = resolveService(subject, port);
+  if (record) return { host: previewIp(record.uid), port };
+  const user = await findUser(USERS_FILE, subject);
+  if (!user) return undefined;
+  return resolveContainerPort(user.account ?? user.linuxName, port);
+}
+
+/**
+ * Proxy one request to a service the session's subject registered, or to a
+ * container port the tenant published.
+ * `/__vh/svc/<port>/<rest>` forwards to `<target>:<port>/<rest>`; a port that
+ * is neither registered nor published answers 404 here — that table, not the
  * network, decides what is reachable.
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
@@ -606,20 +629,20 @@ async function proxyServiceRequest(req, res, url) {
     json(res, 404, { error: 'not found' });
     return;
   }
-  const record = resolveService(session.subject, Number(match[1]));
-  if (!record) {
-    json(res, 404, { error: 'unknown-service', message: '该端口没有登记为你自己的服务' });
+  const port = Number(match[1]);
+  const target = await serviceTarget(session.subject, port);
+  if (!target) {
+    json(res, 404, { error: 'unknown-service', message: '该端口没有登记为你自己的服务，也没有容器发布它' });
     return;
   }
-  const port = Number(match[1]);
   const path = `${match[2] ?? '/'}${url.search}`;
   await new Promise((resolve) => {
     const upstream = httpRequest({
-      host: previewIp(record.uid),
-      port,
+      host: target.host,
+      port: target.port,
       method: req.method,
       path,
-      headers: serviceHeaders(req, port),
+      headers: serviceHeaders(req, target.port),
     }, (upstreamRes) => {
       /** @type {Record<string, string | string[]>} */
       const responseHeaders = {};
@@ -661,14 +684,14 @@ async function proxyServiceUpgrade(req, socket, head) {
     socket.destroy();
     return;
   }
-  const record = resolveService(session.subject, Number(match[1]));
-  if (!record) {
+  const port = Number(match[1]);
+  const target = await serviceTarget(session.subject, port);
+  if (!target) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();
     return;
   }
-  const port = Number(match[1]);
-  const headers = serviceHeaders(req, port);
+  const headers = serviceHeaders(req, target.port);
   headers.connection = 'Upgrade';
   headers.upgrade = String(req.headers.upgrade ?? 'websocket');
 
@@ -678,7 +701,7 @@ async function proxyServiceUpgrade(req, socket, head) {
     else lines.push(`${name}: ${value}`);
   }
   lines.push('', '');
-  const upstream = connect(port, previewIp(record.uid), () => {
+  const upstream = connect(target.port, target.host, () => {
     upstream.write(lines.join('\r\n'));
     if (head?.length) upstream.write(head);
     upstream.pipe(socket);
@@ -1043,8 +1066,10 @@ async function startCapabilities(record) {
     ensureOfficeCapability(options),
     ensureWeknoraCapability(options),
     ensureAlbumCapability(options),
+    ensureImageStudioCapability(options),
     ensurePhotocraftCapability(options),
     ensureServicesCapability(options),
+    ensureDockerCapability(options),
   ]);
   for (const result of settled) {
     if (result.status === 'rejected') {
@@ -1172,7 +1197,9 @@ async function proxyRequest(req, res) {
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
-      host: '127.0.0.1',
+      // The instance's 127.0.0.1 belongs to its own namespace; the gateway
+      // reaches it only at the address pasta publishes it on.
+      host: previewIp(instance.uid),
       port: instance.port,
       method: req.method,
       path,
@@ -1319,7 +1346,7 @@ function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closePhotocraftCapabilities(), closeServicesCapabilities()]).finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closeImageStudioCapabilities(), closePhotocraftCapabilities(), closeServicesCapabilities(), closeDockerCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });
