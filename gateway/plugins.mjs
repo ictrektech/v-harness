@@ -308,6 +308,17 @@ async function stagedPackagePaths(root) {
 }
 
 /**
+ * Whether one dependency spec points at this image's plugin payload.
+ * @param {unknown} spec - a manifest dependency value.
+ * @returns {boolean}
+ */
+function isPayloadLink(spec) {
+  return typeof spec === 'string'
+    && spec.startsWith('link:')
+    && (spec.includes(PLUGIN_ROOT) || spec.includes(AGENT_PLUGIN_ROOT))
+}
+
+/**
  * Append the bundles a profile is missing (idempotent JSON edit). A bundle
  * layer is what mounts its plugin rows; without the entry the copied packages
  * would sit in node_modules unloaded. Appended in {@link PROFILE_BUNDLES}
@@ -323,9 +334,27 @@ async function mountBundles(profile, user, names) {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     const bundles = manifest?.dsh?.profile?.bundles
     if (!Array.isArray(bundles)) return
-    const missing = names.filter(name => !bundles.includes(name))
-    if (missing.length === 0) return
-    bundles.push(...missing)
+    let changed = false
+    for (const name of names) {
+      if (bundles.includes(name)) continue
+      bundles.push(name)
+      changed = true
+    }
+    // An earlier revision declared these bundles as `link:` dependencies onto
+    // this image's payload. `pnpm install` runs inside the tenant's jail, where
+    // that path does not exist, so the install failed and left the profile's
+    // `node_modules` incomplete — the browser bundles resolved from there then
+    // failed to activate ("1 entry did not activate"). Bundles are copied into
+    // the profile by this module; the manifest never needs to name them, and a
+    // stale entry is removed here so an affected tenant repairs itself.
+    const dependencies = manifest.dependencies ?? {}
+    for (const [name, spec] of Object.entries(dependencies)) {
+      if (!isPayloadLink(spec)) continue
+      delete dependencies[name]
+      changed = true
+    }
+    if (!changed) return
+    if (Object.keys(dependencies).length > 0) manifest.dependencies = dependencies
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
   } catch (error) {
     console.error(`bundle mount failed for ${user.linuxName}:`, error.message)
