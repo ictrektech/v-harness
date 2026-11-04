@@ -92,6 +92,23 @@ describe('bundled Image Studio skill', () => {
     } finally { void ctx.fiber.dispose() }
   })
 
+  it('falls back to the DSH bundled skill root when no asset root is given', () => {
+    const ctx = new Context()
+    const previousVos = process.env.VH_SKILLS_DIR
+    const previousBundled = process.env.DSH_BUNDLED_SKILL_DIR
+    delete process.env.VH_SKILLS_DIR
+    process.env.DSH_BUNDLED_SKILL_DIR = skills
+    try {
+      expect(() => { SkillImageStudio.apply(ctx) }).not.toThrow()
+    } finally {
+      if (previousVos === undefined) delete process.env.VH_SKILLS_DIR
+      else process.env.VH_SKILLS_DIR = previousVos
+      if (previousBundled === undefined) delete process.env.DSH_BUNDLED_SKILL_DIR
+      else process.env.DSH_BUNDLED_SKILL_DIR = previousBundled
+      void ctx.fiber.dispose()
+    }
+  })
+
   it('rejects relative paths and unusable runtimes', async () => {
     const ctx = new Context()
     try {

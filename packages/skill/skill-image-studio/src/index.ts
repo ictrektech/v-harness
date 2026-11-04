@@ -102,7 +102,13 @@ function resolveRuntime(config: Config, assetRoot: string): StudioRuntime {
  * @param config - Optional asset root and service endpoint overrides.
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  const assetRoot = config.assetRoot ?? process.env.VH_SKILLS_DIR
+  // Deployment overrides come first (`VH_SKILLS_DIR` is the VOS layer's), then
+  // the DSH-wide bundled skill root: an image binds the product skills there and
+  // the installed layout has no `skills/` sibling to walk up to. The repository
+  // path is only the last resort, for running from source.
+  const assetRoot = config.assetRoot
+    ?? process.env.VH_SKILLS_DIR
+    ?? process.env.DSH_BUNDLED_SKILL_DIR
     ?? fileURLToPath(new URL('../../../../skills/', import.meta.url))
   if (!assetRoot.startsWith('/') && !/^[A-Za-z]:[\\/]/u.test(assetRoot)) {
     throw new Error('skill-image-studio: assetRoot must be an absolute directory')
