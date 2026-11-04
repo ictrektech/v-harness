@@ -325,6 +325,8 @@ if (policy.mode === 'workspace-write') {
 
 遮蔽逻辑（`TENANT_MASK_ROOTS` + 回绑顺序）保持不变；jail 视图改为 `/home/<account>` 后，`tenantRoot` 由 `sandbox-policy` 从 `process.env.HOME` 解析（v1 §6 的 `vos.patch.yml` 条目成立）：patch 替换整段 config，需同时重述 `mode` 与 `workspaceRoot`。
 
+`workspaceRoot` 也取 `$HOME`，不再是 `$HOME/workspace`。npm、pnpm、pip、uv、cargo 在写第一个项目文件之前就要写 `~/.npm`、`~/.cache`、`~/.local`；把可写根限制在 `workspace/` 的后果不是"更安全"，而是**每个会话都要先撞一次 `npm log directory not writable`，再由 agent 自己摸出 `npm_config_cache=...`**。隔离边界是 `tenantRoot`（兄弟租户的 home 在这个 jail 里不存在），把自己家目录写成可写不改变这一点。
+
 `packages/bundle/base/cordis.patch.yml` 禁用 `danger-full-access` 预设（v1 §6 原条目）。
 
 ---

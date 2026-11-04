@@ -407,6 +407,13 @@ async function launch(options) {
       XDG_DATA_HOME: `${jailHome}/.local/share`,
       XDG_CACHE_HOME: `${jailHome}/.cache`,
       XDG_STATE_HOME: `${jailHome}/.local/state`,
+      // Package managers that predate the XDG convention keep their own cache
+      // variables; unset, they still resolve to the (now writable) home, but
+      // naming them keeps a stray `HOME` from sending writes elsewhere.
+      NPM_CONFIG_CACHE: `${jailHome}/.npm`,
+      PIP_CACHE_DIR: `${jailHome}/.cache/pip`,
+      UV_CACHE_DIR: `${jailHome}/.cache/uv`,
+      PNPM_HOME: `${jailHome}/.local/share/pnpm`,
       // ds-bot keeps its own store and team folder; both default to the
       // process home, which is only correct if they are named explicitly.
       DS_BOT_USER_DSH_HOME: `${jailHome}/.dsh`,

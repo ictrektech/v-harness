@@ -10,6 +10,9 @@
 set -euo pipefail
 
 HOME_ROOT="${HOME_ROOT:-/data}"
+# Shipped instructions for the agent working inside a tenant: what this machine
+# can and cannot do. Seeded into a new home, never overwritten afterwards.
+TENANT_AGENTS="${VH_TENANT_AGENTS:-/opt/v-harness/bin/tenant-AGENTS.md}"
 NAME_RE='^[a-z_][a-z0-9_-]{0,31}$'
 
 die() { printf 'vh-userctl: %s\n' "$*" >&2; exit 1; }
@@ -58,6 +61,12 @@ ensure() {
     "$home/.npm-global" "$home/.local" "$home/.config" \
     "$home/.cargo" "$home/.bun" "$home/.nvm" "$home/.cache"
   chmod 0700 "$home/.dsh" "$home/.agents"
+
+  # What this machine is, for the agent that has to work on it. Written once:
+  # a tenant's own edits to the file survive every later container start.
+  if [[ ! -f "$home/.agents/AGENTS.md" && -f "$TENANT_AGENTS" ]]; then
+    install -m 0600 -o "$name" -g "$name" "$TENANT_AGENTS" "$home/.agents/AGENTS.md"
+  fi
 }
 
 # claim <account> <socketPath>
