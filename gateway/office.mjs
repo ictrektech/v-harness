@@ -25,7 +25,10 @@ import { Transform } from 'node:stream';
 
 import { runUserHelper } from './instances.mjs';
 
-const DEFAULT_BASE = 'http://10.144.144.232:1182/api/com.ictrek.v-office';
+// The developer machine has its own LAN address here, but a deployed host does
+// not. Default to the docker bridge gateway like every other capability, and
+// let VH_OFFICE_BASE point somewhere else when the deployment differs.
+const DEFAULT_BASE = 'http://172.17.0.1:1182/api/com.ictrek.v-office';
 const OFFICE_BASE = new URL((process.env.VH_OFFICE_BASE ?? DEFAULT_BASE).replace(/\/+$/, ''));
 const OFFICE_PREFIX = OFFICE_BASE.pathname.replace(/\/+$/, '');
 const SOCKET_NAME = 'voffice.sock';

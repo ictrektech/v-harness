@@ -81,7 +81,7 @@ skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access t
 - 访问令牌临期时网关直接用 refresh_token 向 VOS 续期（public client，无需 secret，已用 `invalid_grant` 探测确认端点接受 grant）。续期也失败（用户被登出/撤销）才返回 401 + 稳定错误码，skill 直接告诉用户重新登录，不空转重试。
 - 浏览器侧的「查看文档」不另做页面：下载到 workspace 后调 `present`，dsh 客户端自带交付卡片和右侧预览（docx/pptx 本地转 PDF、xlsx 表格渲染）。
 
-`VH_OFFICE_BASE` 可覆盖上游地址（默认 `http://10.144.144.232:1182/api/com.ictrek.v-office`）。
+`VH_OFFICE_BASE` 可覆盖上游地址（默认 `http://172.17.0.1:1182/api/com.ictrek.v-office`，即 docker bridge 网关）。
 
 ## 服务插件（租户自建服务的界面入口）
 
