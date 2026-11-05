@@ -104,12 +104,14 @@ unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     # binds on its own address.
     iptables -A "$chain" -d "$tenant_ip" -j ACCEPT \
       || warn "could not allow the tenant loopback address"
-    # The resolvers the jail binds in; a non-loopback resolver would not be
-    # reached by the drops below, but naming it keeps the allow-list complete.
+    # The resolvers the jail binds in. Match the ORIGINAL destination port of
+    # the connection: docker rewrites 127.0.0.11:53 to an ephemeral port in
+    # nat OUTPUT before this filter chain runs, so a plain --dport 53 never
+    # matches there.
     for ns in $(awk "/^nameserver /{print \$2}" /etc/resolv.conf 2>/dev/null); do
-      iptables -A "$chain" -d "$ns" -p udp --dport 53 -j ACCEPT \
+      iptables -A "$chain" -d "$ns" -p udp -m conntrack --ctorigdstport 53 -j ACCEPT \
         || warn "could not allow the resolver $ns (udp)"
-      iptables -A "$chain" -d "$ns" -p tcp --dport 53 -j ACCEPT \
+      iptables -A "$chain" -d "$ns" -p tcp -m conntrack --ctorigdstport 53 -j ACCEPT \
         || warn "could not allow the resolver $ns (tcp)"
     done
     # The gateway: model calls and scheduled follow-ups dial it from here.
