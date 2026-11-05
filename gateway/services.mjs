@@ -30,7 +30,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
-import { GATEWAY_IP, previewIp } from './netns.mjs';
+
 
 const SOCKET_NAME = 'vh-services.sock';
 const STATE_FILE = 'services.json';
@@ -352,8 +352,6 @@ export function restartService(subject, port, instancePort) {
         HOME_ROOT,
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         VH_JAIL_PORT: String(instancePort),
-        VH_PREVIEW_IP: previewIp(record.uid),
-        VH_GATEWAY_IP: GATEWAY_IP,
       },
       stdio: 'ignore',
       detached: true,

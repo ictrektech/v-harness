@@ -1,57 +1,36 @@
 /**
- * The two addresses that join a tenant's network namespace to the gateway.
+ * Tenant addressing, now that tenants share the container network.
  *
- * Every tenant runs in its own namespace, so its `127.0.0.1` belongs to that
- * tenant alone and the gateway has no route to it. `bin/vh-jail` asks pasta to
- * publish the namespace on one host address per tenant (gateway → tenant), and
- * to map one fixed address onto the gateway's loopback (tenant → gateway).
- * Both ends must agree on these values, so they live here and nowhere else.
+ * Every tenant used to run in its own network namespace, published by pasta on
+ * one host address per uid. That layer needed a matching pasta option, a
+ * per-version capability check and a forward for every port a tenant might use,
+ * and each of those was a way for an otherwise healthy container to fail
+ * closed. The names below are kept so callers do not have to change, but they
+ * all resolve to the loopback the gateway and the instances genuinely share:
+ * two tenants can listen on the same port only through the per-tenant port
+ * allocation, which the gateway already enforces.
  *
  * @module v-harness/gateway/netns
  */
 
-import { spawnSync } from 'node:child_process';
-
 /**
- * The host address one tenant's namespace is published on.
- *
- * The whole of `127/8` is loopback, so an address here is local without being
- * the gateway's own `127.0.0.1`, and two tenants may listen on the same port.
- * The second octet skips `0`, which keeps every address out of the range an
- * application is most likely to hardcode (`127.0.0.x`).
- * @param {number} uid - tenant uid; allocated once, so the address is stable.
+ * The address one tenant's instance is reachable on, as seen by the gateway.
+ * @param {number} [_uid] - retained for callers that still pass it.
  * @returns {string}
  */
-export function previewIp(uid) {
-  const second = (Math.floor(uid / 256) % 254) + 1;
-  return `127.${String(second)}.${String(uid % 256)}.1`;
+export function previewIp(_uid) {
+  return '127.0.0.1';
 }
 
 /**
- * The address pasta configures as a namespace's gateway.
- *
- * `--config-net` copies the host's interface, so the only address a tenant can
- * dial and have pasta map onto the gateway's loopback is the host's own default
- * route gateway. `10.0.2.2` is passt's built-in default, not pasta's, and a
- * namespace that dials it gets `ENETUNREACH` instead of the gateway.
- * @returns {string}
+ * The gateway as an instance dials it (model calls, scheduled follow-ups).
+ * Both sides run in the container network, so this is plain loopback.
  */
-function hostDefaultGateway() {
-  const route = spawnSync('ip', ['-4', 'route', 'show', 'default'], { encoding: 'utf8' });
-  return /^default via (\S+)/m.exec(route.stdout ?? '')?.[1] ?? '10.0.2.2';
-}
+export const GATEWAY_IP = '127.0.0.1';
 
 /**
- * The gateway as a tenant sees it from inside its namespace.
- *
- * pasta maps this address onto the gateway's loopback, which is how a tenant
- * reaches services the gateway keeps on `127.0.0.1` — the scheduler endpoint
- * behind every model call is the one that matters.
- */
-export const GATEWAY_IP = process.env.VH_GATEWAY_IP ?? hostDefaultGateway();
-
-/**
- * The namespace `bin/vh-jail` creates for one account.
+ * The name the namespace used to have. Nothing creates it any more; the helper
+ * stays only so a leftover import keeps compiling.
  * @param {string} account - tenant account name.
  * @returns {string}
  */

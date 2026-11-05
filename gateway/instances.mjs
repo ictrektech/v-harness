@@ -22,7 +22,7 @@ import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'n
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
-import { GATEWAY_IP, netnsName, previewIp } from './netns.mjs';
+import { previewIp } from './netns.mjs';
 import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
@@ -353,26 +353,23 @@ async function adoptTenantRoots(home, dshHome, uid, account) {
 }
 
 /**
- * Who listens on one port inside a tenant's namespace.
+ * Who listens on one port in the container network.
  *
- * The host-side socket table never lists a listener that lives in another
- * network namespace, so the question has to be asked from inside the tenant's
- * own: `ip netns exec` swaps the namespace of `ss` only, leaving `/proc` as the
- * host's, which is what makes the reported pid usable here.
- * @param {string} netns - namespace name; absent on a tenant's first launch.
+ * Tenants no longer get their own network namespace, so the ordinary socket
+ * table is the whole answer: every instance listens on loopback and the port is
+ * allocated per tenant, which is what keeps two tenants apart now.
  * @param {number} port
  * @returns {{ pid: number, uid: number } | undefined}
  */
-function listenerIn(netns, port) {
+function listenerIn(port) {
   let output;
   try {
-    output = execFileSync('ip', ['netns', 'exec', netns, 'ss', '-lntpH'], {
+    output = execFileSync('ss', ['-lntpH'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch (error) {
-    // No namespace yet, or no ss to ask: the launch reports its own port
-    // conflict if there is one.
+    // No ss to ask: the launch reports its own port conflict if there is one.
     void error;
     return undefined;
   }
@@ -396,20 +393,19 @@ function listenerIn(netns, port) {
  *
  * The gateway restarts far more often than its container, and a launched jail
  * outlives it: the instance map is empty while the old dsh still holds the
- * port inside the tenant namespace, so the next dsh dies on EADDRINUSE and the
- * workspace never opens. The namespace is the tenant's for good, so the port
- * conflict is always between two of *this* tenant's processes.
+ * port, so the next dsh dies on EADDRINUSE and the workspace never opens. The
+ * port is allocated per tenant, so the conflict is always between two of
+ * *this* tenant's processes.
  * @param {number} port
  * @param {number} uid
  * @param {string} account
  * @returns {Promise<void>}
  */
 async function reclaimPort(port, uid, account) {
-  const netns = netnsName(account);
-  const owner = listenerIn(netns, port);
+  const owner = listenerIn(port);
   if (owner === undefined) return;
-  // A listener belonging to another uid is never ours to kill: the namespace is
-  // per tenant, so this is a deployment mistake to report, not to silence.
+  // A listener belonging to another uid is never ours to kill: ports are
+  // allocated per tenant, so this is a deployment mistake to report.
   if (owner.uid !== uid) {
     throw new Error(
       `port ${String(port)} is held by pid ${String(owner.pid)} (uid ${String(owner.uid)}), not tenant ${account}`,
@@ -419,7 +415,7 @@ async function reclaimPort(port, uid, account) {
   process.kill(owner.pid, 'SIGTERM');
   for (let attempt = 0; attempt < 50; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    if (listenerIn(netns, port) === undefined) return;
+    if (listenerIn(port) === undefined) return;
   }
   throw new Error(`port ${String(port)} is still held after reclaiming it from pid ${String(owner.pid)}`);
 }
@@ -466,14 +462,9 @@ async function launch(options) {
       // vh-jail checks the host home against this root before entering the
       // jail; without it the jail refuses every launch on a /data deployment.
       HOME_ROOT,
-      // The tenant's network: pasta publishes its namespace on this tenant's
-      // own host address, and maps the gateway address onto the gateway's
-      // loopback. Neither is derivable from vh-jail's argv, so both are named
-      // here; the instance port joins them because pasta binds one forward per
-      // port at startup.
+      // The tenant shares the container network now, so vh-jail needs nothing
+      // but the port it was allocated.
       VH_JAIL_PORT: String(record.port),
-      VH_PREVIEW_IP: previewIp(record.uid),
-      VH_GATEWAY_IP: GATEWAY_IP,
       HOME: jailHome,
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,

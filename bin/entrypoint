@@ -18,22 +18,9 @@ if [[ -f "${DATA_ROOT}/users.json" && ! -f "${STATE_ROOT}/users.json" ]]; then
 fi
 chmod 0600 "${STATE_ROOT}/users.json" 2>/dev/null || true
 
-# Tenant networks are namespaces plus one pasta each. Both live in /run, which
-# an operator may have persisted, so a boot can inherit shells of a previous
-# container with no process left inside them. Clearing them here keeps "one
-# namespace per account" true from the first launch.
-mkdir -p /var/run/netns /run/vh-netns
-rm -f /run/vh-netns/*.pasta.pid /run/vh-netns/*.pasta.pid.lock
-for stale in /var/run/netns/vh-*; do
-  [[ -e "$stale" ]] || continue
-  ip netns del "$(basename "$stale")" 2>/dev/null || true
-done
-
-# Whether a tenant can have a network at all is a host fact: /dev/net/tun, a
-# pasta that knows the options vh-jail passes, and forwards that reach the
-# tenant's own loopback in both directions. The probe exercises all of it once
-# and refuses the container, because the alternative is every sign-in timing out
-# with nothing in the log to read.
+# Tenants share the container network, so there is no namespace to rebuild.
+# The probe stays: a container whose loopback does not accept a connection
+# cannot run an instance, and that is worth failing at startup.
 node /opt/v-harness/bin/network-probe.mjs
 
 # dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
