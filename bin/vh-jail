@@ -102,13 +102,18 @@ unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   # (loader cache, TLS roots, timezone, NSS) and nothing else: no /etc/shadow,
   # no /etc/sudoers, no /etc/ld.so.preload. Identity files are written below.
   mkdir -p "$root/etc"
+  # chromium.d is not optional: /usr/bin/chromium is a shell wrapper that sources
+  # every file in it, and a missing directory aborts the wrapper before the
+  # browser starts ("cannot open /etc/chromium.d/*"), which reads as a broken
+  # browser. fonts/ is here for the same reason as the CJK packages: without
+  # the fontconfig directory a page of Chinese renders as tofu in the jail.
   for entry in \
     ld.so.cache ld.so.conf ld.so.conf.d alternatives \
     ssl/certs ssl/openssl.cnf \
     nsswitch.conf localtime timezone \
     mime.types services protocols \
     profile profile.d bash.bashrc bash_completion.d inputrc \
-    terminfo gitconfig; do
+    terminfo gitconfig chromium.d fonts; do
     bind_ro "etc/$entry"
   done
   ln -sfn /proc/mounts "$root/etc/mtab"
