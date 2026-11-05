@@ -230,7 +230,7 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
           type: 'text',
           text: value.markdown === ''
             ? JSON.stringify(value)
-            : `${JSON.stringify(value)}\n\n给用户看图：在回复正文里**原样**写入这一行（路径已按会话目录算好，不要改写）：\n${value.markdown}`,
+            : `${JSON.stringify(value)}\n\n图片已在上方结果卡片里永久展示（存在会话附件库，不受工作区文件清理影响）。不要在回复正文里写任何 markdown 图片引用或文件路径链接，直接用一句话说明结果即可。`,
         },
         ...(value.images ?? []).map(image => ({
           type: 'image' as const,
