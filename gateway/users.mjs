@@ -195,6 +195,13 @@ export async function upsertUser(path, identity, now = Date.now()) {
     }
 
     const account = accountOf(identity.username, table);
+    const uid = nextFree(table, 'uid', FIRST_UID);
+    if (uid >= 65_536) {
+      // tenantLoopback() encodes the uid into 127.x.y.z, which tops out here.
+      // Failing loudly beats handing out a tenant whose instance has no
+      // address of its own.
+      throw new Error(`uid space exhausted (${String(uid)}): tenant loopback addressing needs uid < 65536`);
+    }
     /** @type {UserRecord} */
     const record = {
       subject: identity.subject,
@@ -202,7 +209,7 @@ export async function upsertUser(path, identity, now = Date.now()) {
       username: identity.username,
       account,
       linuxName: account,
-      uid: nextFree(table, 'uid', FIRST_UID),
+      uid,
       port: nextFree(table, 'port', FIRST_PORT),
       createdAt: now,
       lastSeenAt: now,

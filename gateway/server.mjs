@@ -34,7 +34,7 @@ import {
   stopInstance,
   userPaths,
 } from './instances.mjs';
-import { instanceAddress } from './addressing.mjs';
+import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import {
   accessTokenFor,
   closeOfficeCapabilities,
@@ -648,7 +648,7 @@ function serviceHeaders(req, port) {
  */
 async function serviceTarget(subject, port) {
   const record = resolveService(subject, port);
-  if (record) return { host: instanceAddress(), port };
+  if (record) return { host: tenantLoopback(record.uid), port };
   const user = await findUser(USERS_FILE, subject);
   if (!user) return undefined;
   return resolveContainerPort(user.account ?? user.linuxName, port);
@@ -1252,8 +1252,8 @@ async function proxyRequest(req, res) {
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
-      // The instance listens on the loopback this gateway dials.
-      host: instanceAddress(),
+      // The instance listens on the tenant's own loopback address.
+      host: instanceAddress(instance.uid),
       port: instance.port,
       method: req.method,
       path,
@@ -1349,7 +1349,7 @@ async function proxyUpgrade(req, socket, head) {
   lines.push('', '');
   const raw = lines.join('\r\n');
 
-  const upstream = connect(instance.port, instanceAddress(), () => {
+  const upstream = connect(instance.port, instanceAddress(instance.uid), () => {
     upstream.write(raw);
     if (head?.length) upstream.write(head);
     upstream.pipe(socket);

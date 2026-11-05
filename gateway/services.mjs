@@ -347,6 +347,9 @@ export function restartService(subject, port) {
     {
       env: {
         HOME_ROOT,
+        // vh-jail allow-lists this port on the shared loopback under the
+        // strict per-tenant 127/8 policy it installs.
+        VH_GATEWAY_PORT: process.env.PORT ?? '8080',
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       },
       stdio: 'ignore',

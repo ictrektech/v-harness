@@ -26,6 +26,7 @@
 import { createServer, request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { chmodSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
@@ -969,6 +970,74 @@ async function ensureNetwork(tenant, name) {
     knownNetworks.add(name);
   }
   await attachSelf(name);
+  await syncNetworkIsolation(tenant, name);
+}
+
+/** The gateway port a container may open on this container's interfaces. */
+const GATEWAY_PORT = process.env.PORT ?? '8080';
+
+/** Networks whose isolation rules this process has already installed. */
+const isolatedNetworks = new Set();
+
+/** Probe result memo: false once iptables turned out to be unusable here. */
+let iptablesUsable;
+
+/**
+ * Install one iptables rule unless it is already present.
+ * @param {string[]} args - the rule spec exactly as `iptables -A` would take it.
+ */
+function iptablesOnce(args) {
+  if (iptablesUsable === false) return;
+  if (typeof process.getuid === 'function' && process.getuid() !== 0) return;
+  try {
+    execFileSync('iptables', ['-C', ...args.slice(1)], { stdio: 'ignore' });
+    return;
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') iptablesUsable = false;
+  }
+  try {
+    execFileSync('iptables', args, { stdio: 'ignore' });
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') iptablesUsable = false;
+    console.warn(`docker-proxy: could not install the network rule (${String(/** @type {Error} */ (error).message)})`);
+  }
+}
+
+/**
+ * Install the network isolation rules for one tenant container network.
+ *
+ * The jail's per-uid chain drops the private ranges wholesale, so the
+ * tenant's own bridges must be accepted ahead of it — and containers on the
+ * tenant-facing interfaces may open only the gateway port on this container,
+ * which keeps one tenant's container off every other tenant's loopback-bound
+ * service. Rules key on the network's real subnet (an existing network may
+ * predate the pinned pool) and are idempotent, so sync and re-sync are the
+ * same call. Any failure is a warning: without CAP_NET_ADMIN the deployment
+ * runs without this layer.
+ * @param {{ uid: number, account?: string }} tenant
+ * @param {string} name - host-side network name.
+ * @returns {Promise<void>}
+ */
+async function syncNetworkIsolation(tenant, name) {
+  if (isolatedNetworks.has(name)) return;
+  isolatedNetworks.add(name);
+  let subnet = tenantSubnet(tenant);
+  try {
+    const inspected = await daemonCall('GET', `/networks/${encodeURIComponent(name)}`);
+    const ipam = inspected.payload && typeof inspected.payload === 'object'
+      ? /** @type {Record<string, unknown>} */ (inspected.payload).IPAM
+      : undefined;
+    const config = Array.isArray(/** @type {Record<string, unknown>} */ (ipam ?? {}).Config)
+      ? /** @type {Record<string, unknown>[]} */ (/** @type {Record<string, unknown>} */ (ipam).Config)[0]
+      : undefined;
+    const reported = config && typeof config === 'object' ? config.Subnet : undefined;
+    if (typeof reported === 'string' && reported !== '') subnet = reported;
+  } catch (error) {
+    console.warn(`docker-proxy: could not read the subnet of ${name} (${String(/** @type {Error} */ (error).message)})`);
+  }
+  iptablesOnce(['-I', 'OUTPUT', '-m', 'owner', '--uid-owner', String(tenant.uid), '-d', subnet, '-j', 'ACCEPT']);
+  iptablesOnce(['-A', 'INPUT', '-s', subnet, '-p', 'tcp', '-m', 'conntrack', '--ctstate', 'NEW', '-m', 'tcp', '!', '--dport', GATEWAY_PORT, '-j', 'DROP']);
+  iptablesOnce(['-A', 'INPUT', '-s', subnet, '-p', 'udp', '-m', 'conntrack', '--ctstate', 'NEW', '-m', 'udp', '!', '--dport', GATEWAY_PORT, '-j', 'DROP']);
 }
 
 /**
@@ -1616,6 +1685,11 @@ export async function ensureDockerCapability(options) {
   capabilities.set(options.subject, starting);
   try {
     await starting;
+    // The default bridge is where every container the tenant starts lands
+    // unless it names another network, so its rules ride along with the
+    // capability: a gateway restart no longer waits for the next create to
+    // restore the tenant's own-container route.
+    await syncNetworkIsolation(options, `${OBJECT_PREFIX}${options.account}-default`);
   } catch (error) {
     capabilities.delete(options.subject);
     throw error;

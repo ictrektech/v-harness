@@ -20,12 +20,13 @@
  */
 
 import { request as httpRequest } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 
 const HEARTBEAT_MS = 10_000;
-// The instance ports are reserved (the tenant's own nft rule blocks them);
-// registering there would promise a panel entry the browser cannot open.
+// The instance ports are reserved (the tenant uid may not even reach them
+// under the jail's loopback policy); registering there would promise a panel
+// entry the browser cannot open.
 const RESERVED_MIN = 3100;
 const RESERVED_MAX = 3999;
 
@@ -106,10 +107,52 @@ function parseRunArgs() {
   return { name, port, basePath, cmd };
 }
 
+/**
+ * Wait briefly for the port to listen, then confirm the gateway will be able
+ * to dial it.
+ *
+ * The gateway reaches a registered service on the tenant's own loopback
+ * address (`VH_TENANT_IP`), so a listener bound strictly to `127.0.0.1` is
+ * invisible to it — the panel entry would exist and never open. A slow
+ * service that has not bound anything within the window registers as before;
+ * this check only rejects what is known to be unreachable.
+ * @param {number} port
+ * @returns {string | undefined} the refusal message, or undefined to proceed.
+ */
+function bindProblem(port) {
+  const tenantIp = process.env.VH_TENANT_IP;
+  if (tenantIp === undefined || tenantIp === '') return undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    let listeners = [];
+    try {
+      listeners = execFileSync('ss', ['-Hltn'], { encoding: 'utf8' }).split('\n');
+    } catch { /* no ss: nothing to check against */ }
+    const lines = listeners.filter((line) => new RegExp(`[:.]${String(port)}\\s`).test(line));
+    if (lines.length > 0) {
+      const bound = lines.map((line) => line.trim().split(/\s+/)[3] ?? '');
+      const dialable = bound.some((address) =>
+        address.startsWith(`0.0.0.0:${String(port)}`)
+        || address.startsWith(`*:${String(port)}`)
+        || address.startsWith(`[::]:${String(port)}`)
+        || address.startsWith(`${tenantIp}:${String(port)}`),
+      );
+      if (dialable) return undefined;
+      return `服务监听在 ${bound.join('、')}，网关要从 ${tenantIp}:${String(port)} 访问它。请给启动命令加 --host 0.0.0.0，或绑定 ${tenantIp}`;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
+  return undefined;
+}
+
 /** Register, supervise, heartbeat. */
 async function run() {
   const { name, port, basePath, cmd } = parseRunArgs();
   const child = spawn(cmd[0], cmd.slice(1), { stdio: 'inherit' });
+  const refusal = bindProblem(port);
+  if (refusal !== undefined) {
+    child.kill('SIGTERM');
+    die(refusal);
+  }
   const registration = { name, port, cmd, pid: child.pid, basePath };
 
   let registered = false;
@@ -160,7 +203,7 @@ async function run() {
     // showed as "stopped".
   }, HEARTBEAT_MS);
 
-  process.stderr.write(`vh-service: 「${name}」已登记 (127.0.0.1:${String(port)})，Ctrl-C 停止\n`);
+  process.stderr.write(`vh-service: 「${name}」已登记 (${process.env.VH_TENANT_IP ?? '127.0.0.1'}:${String(port)})，Ctrl-C 停止\n`);
 }
 
 /** List this tenant's registered services as JSON. */

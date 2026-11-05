@@ -28,11 +28,14 @@ x-v-harness-base: &v-harness-base
   environment: *v-harness-env
   # bin/vh-jail needs mount, pid and ipc namespaces so one tenant cannot see
   # another tenant's home, processes or shm; CAP_SYS_ADMIN covers the namespace
-  # syscalls and the jail mounts. Tenants share the container network by
-  # design, so NET_ADMIN and /dev/net/tun are no longer requested.
+  # syscalls and the jail mounts. Tenants share the container network by design;
+  # CAP_NET_ADMIN lets vh-jail install per-tenant iptables owner rules that
+  # keep one tenant off the loopback ports of another (no /dev/net/tun needed:
+  # no per-tenant namespace or user-space forwarder is involved).
   cap_add:
     - SYS_ADMIN
     - SYS_PTRACE
+    - NET_ADMIN
   security_opt:
     - seccomp:unconfined
     - apparmor:unconfined

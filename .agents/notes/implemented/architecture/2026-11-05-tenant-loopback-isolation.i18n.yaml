@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-05-tenant-loopback-isolation.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-05-tenant-loopback-isolation.md
+/agent-note-tenant-loopback-isolation:
+  en: 696f7b7d1ed02dee
+  zh: bba2e24a9c32d8b7
+/agent-note-tenant-loopback-isolation/problem:
+  en: f31287db3f49257f
+  zh: 7c90ff0c21c2e29e
+/agent-note-tenant-loopback-isolation/proposal:
+  en: 6752e10a8b1b4ba5
+  zh: 9edb600e2d6a6d7c
+/agent-note-tenant-loopback-isolation/what-the-measurements-say:
+  en: e712d8ba9f06e656
+  zh: 6fedb7188635aaeb
+/agent-note-tenant-loopback-isolation/alternatives-considered:
+  en: a11df9c259792e9d
+  zh: 8d51a8c8910d269b
+/agent-note-tenant-loopback-isolation/revisit-condition:
+  en: b5e0ae03969a9486
+  zh: 719b8ad0ac9e1f53

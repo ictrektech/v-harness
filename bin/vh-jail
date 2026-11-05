@@ -60,6 +60,95 @@ unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
   mount --make-rprivate /
   hostname "$VH_JAIL_HOSTNAME" 2>/dev/null || true
 
+  # Network isolation on the shared container network. Every tenant lives in
+  # the one network namespace, so the kernel has to say what stays reachable.
+  # Each tenant gets its own loopback address (encoded from the never-reused
+  # uid; gateway/addressing.mjs computes the same value for the dsh bind) and
+  # a per-uid OUTPUT chain: the tenant may talk to its own address, the
+  # gateway, and its DNS resolver; the rest of 127/8 and the RFC1918 ranges
+  # (container bridges of other tenants, the host-facing docker gateway) drop.
+  # The docker proxy inserts an ACCEPT for the own-container subnet of this
+  # tenant ahead of the chain, so the tenant still reaches its own containers.
+  # Every failure prints a warning and continues: a deployment without
+  # CAP_NET_ADMIN runs without this layer rather than refusing to start.
+  net_isolate() {
+    # The tenant address is exported whether or not the rules can be
+    # installed: services and ad-hoc listeners have to bind it (or 0.0.0.0)
+    # and the agent reaches them there, isolation or not.
+    local tenant_ip="127.$(( VH_JAIL_UID / 256 % 256 )).$(( VH_JAIL_UID % 256 )).1"
+    export VH_TENANT_IP="$tenant_ip"
+    if ! command -v iptables >/dev/null 2>&1; then
+      printf "vh-jail: iptables not found, network isolation skipped\n" >&2
+      return 0
+    fi
+    local chain="vh-uid-${VH_JAIL_UID}"
+    local gw_port="${VH_GATEWAY_PORT:-8080}"
+    local ns
+    if ! iptables -L "$chain" -n >/dev/null 2>&1 && ! iptables -N "$chain" >/dev/null 2>&1; then
+      printf "vh-jail: cannot create the isolation chain (missing CAP_NET_ADMIN?), network isolation skipped\n" >&2
+      return 0
+    fi
+    if ! iptables -F "$chain" >/dev/null 2>&1; then
+      printf "vh-jail: cannot flush the isolation chain, network isolation skipped\n" >&2
+      return 0
+    fi
+    warn() { printf "vh-jail: %s\n" "$1" >&2; }
+    # Replies ride the same chain: on the loopback the listener and the client
+    # share one uid, so the answer to a connection this tenant opened crosses
+    # OUTPUT again, addressed to an ephemeral port on 127.0.0.1. Established
+    # traffic passes before every drop; a NEW connection still has to match
+    # the allow-list below.
+    iptables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT \
+      || warn "could not allow established traffic"
+    # Own loopback world: the instance, the services, everything the tenant
+    # binds on its own address.
+    iptables -A "$chain" -d "$tenant_ip" -j ACCEPT \
+      || warn "could not allow the tenant loopback address"
+    # The resolvers the jail binds in; a non-loopback resolver would not be
+    # reached by the drops below, but naming it keeps the allow-list complete.
+    for ns in $(awk "/^nameserver /{print \$2}" /etc/resolv.conf 2>/dev/null); do
+      iptables -A "$chain" -d "$ns" -p udp --dport 53 -j ACCEPT \
+        || warn "could not allow the resolver $ns (udp)"
+      iptables -A "$chain" -d "$ns" -p tcp --dport 53 -j ACCEPT \
+        || warn "could not allow the resolver $ns (tcp)"
+    done
+    # The gateway: model calls and scheduled follow-ups dial it from here.
+    iptables -A "$chain" -d 127.0.0.1 -p tcp --dport "$gw_port" -j ACCEPT \
+      || warn "could not allow the gateway port"
+    # Deployment-supplied exceptions stay narrow and explicit (CIDR list).
+    if [ -n "${VH_NET_ALLOW_CIDRS:-}" ]; then
+      local cidr
+      for cidr in $(printf "%s" "$VH_NET_ALLOW_CIDRS" | tr "," " "); do
+        iptables -A "$chain" -d "$cidr" -j ACCEPT \
+          || warn "could not allow $cidr"
+      done
+    fi
+    # Everything else on the loopback: instances, services and ad-hoc
+    # listeners of other tenants, whatever address they bound.
+    iptables -A "$chain" -d 127.0.0.0/8 -j DROP \
+      || warn "could not drop the shared loopback"
+    # Private ranges: container bridges of other tenants and the host-facing
+    # docker gateway (172.16/12), plus the pools docker hands out besides it.
+    iptables -A "$chain" -d 172.16.0.0/12 -j DROP \
+      || warn "could not drop 172.16.0.0/12"
+    iptables -A "$chain" -d 192.168.0.0/16 -j DROP \
+      || warn "could not drop 192.168.0.0/16"
+    iptables -A "$chain" -d 10.0.0.0/8 -j DROP \
+      || warn "could not drop 10.0.0.0/8"
+    # Attach the chain to this uid, exactly once, whatever relaunched before.
+    while iptables -D OUTPUT -m owner --uid-owner "$VH_JAIL_UID" -j "$chain" 2>/dev/null; do :; done
+    iptables -A OUTPUT -m owner --uid-owner "$VH_JAIL_UID" -j "$chain" \
+      || warn "could not attach the isolation chain"
+    # No tenant address space on ::1: the whole IPv6 loopback drops. External
+    # IPv6 destinations are untouched.
+    if command -v ip6tables >/dev/null 2>&1; then
+      while ip6tables -D OUTPUT -m owner --uid-owner "$VH_JAIL_UID" -d ::1 -j DROP 2>/dev/null; do :; done
+      ip6tables -A OUTPUT -m owner --uid-owner "$VH_JAIL_UID" -d ::1 -j DROP \
+        || warn "could not drop the IPv6 loopback"
+    fi
+  }
+  net_isolate
+
 
   # The jail root is a fresh tmpfs; only what is bound below is reachable.
   root="/run/vh-root-$VH_JAIL_ACCOUNT"

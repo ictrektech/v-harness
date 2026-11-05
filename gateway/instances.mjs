@@ -21,7 +21,7 @@ import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'n
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
-import { instanceAddress } from './addressing.mjs';
+import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
@@ -207,13 +207,12 @@ function waitForLaunchUrl(child, timeoutMs) {
 /**
  * Exchange the launch URL for dsh's signed browser cookie.
  *
- * dsh announces a `127.0.0.1:<port>` URL from inside its own namespace, where
- * that address is the tenant's, not the gateway's. The request therefore goes
- * to the tenant's published address, while the Host header keeps naming
- * `127.0.0.1:<port>`: that authority is what the handed-back cookie is bound
- * to, and what every later forwarded request replays.
+ * dsh announces its launch URL on the tenant's own loopback address (the one
+ * its uid maps to). The request dials that address, while the Host header
+ * keeps naming `127.0.0.1:<port>`: that authority is what the handed-back
+ * cookie is bound to, and what every later forwarded request replays.
  * @param {string} launchUrl - the URL dsh printed on its own stdout.
- * @param {number} uid - tenant uid, which selects its published address.
+ * @param {number} uid - tenant uid, which selects its private loopback address.
  * @returns {Promise<{ cookie: string, expiresAt: number }>}
  */
 async function exchangeCookie(launchUrl, uid) {
@@ -223,7 +222,7 @@ async function exchangeCookie(launchUrl, uid) {
   const response = await new Promise((resolve, reject) => {
     const request = secure ? httpsRequest : httpRequest;
     const upstream = request({
-      host: instanceAddress(),
+      host: instanceAddress(uid),
       port,
       method: 'GET',
       path: `${target.pathname}${target.search}`,
@@ -451,7 +450,12 @@ async function launch(options) {
     account, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
     '--patch', '/usr/local/share/v-harness/vos.patch.yml',
-    '--host', '127.0.0.1',
+    // The tenant's own loopback address: the kernel treats all of 127/8 as
+    // local, and the per-tenant iptables rules keep every other uid off it.
+    '--host', tenantLoopback(record.uid),
+    // The cookie authority stays the shared-loopback form every forwarding
+    // path already speaks; the fence accepts it through this declaration.
+    '--trusted-host', `127.0.0.1:${String(record.port)}`,
     '--port', String(record.port),
     '--no-open',
   ];
@@ -465,6 +469,10 @@ async function launch(options) {
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,
       DSH_PERMISSION_MODE: 'workspace-write',
+      // vh-jail allow-lists the gateway port on the shared loopback so the
+      // instance can call back (scheduler, model proxying) under the strict
+      // per-tenant 127/8 policy it installs.
+      VH_GATEWAY_PORT: String(process.env.PORT ?? 8080),
       // Product skills shipped in the image (V-Office today). The provider
       // scans this root at rank 600, so a tenant cannot shadow them from
       // `$DSH_HOME/skills` or `.agents/skills`.
