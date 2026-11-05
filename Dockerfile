@@ -256,6 +256,22 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       docker.io \
  && rm -rf /var/lib/apt/lists/*
 
+# `docker compose` is a CLI plugin: docker.io ships the engine and the `docker`
+# CLI but not this binary, and Debian's `docker-compose` package is the retired
+# v1 Python tool. The plugin is published only in Docker's own CE repository, so
+# it is extracted from that .deb rather than installed: apt would then place
+# docker-ce-cli beside the distro's docker.io. /usr/libexec/docker/cli-plugins is
+# one of the directories the CLI scans for plugins, and the jail exports /usr.
+ARG COMPOSE_VERSION=5.7.0
+ARG COMPOSE_MIRROR=https://mirrors.aliyun.com/docker-ce
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    deb="docker-compose-plugin_${COMPOSE_VERSION}-1~debian.12~bookworm_${arch}.deb"; \
+    curl -fsSL -o /tmp/compose.deb "${COMPOSE_MIRROR}/linux/debian/dists/bookworm/pool/stable/${arch}/${deb}"; \
+    dpkg-deb -x /tmp/compose.deb /tmp/compose; \
+    install -D -m 0755 /tmp/compose/usr/libexec/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose; \
+    rm -rf /tmp/compose /tmp/compose.deb
+
 # pnpm is needed the first time a user's profile installs its bundles.
 RUN corepack enable \
  && npm config set registry "${NPM_REGISTRY}" \

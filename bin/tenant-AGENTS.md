@@ -67,8 +67,9 @@ docker logs web
 docker ps
 ```
 
-- **前台的 `docker run`（不带 `-d`）不可用**：它要 attach 到容器输出，网关不支持把连接切成裸流，直接回 501。用上面的 `create` + `start`；带 `-d` 的 `docker run` 不 attach，可以用，输出仍然靠 `docker logs`。
-- **没有 `docker compose`**：镜像里既没有 compose 插件，也没有独立的 `docker-compose`。多容器应用用 `docker network create app-net`，再逐个 `docker create` / `docker start` 并挂到该网络。
+- **`docker run`、`docker exec`（含 `-it`）都可用**：网关只把指向**你自己容器**的 attach / exec 连接切成裸流转发；共享容器和别人的容器一律 403。
+- **`docker compose` 可用**：镜像内置 compose v2 插件，`up -d`、`ps`、`logs`、`down -v` 都是原生的。网络和卷会自动加上你的前缀，你看到的是 `app_default`、`dbdata` 这样的短名；别人的对象不会出现在 `docker network ls` / `docker volume ls` 里。
+- **compose 的 `build:` 仍需关掉 BuildKit**：`DOCKER_BUILDKIT=0 docker compose up -d --build`。默认的 BuildKit 控制面不在能力范围内。
 - `docker info` 直接 403，`docker images` 只列你自己的镜像，这是刻意裁剪，不是坏了；`docker image inspect <name>` 仍能看明细。删镜像（`docker rmi`）不在能力范围内，只能删自己的容器。
 - 这些边界是故意的：宿主机控制权不交出去，重试不会改变结果。需要的能力换成等价做法，例如把多步操作写进镜像的启动命令。
 
@@ -77,8 +78,7 @@ docker ps
 - **网络**：不指定 `--network` 时落在你自己的 `vh-<账号>-default` 上，和别的租户二层隔离；需要多容器互通就 `docker network create app-net`（同样会被加上前缀）。
 - **权限**：`--privileged`、`--cap-add ALL`、`--net host`、`--pid host`、`-v /:/host`（除自己 home 外的任何宿主路径）、把端口绑到 `0.0.0.0`、`docker system prune`、读别人的镜像，都会被网关拒绝并返回 403。
 - **资源**：单容器的内存/CPU/PID 有上限，超了会被拒或起不来。
-- `docker exec`（含 `-it`）和 `docker run -it` **不可用**：它们要把连接切成裸流，网关只做普通 HTTP 转发，一律立刻返回 501。调试靠 `docker logs`、`docker cp`，或把要排查的动作写进镜像/启动命令里重跑。
-- **构建**：`DOCKER_BUILDKIT=0 docker build ...` 可用。默认（BuildKit）不行——镜像里没有 buildx，而且它也要劫持连接。
+- **构建**：`DOCKER_BUILDKIT=0 docker build ...` 可用；compose 的 `build:` 同理。默认（BuildKit）不行——它的控制面不在能力范围内。
 - 容器端口能打开，但**不出现在右侧服务面板里**（面板列的是 `vh-service` 登记的进程服务）。要让用户从面板点开，仍然用 `vh-service`；容器适合跑数据库、Redis、别人的镜像这类现成组件。
 
 ## 别做的事

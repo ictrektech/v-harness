@@ -24,6 +24,7 @@
  */
 
 import { createServer, request as httpRequest } from 'node:http';
+import { connect as netConnect } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { chmodSync, readFileSync } from 'node:fs';
@@ -133,6 +134,28 @@ export function tenantName(tenant, name) {
   if (name.startsWith(own)) return name.slice(own.length);
   if (name.startsWith(SHARED_PREFIX)) return name;
   return undefined;
+}
+
+/**
+ * Whether one daemon event belongs to this tenant.
+ *
+ * The stream carries every tenant's containers, networks and volumes. The
+ * `name` attribute is the field that identifies the owner, and every object the
+ * gateway creates carries the tenant prefix; the ownership label is accepted
+ * too because it survives a rename.
+ * @param {Tenant} tenant
+ * @param {unknown} event
+ * @returns {boolean}
+ */
+export function eventVisible(tenant, event) {
+  if (event === null || typeof event !== 'object') return false;
+  const actor = /** @type {Record<string, unknown>} */ (event).Actor;
+  if (actor === null || typeof actor !== 'object') return false;
+  const attributes = /** @type {Record<string, unknown>} */ (actor).Attributes;
+  if (attributes === null || typeof attributes !== 'object') return false;
+  const fields = /** @type {Record<string, unknown>} */ (attributes);
+  if (String(fields['vh.tenant'] ?? '') === tenant.account) return true;
+  return String(fields.name ?? '').startsWith(`${OBJECT_PREFIX}${tenant.account}-`);
 }
 
 /**
@@ -574,6 +597,91 @@ export function mutateNamedObject(tenant, apiPath, body) {
   return { body: { ...body, Name: translated.name } };
 }
 
+/**
+ * Refuse a network connect/disconnect that names somebody else's container.
+ *
+ * The path is already this tenant's network, but the body names the container
+ * by id, which carries no prefix the gateway can inspect inline. Letting it
+ * through would join a foreign container to this tenant's segment — a two-way
+ * path between tenants that the create filter never sees.
+ * @param {Tenant} tenant
+ * @param {Record<string, unknown>} body
+ * @returns {Promise<{ body?: Record<string, unknown>, error?: string }>}
+ */
+async function validateNetworkMember(tenant, body) {
+  const id = String(body.Container ?? '');
+  if (id === '') return { error: 'container is required' };
+  const own = await ownContainers(tenant.account);
+  return own.some((entry) => String(entry.Id ?? '').startsWith(id))
+    ? { body }
+    : { error: `container "${id}" is not yours` };
+}
+
+const OBJECT_PATH = /^\/(networks|volumes)\/([^/]+)(\/.*)?$/;
+
+/**
+ * Translate the network or volume reference in a path.
+ *
+ * Compose addresses both by name (`app_default`, `dbdata`), and the daemon
+ * keeps every tenant's objects in the same flat namespace, so the same rewrite
+ * that applies at create time has to apply on every later call. Ids are
+ * rejected: unlike a container id there is no listing this module can check
+ * them against cheaply, and compose never uses one.
+ * @param {Tenant} tenant
+ * @param {string} apiPath
+ * @param {string} method
+ * @returns {Promise<{ path: string } | { error: string }>}
+ */
+export async function namespaceObjectPath(tenant, apiPath, method) {
+  const [path, query] = apiPath.split('?');
+  const match = OBJECT_PATH.exec(path ?? '');
+  if (match === null) return { path: apiPath };
+  const [, kind, ref, rest] = match;
+
+  if (kind === 'networks' && ref === 'create') return { path: apiPath };
+  if (kind === 'volumes' && ref === 'create') return { path: apiPath };
+
+  const noun = kind === 'networks' ? 'network' : 'volume';
+  const suffix = query === undefined ? '' : `?${query}`;
+
+  if (/^[0-9a-f]{12,64}$/i.test(ref)) {
+    // Compose removes a network by the id it read from the listing, so an id
+    // that names one of this tenant's networks has to be accepted. The owner
+    // check uses the same prefix rule as the listing filter.
+    if (kind !== 'networks') return { error: `${noun} "${ref}" is not addressable by id` };
+    const ids = await ownNetworkIds(tenant);
+    if (!ids.some((id) => id === ref || id.startsWith(ref))) {
+      return { error: `network "${ref}" is not yours` };
+    }
+    return { path: `/networks/${ref}${rest ?? ''}${suffix}` };
+  }
+
+  const translated = namespaceObjectName(tenant, noun, ref);
+  if ('error' in translated) return translated;
+  if (method === 'DELETE' && translated.name.startsWith(SHARED_PREFIX)) {
+    return { error: `${noun} "${ref}" is shared and cannot be removed` };
+  }
+  return { path: `/${kind}/${translated.name}${rest ?? ''}${suffix}` };
+}
+
+/**
+ * Ids of the networks this tenant owns.
+ * @param {Tenant} tenant
+ * @returns {Promise<string[]>}
+ */
+async function ownNetworkIds(tenant) {
+  const listed = await daemonCall('GET', '/networks');
+  if (listed.status !== 200 || !Array.isArray(listed.payload)) return [];
+  const own = `${OBJECT_PREFIX}${tenant.account}-`;
+  const ids = [];
+  for (const entry of listed.payload) {
+    if (!entry || typeof entry !== 'object') continue;
+    const item = /** @type {Record<string, unknown>} */ (entry);
+    if (String(item.Name ?? '').startsWith(own)) ids.push(String(item.Id ?? ''));
+  }
+  return ids;
+}
+
 const API_VERSION = /^\/v\d+(?:\.\d+)?(?=\/|$)/;
 
 /**
@@ -593,10 +701,11 @@ export function stripApiVersion(apiPath) {
  * Decide what to do with one Engine API request.
  *
  * `allow` forwards unchanged, `mutate` rewrites the body first, `filter`
- * rewrites the response, `deny` answers 403 locally.
+ * rewrites the response, `events` streams only this tenant's own events, and
+ * `deny` answers 403 locally.
  * @param {string} method
  * @param {string} apiPath
- * @returns {{ action: 'allow' } | { action: 'mutate' } | { action: 'filter' } | { action: 'deny', reason: string }}
+ * @returns {{ action: 'allow' } | { action: 'mutate' } | { action: 'filter' } | { action: 'events' } | { action: 'deny', reason: string }}
  */
 export function classify(method, apiPath) {
   const clean = stripApiVersion(apiPath).split('?')[0];
@@ -640,14 +749,56 @@ export function classify(method, apiPath) {
   }
   if (/^\/images\/[^/]+\/(json|history|tag)$/.test(clean)) return { action: 'allow' };
 
-  if (clean === '/networks/json' || clean === '/volumes') {
+  if (clean === '/networks' || clean === '/volumes') {
     return method === 'GET' ? { action: 'filter' } : { action: 'deny', reason: 'method not allowed' };
   }
   if (clean === '/networks/create' || clean === '/volumes/create') {
     return method === 'POST' ? { action: 'mutate' } : { action: 'deny', reason: 'method not allowed' };
   }
+  if (/^\/networks\/[^/]+$/.test(clean)) {
+    if (method === 'GET') return { action: 'filter' };
+    if (method === 'DELETE') return { action: 'allow' };
+    return { action: 'deny', reason: 'method not allowed' };
+  }
+  if (/^\/networks\/[^/]+\/(connect|disconnect)$/.test(clean)) {
+    // The body names the container by id, so it needs the same ownership check
+    // the container paths get before the request is forwarded.
+    return method === 'POST' ? { action: 'mutate' } : { action: 'deny', reason: 'method not allowed' };
+  }
+  if (/^\/volumes\/[^/]+$/.test(clean)) {
+    if (method === 'GET') return { action: 'filter' };
+    if (method === 'DELETE') return { action: 'allow' };
+    return { action: 'deny', reason: 'method not allowed' };
+  }
+  // Compose follows container state through this stream. It is long-lived and
+  // unfiltered by the daemon, so the events themselves are filtered below.
+  if (clean === '/events') {
+    return method === 'GET' ? { action: 'events' } : { action: 'deny', reason: 'method not allowed' };
+  }
 
   return { action: 'deny', reason: `${method} ${clean} is not part of the tenant Docker capability` };
+}
+
+/**
+ * The only upgrades a tenant CLI legitimately opens.
+ *
+ * `docker run`, `docker exec` and `docker attach` switch the connection to a
+ * raw stream after the daemon answers `101`. That stream carries no API shape to
+ * filter, so the decision has to be made on the path before the daemon socket is
+ * opened: attaching to a container, or starting an exec, and nothing else.
+ * BuildKit's `/grpc` is deliberately not here — it is a full control plane, not
+ * one container's stdio.
+ * @param {string} apiPath - version prefix allowed.
+ * @returns {{ action: 'allow' } | { action: 'deny', reason: string }}
+ */
+export function classifyUpgrade(apiPath) {
+  const clean = stripApiVersion(apiPath).split('?')[0] ?? '';
+  if (/^\/containers\/[^/]+\/attach$/.test(clean)) return { action: 'allow' };
+  if (/^\/exec\/[^/]+\/start$/.test(clean)) return { action: 'allow' };
+  return {
+    action: 'deny',
+    reason: `upgrade of ${clean} is not available through the tenant Docker capability`,
+  };
 }
 
 /**
@@ -1040,6 +1191,191 @@ function relay(req, res, method, apiPath) {
   });
 }
 
+/** Longest single event line the feed may carry before it is treated as junk. */
+const MAX_EVENT_LINE = 1024 * 1024;
+
+/**
+ * Stream the daemon's event feed, keeping only this tenant's objects.
+ *
+ * Compose depends on this stream to notice containers reaching `running`. The
+ * daemon has no per-tenant view of it, so the filter happens here, line by line.
+ * Anything that cannot be parsed or attributed is dropped rather than forwarded:
+ * a leak on this stream names other tenants' containers and images.
+ * @param {Tenant} tenant
+ * @param {import('node:http').ServerResponse} res
+ * @param {string} apiPath
+ * @returns {Promise<void>}
+ */
+function relayEvents(tenant, res, apiPath) {
+  return new Promise((resolve) => {
+    const upstream = httpRequest({ socketPath: dockerSock(), path: apiPath, method: 'GET' }, (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode ?? 502, { 'content-type': 'application/json' });
+      // The first event may be minutes away; without this the client waits on a
+      // response whose headers were only staged, not sent.
+      res.flushHeaders();
+      let buffered = '';
+      upstreamRes.setEncoding('utf8');
+
+      const forward = (line) => {
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (eventVisible(tenant, event)) res.write(`${line}\n`);
+      };
+      const drain = (final) => {
+        let index = buffered.indexOf('\n');
+        while (index !== -1) {
+          const line = buffered.slice(0, index);
+          buffered = buffered.slice(index + 1);
+          if (line !== '') forward(line);
+          index = buffered.indexOf('\n');
+        }
+        if (final && buffered !== '') {
+          forward(buffered);
+          buffered = '';
+        }
+      };
+
+      upstreamRes.on('data', (chunk) => {
+        buffered += chunk;
+        drain(false);
+        if (buffered.length > MAX_EVENT_LINE) {
+          upstream.destroy();
+          res.destroy();
+          resolve();
+        }
+      });
+      upstreamRes.on('end', () => { drain(true); res.end(); resolve(); });
+      upstreamRes.on('error', () => { res.destroy(); resolve(); });
+    });
+    upstream.on('error', (error) => {
+      if (!res.headersSent) json(res, 502, { message: `docker daemon unreachable: ${error.message}` });
+      else res.destroy();
+      resolve();
+    });
+    // `http.request` buffers the request line until the body is ended; without
+    // this the daemon is never asked and the client waits forever.
+    upstream.end();
+    res.on('close', () => { upstream.destroy(); resolve(); });
+  });
+}
+
+/** HTTP status text for the refusals this module writes itself. */
+const UPGRADE_STATUS = { 403: 'Forbidden', 501: 'Not Implemented', 502: 'Bad Gateway' };
+
+/**
+ * Answer an upgrade with a plain HTTP response and close the client socket.
+ * @param {import('node:net').Socket} socket
+ * @param {number} status
+ * @param {string} message
+ */
+function refuseUpgrade(socket, status, message) {
+  if (socket.destroyed) return;
+  const body = JSON.stringify({ message });
+  socket.end(
+    `HTTP/1.1 ${status} ${UPGRADE_STATUS[status] ?? 'Error'}\r\n` +
+      'Content-Type: application/json\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      'Connection: close\r\n\r\n' +
+      body,
+  );
+}
+
+/**
+ * Resolve an exec id back to its container and check the owner.
+ *
+ * `/exec/{id}/start` names an id the daemon minted; unlike a container name it
+ * carries no prefix the gateway could inspect. The lookup happens before the
+ * upgrade, because once the stream is raw there is nothing left to check.
+ * @param {Tenant} tenant
+ * @param {string} clean - version-stripped path, query removed.
+ * @returns {Promise<{ error?: string }>}
+ */
+async function authorizeExec(tenant, clean) {
+  const match = /^\/exec\/([^/]+)\/start$/.exec(clean);
+  if (match === null) return { error: 'exec stream is not available' };
+  const id = match[1];
+  const found = await daemonCall('GET', `/exec/${encodeURIComponent(id)}/json`);
+  const containerId = found.status === 200 && found.payload !== null && typeof found.payload === 'object'
+    ? String(/** @type {Record<string, unknown>} */ (found.payload).ContainerID ?? '')
+    : '';
+  if (containerId === '') return { error: `exec "${id}" is not yours` };
+  const own = await ownContainers(tenant.account);
+  return own.some((entry) => String(entry.Id ?? '').startsWith(containerId))
+    ? {}
+    : { error: `exec "${id}" is not yours` };
+}
+
+/**
+ * One `Upgrade` connection.
+ *
+ * This is the only place the capability hands out a raw byte stream. Every
+ * check — path, container ownership, exec ownership — runs before
+ * `netConnect(dockerSock())`, so a refusal never opens the daemon socket at all.
+ * @param {Tenant} tenant
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:net').Socket} socket
+ * @param {Buffer} head - bytes already read after the upgrade request.
+ * @returns {Promise<void>}
+ */
+export async function handleTenantUpgrade(tenant, req, socket, head) {
+  socket.on('error', () => {});
+
+  const requested = req.url ?? '/';
+  const decision = classifyUpgrade(requested);
+  if (decision.action === 'deny') {
+    refuseUpgrade(socket, 501, decision.reason);
+    return;
+  }
+
+  const clean = stripApiVersion(requested);
+  const pathOnly = clean.split('?')[0] ?? '';
+  let upstreamPath;
+  if (pathOnly.endsWith('/attach')) {
+    const named = await namespaceContainerPath(tenant, clean);
+    if ('error' in named) {
+      refuseUpgrade(socket, 403, named.error);
+      return;
+    }
+    // `namespaceContainerPath` lets `vh-shared-*` objects through so a tenant
+    // can read a shared image or database. A raw stream is not a read — it can
+    // carry stdin — so only the tenant's own containers qualify here.
+    const ref = /^\/containers\/([^/]+)\//.exec(named.path)?.[1] ?? '';
+    if (!/^[0-9a-f]{12,64}$/i.test(ref) && !ref.startsWith(`${OBJECT_PREFIX}${tenant.account}-`)) {
+      refuseUpgrade(socket, 403, `container "${ref}" is not yours`);
+      return;
+    }
+    upstreamPath = named.path;
+  } else {
+    const owned = await authorizeExec(tenant, pathOnly);
+    if (owned.error !== undefined) {
+      refuseUpgrade(socket, 403, owned.error);
+      return;
+    }
+    upstreamPath = clean;
+  }
+
+  const upstream = netConnect(dockerSock());
+  upstream.on('error', (error) => {
+    refuseUpgrade(socket, 502, `docker daemon unreachable: ${error.message}`);
+  });
+  upstream.on('connect', () => {
+    const lines = [`${req.method ?? 'GET'} ${upstreamPath} HTTP/1.1`];
+    for (let index = 0; index < req.rawHeaders.length; index += 2) {
+      lines.push(`${req.rawHeaders[index]}: ${req.rawHeaders[index + 1]}`);
+    }
+    upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
+    if (head.length > 0) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  socket.on('close', () => { upstream.destroy(); });
+  upstream.on('close', () => { socket.destroy(); });
+}
+
 /**
  * One request through the filter.
  *
@@ -1051,10 +1387,9 @@ function relay(req, res, method, apiPath) {
  * @returns {Promise<void>}
  */
 export async function handleTenantRequest(tenant, req, res) {
-  // `docker exec`, `attach` and `run -it` switch the connection to a raw
-  // stream (`Upgrade: hijack`, or `tcp` for a non-tty exec); a plain HTTP
-  // forward cannot carry that, and answering 101 while dropping the stream
-  // would look like it worked. Refuse both instead of hanging the CLI.
+  // Upgrades are handled by `handleTenantUpgrade`; this branch is only the
+  // fallback for a server that was started without that listener, and keeps the
+  // CLI from hanging instead of seeing a refusal it can report.
   if (req.headers.upgrade !== undefined) {
     json(res, 501, {
       message: 'interactive connections (exec, attach, run -it) are not available through the tenant Docker capability',
@@ -1066,7 +1401,9 @@ export async function handleTenantRequest(tenant, req, res) {
   const requested = stripApiVersion(req.url ?? '/');
   const named = requested.startsWith('/containers/')
     ? await namespaceContainerPath(tenant, requested)
-    : { path: requested };
+    : requested.startsWith('/networks/') || requested.startsWith('/volumes/')
+      ? await namespaceObjectPath(tenant, requested, method)
+      : { path: requested };
   if ('error' in named) {
     json(res, 403, { message: named.error });
     return;
@@ -1075,6 +1412,11 @@ export async function handleTenantRequest(tenant, req, res) {
   const decision = classify(method, apiPath);
   if (decision.action === 'deny') {
     json(res, 403, { message: decision.reason });
+    return;
+  }
+
+  if (decision.action === 'events') {
+    await relayEvents(tenant, res, requested);
     return;
   }
 
@@ -1089,7 +1431,9 @@ export async function handleTenantRequest(tenant, req, res) {
     const parsed = /** @type {Record<string, unknown>} */ (await readJson(req));
     const mutated = apiPath.startsWith('/containers/create')
       ? await prepareContainerCreate(tenant, parsed)
-      : mutateNamedObject(tenant, apiPath.split('?')[0], parsed);
+      : /\/(connect|disconnect)$/.test(apiPath.split('?')[0] ?? '')
+        ? await validateNetworkMember(tenant, parsed)
+        : mutateNamedObject(tenant, apiPath.split('?')[0], parsed);
     if (mutated.error !== undefined) {
       json(res, 403, { message: mutated.error });
       return;
@@ -1145,6 +1489,48 @@ export function filterListing(tenant, apiPath, payload) {
     }
     return visible;
   }
+  if (apiPath === '/networks' && Array.isArray(payload)) {
+    const visible = [];
+    for (const entry of payload) {
+      if (!entry || typeof entry !== 'object') continue;
+      const item = /** @type {Record<string, unknown>} */ (entry);
+      const renamed = tenantName(tenant, String(item.Name ?? ''));
+      if (renamed !== undefined) visible.push({ ...item, Name: renamed });
+    }
+    return visible;
+  }
+  if (apiPath === '/volumes' && payload !== null && typeof payload === 'object') {
+    const source = /** @type {Record<string, unknown>} */ (payload);
+    const list = Array.isArray(source.Volumes) ? source.Volumes : [];
+    const visible = [];
+    for (const entry of list) {
+      if (!entry || typeof entry !== 'object') continue;
+      const item = { .../** @type {Record<string, unknown>} */ (entry) };
+      const renamed = tenantName(tenant, String(item.Name ?? ''));
+      if (renamed === undefined) continue;
+      // `Mountpoint` is a host path; it describes the host layout and is not
+      // needed to use the volume.
+      delete item.Mountpoint;
+      visible.push({ ...item, Name: renamed });
+    }
+    return { ...source, Volumes: visible };
+  }
+  if (/^\/networks\/[^/]+$/.test(apiPath) && payload !== null && typeof payload === 'object') {
+    const item = { .../** @type {Record<string, unknown>} */ (payload) };
+    // The gateway joins every tenant network; that membership is host
+    // infrastructure, not part of the tenant's view.
+    delete item.Containers;
+    const renamed = tenantName(tenant, String(item.Name ?? ''));
+    if (renamed !== undefined) item.Name = renamed;
+    return item;
+  }
+  if (/^\/volumes\/[^/]+$/.test(apiPath) && payload !== null && typeof payload === 'object') {
+    const item = { .../** @type {Record<string, unknown>} */ (payload) };
+    delete item.Mountpoint;
+    const renamed = tenantName(tenant, String(item.Name ?? ''));
+    if (renamed !== undefined) item.Name = renamed;
+    return item;
+  }
   if (apiPath === '/images/json' && Array.isArray(payload)) {
     const visible = [];
     for (const entry of payload) {
@@ -1189,6 +1575,14 @@ async function start(options) {
     });
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
+  // Upgrades never reach the request handler above: Node routes them here
+  // instead, which keeps the checked path and the raw stream in one function.
+  server.on('upgrade', (req, socket, head) => {
+    void handleTenantUpgrade(tenant, req, socket, head).catch((error) => {
+      console.error(`docker capability upgrade failed (${tenant.account}):`, error);
+      socket.destroy();
+    });
+  });
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
