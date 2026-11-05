@@ -366,11 +366,12 @@ ip netns exec "$NETNS_NAME" unshare --mount --pid --ipc --uts --fork --mount-pro
     export PATH=\"\$HOME/.npm-global/bin:\$HOME/.local/bin:\$HOME/.cargo/bin:\$HOME/.bun/bin:\$HOME/.nvm/current/bin:/usr/local/bin:/usr/bin:/bin\"
     # The tenant gets a real docker CLI pointed at the filtered endpoint the
     # gateway publishes. The host socket itself is never mounted, so this is
-    # the only path from here to the daemon; absent when not published. No
-    # single quotes in this block: the body is one single-quoted string.
-    if [ -S \"\$HOME/.dsh/docker.sock\" ]; then
-      export DOCKER_HOST=\"unix://\$HOME/.dsh/docker.sock\"
-    fi
+    # the only path from here to the daemon. The gateway publishes that socket
+    # a moment after this jail starts, so the path is set unconditionally: an
+    # existence guard here would leave every session launched before the
+    # publish without a DOCKER_HOST until the tenant signs in again. No single
+    # quotes in this block: the body is one single-quoted string.
+    export DOCKER_HOST=\"unix://\$HOME/.dsh/docker.sock\"
     # Bound what one tenant can consume inside its own process tree. Without
     # these, a fork bomb or a multi-gigabyte file slows every other tenant,
     # which is itself a signal that somebody else is there.

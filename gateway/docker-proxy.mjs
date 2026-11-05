@@ -24,6 +24,7 @@
  */
 
 import { createServer, request as httpRequest } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { chmodSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
@@ -309,10 +310,16 @@ export async function namespaceContainerPath(tenant, apiPath) {
 
   if (ref === 'json') return { path: apiPath };
   if (ref === 'create') {
-    if (query === undefined) return { path: apiPath };
-    const params = new URLSearchParams(query);
+    const params = new URLSearchParams(query ?? '');
     const name = params.get('name');
-    if (name === null || name === '') return { path: apiPath };
+    // The CLI sends no `name` unless the tenant typed one. An unprefixed
+    // container never matches this tenant's own listing, so start, wait and
+    // inspect are each refused as "not yours" one call after the create.
+    if (name === null || name === '') {
+      const auto = randomUUID().replaceAll('-', '').slice(0, 12);
+      params.set('name', `${OBJECT_PREFIX}${tenant.account}-${auto}`);
+      return { path: `${String(path)}?${params.toString()}` };
+    }
     const translated = namespaceObjectName(tenant, 'container', name);
     if ('error' in translated) return translated;
     params.set('name', translated.name);
