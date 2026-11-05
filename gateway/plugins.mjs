@@ -279,6 +279,14 @@ async function syncAgentPlugins(user) {
       }
     }
   }
+  // A name the manifest lists but the payload lacks used to leave no trace: the
+  // loop above only walks packages that are present, so the tenant silently
+  // booted without that plugin (no market, no bot) and nothing was logged. An
+  // image whose payload was copied without these packages must say so.
+  for (const name of plugins) {
+    if (await exists(join(payloadModules, name))) continue
+    console.error(`agent plugin missing from payload: ${name} (tenant ${user.linuxName}, root ${AGENT_PLUGIN_ROOT})`)
+  }
 }
 
 /**
