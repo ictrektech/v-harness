@@ -116,13 +116,48 @@ await initServices({ stateRoot: STATE_ROOT });
 
 /**
  * Whether the browser reached us over HTTPS (terminated by the VOS ingress).
+ *
+ * The ingress does not always forward `x-forwarded-proto`, and guessing wrong
+ * towards HTTPS is expensive: `SameSite=None` without `Secure` is discarded by
+ * the browser, so every request then arrives with an empty Cookie header. When
+ * the proxy header is absent, fall back to what a browser always sends on its
+ * own fetches — `Origin` on POST, `Referer` on GET.
+ *
  * @param {import('node:http').IncomingMessage} req
  * @returns {boolean}
  */
 function isSecure(req) {
+  const forced = process.env.VH_PUBLIC_HTTPS;
+  if (forced === '1') return true;
+  if (forced === '0') return false;
   const forwarded = req.headers['x-forwarded-proto'];
   const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  return value?.split(',')[0]?.trim().toLowerCase() === 'https';
+  const proto = value?.split(',')[0]?.trim().toLowerCase();
+  if (proto) return proto === 'https';
+  if (req.socket?.encrypted) return true;
+  for (const name of ['origin', 'referer']) {
+    const header = req.headers[name];
+    if (typeof header === 'string' && header.startsWith('https://')) return true;
+  }
+  return false;
+}
+
+/**
+ * Cookie attributes for every Set-Cookie this gateway emits.
+ *
+ * Inside the platform iframe a `Lax` cookie is not attached at all when the
+ * frame is cross-site — that is the `cookie=` empty log, not a browser that
+ * refuses to store it. `None` is required in that context, `Secure` is
+ * mandatory alongside it, and `Partitioned` keeps the pair stored where
+ * third-party cookies are blocked. Plain HTTP stays on `Lax`, because `None`
+ * without `Secure` is the combination browsers throw away.
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {{ secure?: boolean, partitioned?: boolean, sameSite?: 'Lax' | 'None' }}
+ */
+function cookiePolicy(req) {
+  if (!isSecure(req)) return { sameSite: 'Lax' };
+  return { secure: true, partitioned: true, sameSite: 'None' };
 }
 
 /**
@@ -130,7 +165,12 @@ function isSecure(req) {
  * @returns {import('./session.mjs').Session | undefined}
  */
 function authenticate(req) {
-  return sessions.loadSession(parseCookies(req.headers.cookie)[SESSION_COOKIE], String(req.headers['user-agent'] ?? ''));
+  const cookies = parseCookies(req.headers.cookie);
+  const raw = req.headers['x-vh-session'];
+  const header = typeof raw === 'string' && raw !== '' ? raw : undefined;
+  // The cookie is what the proxied UI relies on; the header is the fallback for
+  // the bootstrap page, which cannot count on a cookie having been stored.
+  return sessions.loadSession(cookies[SESSION_COOKIE] || header, String(req.headers['user-agent'] ?? ''));
 }
 
 /** Per-session VOS subject re-check results: sid → { subject, checkedAt }. */
@@ -329,12 +369,15 @@ async function authorize(cfg){
     code_verifier:verifier,client_id:cfg.clientId});
   if(!tokens.access_token)throw new Error('VOS OIDC 未返回 access token');
   const res=await fetch('/__vh/auth',{
-    method:'POST',credentials:'same-origin',
+    method:'POST',credentials:'include',
     headers:{'content-type':'application/json','x-vh-csrf':cfg.csrf||''},
     body:JSON.stringify({access_token:tokens.access_token,
       refresh_token:tokens.refresh_token,expires_in:tokens.expires_in})});
-  const body=await res.json().catch(()=>({}));
+  const body=await res.json().catch(()=>({})).then(v=>v||{});
   if(!res.ok)throw new Error(body.error||'VOS 登录失败');
+  // Keep the session here as well: when the browser refuses the cookie this is
+  // the only way the next request can still identify itself.
+  if(body.session)try{sessionStorage.setItem('vh_session',body.session);}catch{}
 }
 function showRenew(error){
   document.getElementById('m').textContent='登录状态已恢复，但能力授权已失效';
@@ -349,7 +392,12 @@ function showRenew(error){
   detail.append(document.createElement('br'),renew,skip);
 }
 async function boot(){
-  const cfg=await(await fetch('/__vh/session',{credentials:'same-origin',cache:'no-store'})).json();
+  let saved='';
+  try{saved=sessionStorage.getItem('vh_session')||'';}catch{}
+  const cfg=await(await fetch('/__vh/session',{
+    credentials:'include',cache:'no-store',
+    headers:saved?{'x-vh-session':saved}:{}})).json();
+  if(cfg.session)try{sessionStorage.setItem('vh_session',cfg.session);}catch{}
   // Re-prove the signed-in VOS account on every load. The cookie only names
   // the tenant served last, so trusting it here is how two accounts in one
   // browser ended up sharing an instance. VOS silent auth answers "who is
@@ -829,13 +877,16 @@ async function handleControl(req, res, url) {
         const csrf = newCsrfToken();
         json(res, 200, {
           authenticated: true,
+          // Handed back so the bootstrap page can keep the session even when
+          // the browser refuses to store the cookie (cross-site iframe).
+          session: session.sid,
           user: { username: record.username, namespace: record.namespace, locale },
           tokenReady: hasUsableTokens(record.namespace),
           clientId: CLIENT_ID,
           scope: SCOPE,
           csrf,
         }, {
-          'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
+          'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, ...cookiePolicy(req) }),
         });
         return;
       }
@@ -864,7 +915,7 @@ async function handleControl(req, res, url) {
       }, {
         'set-cookie': cookie(SESSION_COOKIE, sid, {
           maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
-          secure: isSecure(req),
+          ...cookiePolicy(req),
         }),
       });
       return;
@@ -873,7 +924,7 @@ async function handleControl(req, res, url) {
     // The double-submit token must also reach the page: the cookie is
     // HttpOnly, so the client cannot read it back to set the header.
     json(res, 200, { authenticated: false, clientId: CLIENT_ID, scope: SCOPE, csrf }, {
-      'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, secure: isSecure(req) }),
+      'set-cookie': cookie(CSRF_COOKIE, csrf, { maxAgeSeconds: 600, ...cookiePolicy(req) }),
     });
     return;
   }
@@ -977,11 +1028,12 @@ async function handleControl(req, res, url) {
     });
     json(res, 200, {
       authenticated: true,
+      session: sid,
       user: { username: record.username, namespace: record.namespace },
     }, {
       'set-cookie': cookie(SESSION_COOKIE, sid, {
         maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
-        secure: isSecure(req),
+        ...cookiePolicy(req),
       }),
     });
     return;
@@ -997,7 +1049,7 @@ async function handleControl(req, res, url) {
       stopInstance(session.subject);
     }
     json(res, 200, { authenticated: false }, {
-      'set-cookie': cookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, secure: isSecure(req) }),
+      'set-cookie': cookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, ...cookiePolicy(req) }),
     });
     return;
   }

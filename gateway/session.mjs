@@ -133,16 +133,28 @@ function userAgentHash(userAgent) {
 }
 
 /**
- * Serialize a Set-Cookie value with the fixed session attributes.
+ * Serialize a Set-Cookie value.
+ *
+ * `SameSite` is a parameter, not a constant: the app is rendered inside the
+ * platform's iframe, and when that frame is a different site a `Lax` cookie is
+ * never attached (Lax rides top-level navigations only). `None` is the only
+ * value that survives there, and browsers reject `None` without `Secure`;
+ * CHIPS (`Partitioned`) keeps it stored where third-party cookies are blocked.
+ *
  * @param {string} name
  * @param {string} value - empty string clears the cookie.
- * @param {{ maxAgeSeconds?: number, secure?: boolean }} options
+ * @param {{ maxAgeSeconds?: number, secure?: boolean, partitioned?: boolean, sameSite?: 'Lax' | 'Strict' | 'None' }} options
  * @returns {string}
  */
 export function cookie(name, value, options = {}) {
-  const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax'];
+  const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', `SameSite=${options.sameSite ?? 'Lax'}`];
   if (options.maxAgeSeconds !== undefined) parts.push(`Max-Age=${String(options.maxAgeSeconds)}`);
-  if (options.secure) parts.push('Secure');
+  if (options.secure) {
+    parts.push('Secure');
+    // A Partitioned cookie is only accepted together with Secure; emitting it
+    // on its own makes the browser drop the whole cookie.
+    if (options.partitioned) parts.push('Partitioned');
+  }
   return parts.join('; ');
 }
 
