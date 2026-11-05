@@ -200,7 +200,7 @@ async function subjectRecheck(session, record) {
   }
   subChecks.set(session.sid, { subject: session.subject, checkedAt: now });
   if (AUTH_DISABLED) return true;
-  const token = accessTokenFor(record.namespace);
+  const token = await accessTokenFor(record.namespace);
   if (token === undefined) return true;
   try {
     const identity = await verifyVosToken(token);
@@ -1242,7 +1242,7 @@ async function proxyRequest(req, res) {
     return;
   }
 
-  const path = stripPrefix(req.url ?? '/');
+  const path = stripPrefix(req.url ?? '/').replace(/^\/__vh-ui-v2\/assets\//, '/assets/');
   const headers = upstreamHeaders(req, instance.port, instance.cookie);
   // Only the document carries the shell injection; assets and RPC answers are
   // streamed untouched. The shell is rewritten as text, so this one request
@@ -1291,8 +1291,12 @@ async function proxyRequest(req, res) {
         resolve();
       });
       upstreamRes.on('end', () => {
+        const html = injectHostLocale(Buffer.concat(chunks).toString('utf8'), locale);
+        // Give the entire module graph a fresh URL after older gateways served
+        // incompatible responses at the shared asset URLs. Relative imports
+        // stay in this directory, so the entry and vendor modules move together.
         const body = Buffer.from(
-          injectHostLocale(Buffer.concat(chunks).toString('utf8'), locale),
+          documentRequest ? html.replaceAll('./assets/', './__vh-ui-v2/assets/') : html,
           'utf8',
         );
         delete responseHeaders['content-length'];
