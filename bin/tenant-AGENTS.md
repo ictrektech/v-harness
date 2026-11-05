@@ -53,6 +53,7 @@ setsid nohup node worker.js > ~/workspace/worker.log 2>&1 < /dev/null &
   `chromium --headless=new --no-sandbox --disable-dev-shm-usage --user-data-dir="$HOME/.cache/chromium" <url>`：
   jail 的 `/dev/shm` 只有 64MB，不带 `--disable-dev-shm-usage` 渲染进程会被 OOM；沙箱起不来时靠 `--no-sandbox`。
   用户数据目录必须放在自己的 `$HOME` 下，那是你私有的。
+  容器里没有 dbus，stderr 会刷一串 `Failed to connect to the bus`；那是警告不是故障，判断标准是 stdout 有没有 DOM 输出。
 - 有 `docker` CLI，连的是宿主机 daemon，容器与镜像落在宿主上（运维 `docker ps` 看得到）。用法见下节。
 
 ## 容器
