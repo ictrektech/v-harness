@@ -139,7 +139,11 @@ function isSecure(req) {
     const header = req.headers[name];
     if (typeof header === 'string' && header.startsWith('https://')) return true;
   }
-  return false;
+  // Nothing told us the scheme. The VOS ingress terminates TLS for every route
+  // it proxies, and the frame it renders in may strip Referer, so assume HTTPS.
+  // A deployment served over plain HTTP must set VH_PUBLIC_HTTPS=0; otherwise
+  // the Secure cookie below is dropped and every request arrives sessionless.
+  return true;
 }
 
 /**
