@@ -58,13 +58,19 @@ setsid nohup node worker.js > ~/workspace/worker.log 2>&1 < /dev/null &
 
 ## 容器
 
-`docker` 直接可用（`DOCKER_HOST` 已指向你自己的能力 socket，不用设）。这是真 docker：拉镜像、`docker run`、`docker ps` 都正常，产物落在宿主机上（运维看得到）。
+`docker` 直接可用（`DOCKER_HOST` 已指向你自己的能力 socket，不用设）。这是真 docker：拉镜像、创建容器、看日志、`docker ps` 都正常，产物落在宿主机上（运维看得到）。
 
 ```sh
-docker run -d --name web -p 8080:80 nginx:alpine
-docker ps
+docker create --name web -p 8080:80 nginx:alpine
+docker start web
 docker logs web
+docker ps
 ```
+
+- **前台的 `docker run`（不带 `-d`）不可用**：它要 attach 到容器输出，网关不支持把连接切成裸流，直接回 501。用上面的 `create` + `start`；带 `-d` 的 `docker run` 不 attach，可以用，输出仍然靠 `docker logs`。
+- **没有 `docker compose`**：镜像里既没有 compose 插件，也没有独立的 `docker-compose`。多容器应用用 `docker network create app-net`，再逐个 `docker create` / `docker start` 并挂到该网络。
+- `docker info` 直接 403，`docker images` 只列你自己的镜像，这是刻意裁剪，不是坏了；`docker image inspect <name>` 仍能看明细。删镜像（`docker rmi`）不在能力范围内，只能删自己的容器。
+- 这些边界是故意的：宿主机控制权不交出去，重试不会改变结果。需要的能力换成等价做法，例如把多步操作写进镜像的启动命令。
 
 - **端口**：`-p 8080:80` 里宿主侧那个端口会被换成你自己段内的一个端口（别人用不了），但 `8080` 这个号仍然记得住——用户打开 `/__vh/svc/8080/` 或 `/__vh/svc/80/`（容器端口）都能到，两者等价。`docker port web` 看到的是宿主侧的真实端口，不用把它给用户。
 - **名字**：`--name web` 在宿主上叫 `vh-<你的账号>-web`，你这边 `docker ps` / `docker inspect web` 看到的仍然是 `web`。
