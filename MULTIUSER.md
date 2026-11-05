@@ -101,7 +101,7 @@ skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access t
 - **注册与心跳一体，不扫端口**：`vh-service run` 包裹启动，被包裹的命令就是注册信息和重启命令，进程退出心跳即停——状态不用猜。root 扫端口扫得出监听，扫不出"哪个该展示、叫什么、怎么重启"。
 - **鉴权绑定 subject**：A 注册的服务 B 列表里没有，URL 直开也 401（反代先比 subject 再转发，不接受任意端口透传）。
 - **重启 = 独立 jail**：网关对该租户再跑一次 `vh-jail`（workspace 同源，`/tmp` 与实例各自私有）；实例停了服务也没了，面板重启先拉实例再拉服务，对用户是一步。
-- **端口约定**：服务端口避开实例保留段 `3100-3999`，并落在 pasta 已转发的清单里（`3000-3099`、`5173`、`8000-8099`、`9000-9099`，见「已知取舍」）；清单纯的端口面板里能看到，但浏览器打开会连不上。
+- **端口约定**：服务端口避开实例保留段 `3100-3999`，否则 `/__vh/svc/<port>` 会打到租户自己的 dsh 上。
 - **打开形态**：子路径反代要求应用支持 base path；不支持的应用在注册时声明 `basePath`，确实需要再谈子域。
 - **命令留痕边界**：`cmd` 只存网关 state（`$STATE_ROOT`），不进租户 home、不进会话日志；注册/重启动作写实例日志。
 
@@ -174,9 +174,7 @@ VOS 里部署走 `build_image.sh` + `ictrek.app/scripts/package.sh`，见 [RELEA
 - **单用户能拖垮全容器**：容器内做不到每用户 cgroup，只有容器级限制。
 - **已做 mount / pid / ipc namespace 隔离**：`vh-jail` 先进入 mount+pid+ipc namespace，用 tmpfs 遮住 `/data/users` 再只 bind 回自己的 home，然后降权。租户看不到别人的目录或进程，`/dev/shm` 与 System V 共享内存都是各租户私有的。
 - **挂载是白名单**：`/etc` 不再整体 bind，只给 loader/TLS/时区/NSS 等必需文件，`passwd`/`group`/`hosts` 按租户现生成；`/dev` 是最小设备节点 + 独立 devpts + 私有 shm；`/proc` 重挂为 `nosuid,nodev,noexec`。降权时清空 bounding/inheritable/ambient cap 并加 `--no-new-privs`。
-- **每个租户一个 net namespace**：`vh-jail` 用 `ip netns` 为账号建一个持久命名空间，pasta（passt）以用户态方式给它外网、DNS 和独立 loopback——不需要 bridge、veth 或 iptables 规则。租户的 `127.0.0.1:3000` 与别人的 `127.0.0.1:3000` 是两个世界；命名空间跨实例存活，重启 dsh 不会带走还在跑的服务。代价是每个租户常驻一个 pasta 进程，随命名空间一起活到容器重启。
-- **网关如何看见租户**：pasta 把命名空间发布到该租户独有的宿主回环地址 `127.<n>.<m>.1`（`gateway/netns.mjs` 的 `previewIp`），网关经此访问实例端口与 `/__vh/svc/<port>` 反代。pasta 在启动时就把每条转发都绑上，所以转发端口是固定清单：实例端口 + `3000-3099`、`5173`、`8000-8099`、`9000-9099`；清单外的端口浏览器打不开（租户 CLI 面板仍能看到服务，只是"打开"会连不上）。
-- **租户如何看见网关**：`--config-net` 把宿主默认路由（`ip route` 的 `default via`）写进命名空间，pasta **默认**就把该网关地址映射到宿主 loopback，模型调用（`VH_SCHEDULER_URL`）走这条路；`--no-map-gw` 才是关掉它的开关，`--map-host-loopback` 不是 pasta 的选项（曾按参考实现误加，导致探针在每个租户上都拒绝启动，已移除）。容器仍需 `CAP_NET_ADMIN`（pasta 建 tap、配地址）与 `/dev/net/tun`（compose `devices`；宿主机没加载 `tun` 模块时容器直接起不来，不会降级）——pasta 以 `--runas 0:0` 运行，`setns` 与 tap 需要这份权限。
-- **启动自检**：`bin/entrypoint` 先清掉上次遗留的命名空间与 pasta pidfile，再跑 `bin/network-probe.mjs`——建一个临时命名空间让 pasta 发布，双向各打一个回包（网关→租户 loopback、租户→网关地址）。缺 `/dev/net/tun`、image 里的 pasta 不认识 `--config-net` / `--dns-forward` / `--runas`、或任一方向不通，容器直接退出并打印结构化报告，不会带着"登录超时"上线。
+- **网络不隔离**：租户共享容器网络，实例与服务都监听容器回环，网关经 `127.0.0.1` 访问（`gateway/addressing.mjs`）。跨租户可见性由端口分配保证：实例端口按 uid 从 `3101` 起独占，服务端口不得进入 `3100-3999`。每租户一个网络命名空间加 pasta 的方案已移除，理由见 [MULTIUSER-ISOLATION-v2.md](MULTIUSER-ISOLATION-v2.md) 顶部的废弃说明。
+- **启动自检**：`bin/entrypoint` 跑 `bin/network-probe.mjs`，只验证容器回环可读写；不通则容器退出并打印报告，不会带着"登录超时"上线。
 - **有容器运行时，但只有经网关代理的那一种**：租户在 jail 里拿到 `DOCKER_HOST=$HOME/.dsh/docker.sock`，网关（root，持有宿主 `/var/run/docker.sock`）在那个 socket 上发布一个按租户过滤的 Engine API，CLI 照常说话，容器与镜像落在宿主 daemon 上，运维 `docker ps` / `docker images` 看得到。租户自身无 capability，够不着宿主 socket。被拒的：`privileged`、`--cap-add ALL`/`SYS_ADMIN`、host 的 net/pid/ipc/uts/user/cgroup、宿主路径挂载、`0.0.0.0` 发布、`prune`、别人的镜像与容器、未列出的端点。端口强制落在按 uid 派生的段内（默认 20000 起，每租户 100 个），`-p 8080:80` 的请求侧端口以受控标签保留，`/__vh/svc/8080` 与 `/__vh/svc/80` 等价。[实现在此](HANDOFF-docker-capability.md)。被否掉的是**租户内自跑 rootless podman**（要在嵌套命名空间挂 `/proc`，只有提成 `privileged` 才行）：[实测数据与否决理由见此](.agents/notes/rejected/architecture/2026-11-04-tenant-container-runtime.md)。
-- **实例端口保留段**：实例端口从 `3101` 起分配，`3100-3999` 因此不接受服务登记——`/__vh/svc/<port>` 在那段里只会打到租户自己的 dsh。清单外的端口同理：不是网关拒绝，而是 pasta 没有转发。
+- **实例端口保留段**：实例端口从 `3101` 起分配，`3100-3999` 因此不接受服务登记——`/__vh/svc/<port>` 在那段里只会打到租户自己的 dsh。

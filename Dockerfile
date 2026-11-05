@@ -223,12 +223,6 @@ ENV NODE_ENV=production \
 # which reads like a broken repository rather than a missing image dependency.
 # openssh-client covers the `git+ssh://` form of the same specs.
 #
-# passt supplies `pasta`, which is the network of each tenant namespace: it needs
-# no bridge, no veth pair and no iptables rule, while still giving the tenant
-# outbound access, DNS and its own loopback. `iproute2` above creates and joins
-# the namespaces. pasta creates a tap device, so the container needs /dev/net/tun
-# (see ictrek.app/src/docker-compose.yml).
-#
 # A real browser is a product requirement for the browser-use and computer-use
 # plugins: they drive a page, not an HTTP client. Debian's `chromium` installs
 # to /usr/bin/chromium and /usr/lib/chromium, and the jail binds /usr read-only
@@ -252,7 +246,6 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates curl wget \
-      passt \
       build-essential python3 python3-pip python3-venv linux-libc-dev xz-utils \
       postgresql-client sqlite3 \
       git openssh-client \
@@ -262,22 +255,6 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       chromium fonts-liberation fonts-noto-cjk \
       docker.io \
  && rm -rf /var/lib/apt/lists/*
-
-# Debian 12 ships passt 0.0~git20230309, from before `--map-host-loopback`
-# existed. `bin/vh-jail` needs that option to publish the gateway inside a
-# tenant namespace, and `bin/network-probe.mjs` refuses an image without it.
-# Building the upstream source here links this image's glibc 2.36, which the
-# trixie package cannot (it wants 2.38).
-ARG PASST_SOURCE=0.0~git20261002.cba3570
-RUN cd /tmp \
- && curl -fsSLO "http://${APT_MIRROR}/debian/pool/main/p/passt/passt_${PASST_SOURCE}.orig.tar.xz" \
- && tar -xf "passt_${PASST_SOURCE}.orig.tar.xz" \
- && rm -f "passt_${PASST_SOURCE}.orig.tar.xz" \
- && cd passt-*/ \
- && make \
- && install -m 0755 passt /usr/bin/passt \
- && ln -sfn passt /usr/bin/pasta \
- && rm -rf /tmp/passt-*
 
 # pnpm is needed the first time a user's profile installs its bundles.
 RUN corepack enable \

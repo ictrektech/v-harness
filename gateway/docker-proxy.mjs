@@ -45,10 +45,9 @@ const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 
 /**
  * Published container ports land on the host, so they need a range that is
- * neither the instance range (3100-3999, the tenant's own dsh) nor the pasta
- * forwarded ranges (3000-3099, 5173, 8000-8099, 9000-9099) — a port in those
- * would be shadowed by the tenant's own namespace. 100 ports per tenant, keyed
- * by uid so two tenants never collide.
+ * neither the instance range (3100-3999, the tenant's own dsh) nor a port a
+ * tenant may already be listening on inside its jail. 100 ports per tenant,
+ * keyed by uid so two tenants never collide.
  */
 const PORT_RANGE_BASE = Number(process.env.VH_DOCKER_PORT_BASE ?? 20_000);
 const PORT_RANGE_SLOTS = Number(process.env.VH_DOCKER_PORT_SLOTS ?? 90);

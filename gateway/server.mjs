@@ -34,7 +34,7 @@ import {
   stopInstance,
   userPaths,
 } from './instances.mjs';
-import { previewIp } from './netns.mjs';
+import { instanceAddress } from './addressing.mjs';
 import {
   accessTokenFor,
   closeOfficeCapabilities,
@@ -601,7 +601,7 @@ async function handleServiceAction(req, res, url) {
   }
   const port = Number(match[1]);
   const result = match[2] === 'restart'
-    ? restartService(record.subject, port, record.port)
+    ? restartService(record.subject, port)
     : stopService(record.subject, port);
   console.log(`service ${match[2]}: ${record.account ?? record.linuxName} port=${String(port)} -> ${String(result.status)}`);
   json(res, result.status, result.status === 200 ? { ok: true } : { error: result.error, message: result.message });
@@ -638,18 +638,17 @@ function serviceHeaders(req, port) {
  * Resolve `/__vh/svc/<port>` to the address the gateway dials.
  *
  * A registered service comes first: registering is the tenant's explicit
- * statement about that port, and it listens on `127.0.0.1` inside the tenant's
- * own namespace, reachable only at the address pasta publishes the namespace
- * on. Everything else is a container the tenant started: those publish on the
- * host's loopback instead (the create filter pins `HostIp` there), because the
- * host daemon, not the tenant namespace, runs them.
+ * statement about that port, and it listens on the container loopback the
+ * gateway dials. Everything else is a container the tenant started: those
+ * publish on the host's loopback instead (the create filter pins `HostIp`
+ * there), because the host daemon runs them.
  * @param {string} subject
  * @param {number} port
  * @returns {Promise<{ host: string, port: number } | undefined>}
  */
 async function serviceTarget(subject, port) {
   const record = resolveService(subject, port);
-  if (record) return { host: previewIp(record.uid), port };
+  if (record) return { host: instanceAddress(), port };
   const user = await findUser(USERS_FILE, subject);
   if (!user) return undefined;
   return resolveContainerPort(user.account ?? user.linuxName, port);
@@ -1253,9 +1252,8 @@ async function proxyRequest(req, res) {
 
   await new Promise((resolve) => {
     const upstream = httpRequest({
-      // The instance's 127.0.0.1 belongs to its own namespace; the gateway
-      // reaches it only at the address pasta publishes it on.
-      host: previewIp(instance.uid),
+      // The instance listens on the loopback this gateway dials.
+      host: instanceAddress(),
       port: instance.port,
       method: req.method,
       path,
@@ -1351,7 +1349,7 @@ async function proxyUpgrade(req, socket, head) {
   lines.push('', '');
   const raw = lines.join('\r\n');
 
-  const upstream = connect(instance.port, previewIp(instance.uid), () => {
+  const upstream = connect(instance.port, instanceAddress(), () => {
     upstream.write(raw);
     if (head?.length) upstream.write(head);
     upstream.pipe(socket);

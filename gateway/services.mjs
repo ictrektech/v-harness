@@ -2,9 +2,8 @@
  * Tenant-run web services, surfaced in the portal UI.
  *
  * A tenant may run its own web app inside the jail (say, `127.0.0.1:3004`).
- * That address belongs to the tenant's own network namespace, so neither the
- * browser nor another tenant can reach it; the gateway publishes the namespace
- * on a per-tenant host address (see `netns.mjs`) and does three jobs here:
+ * That is the container's loopback: a browser cannot reach it, and the gateway
+ * dials it directly (see `addressing.mjs`). Three jobs here:
  *
  *   1. Accept registrations and heartbeats on a per-tenant Unix socket
  *      (`<home>/.dsh/vh-services.sock`, 0600, owner = the tenant). The tenant's
@@ -323,16 +322,14 @@ export function resolveService(subject, port) {
  * command. Independent of the dsh instance — workspace files come from the
  * same physical home, while /tmp stays private to each jail.
  *
- * The jail joins the tenant's existing network namespace, so it is handed the
- * same network values an instance launch is: pasta forwards the instance port
- * for whichever jail starts it, and a restart that omitted the port would leave
- * the running instance unreachable from the gateway.
+ * The jail needs nothing but its identity: the service listens on the same
+ * container loopback the gateway dials, and the instance's port belongs to the
+ * instance process, not to this one.
  * @param {string} subject
- * @param {number} port - the service's own port inside the namespace.
- * @param {number} instancePort - the tenant's dsh port, forwarded by the same pasta.
+ * @param {number} port - the service's own port on the container loopback.
  * @returns {{ status: number, error?: string, message?: string }}
  */
-export function restartService(subject, port, instancePort) {
+export function restartService(subject, port) {
   const record = registry.get(subject)?.get(port);
   if (!record) return { status: 404, error: 'not-found', message: '服务不存在' };
   if (isRunning(record)) return { status: 409, error: 'already-running', message: `「${record.name}」正在运行` };
@@ -351,7 +348,6 @@ export function restartService(subject, port, instancePort) {
       env: {
         HOME_ROOT,
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-        VH_JAIL_PORT: String(instancePort),
       },
       stdio: 'ignore',
       detached: true,

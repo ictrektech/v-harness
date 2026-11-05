@@ -1,5 +1,7 @@
 # v-harness 多租户隔离方案（v2）
 
+> **已废弃 2026-11-05**：本文描述的每租户 `ip netns` + pasta 网络隔离已从代码中删除，租户现共享容器网络（见 [MULTIUSER.md](MULTIUSER.md) 的「已知取舍」）。保留本文仅作设计记录，任务列表与代码落点不再代表现状。
+
 [v1 原稿](MULTIUSER-ISOLATION.md) · [部署总览](MULTIUSER.md)
 
 目标不变：用户 A 的实例里，B 不存在。

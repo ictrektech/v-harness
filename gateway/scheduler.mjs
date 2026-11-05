@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { GATEWAY_IP } from './netns.mjs';
+import { GATEWAY_IP } from './addressing.mjs';
 import { accessTokenFor } from './office.mjs';
 
 const ORIGIN = process.env.V_SCHEDULER_URL ?? 'http://v-scheduler:8080';
@@ -11,9 +11,9 @@ const keys = new Map();
 /**
  * Create one inference-only capability for a tenant process.
  *
- * The URL names the gateway as the tenant sees it: inside its own network
- * namespace `127.0.0.1` is the tenant's loopback, not the gateway's, so pasta
- * maps a fixed address onto the gateway instead (see `netns.mjs`).
+ * The URL names the gateway as the tenant sees it. Tenants share the container
+ * network, so that is the same loopback the gateway binds (see
+ * `addressing.mjs`).
  */
 export function schedulerEnvironment(namespace) {
   let key = keys.get(namespace);

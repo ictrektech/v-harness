@@ -2,12 +2,11 @@
  * Per-user dsh instance lifecycle.
  *
  * Each user owns one `dsh --profile web` process running as `vh-xxxxxxxx`, on a
- * fixed port inside that user's own network namespace. The gateway never speaks
- * dsh's auth protocol itself: it reads the launch URL the process prints,
- * exchanges it for dsh's own signed cookie, and replays that cookie on every
- * forwarded request. Both the exchange and the replay travel over the address
- * pasta publishes the namespace on (see `netns.mjs`), because the instance's
- * `127.0.0.1` belongs to the tenant.
+ * fixed port of the container's network. The gateway never speaks dsh's auth
+ * protocol itself: it reads the launch URL the process prints, exchanges it for
+ * dsh's own signed cookie, and replays that cookie on every forwarded request.
+ * Both the exchange and the replay dial `addressing.mjs`, which is loopback
+ * today.
  *
  * The cookie outlives the process because its signing key lives in the user's
  * `.credentials.yaml` and its authority is the fixed instance port. Only the
@@ -22,7 +21,7 @@ import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'n
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
-import { previewIp } from './netns.mjs';
+import { instanceAddress } from './addressing.mjs';
 import { syncPlugins } from './plugins.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
@@ -224,7 +223,7 @@ async function exchangeCookie(launchUrl, uid) {
   const response = await new Promise((resolve, reject) => {
     const request = secure ? httpsRequest : httpRequest;
     const upstream = request({
-      host: previewIp(uid),
+      host: instanceAddress(),
       port,
       method: 'GET',
       path: `${target.pathname}${target.search}`,
@@ -462,9 +461,6 @@ async function launch(options) {
       // vh-jail checks the host home against this root before entering the
       // jail; without it the jail refuses every launch on a /data deployment.
       HOME_ROOT,
-      // The tenant shares the container network now, so vh-jail needs nothing
-      // but the port it was allocated.
-      VH_JAIL_PORT: String(record.port),
       HOME: jailHome,
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,
