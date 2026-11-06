@@ -271,7 +271,33 @@ function bundleComponentManifests(manifest: ProfileManifest, dir: string, anchor
   })
 }
 
-/** Execute pnpm inside a profile whose caller already holds the profile write lock.
+/** The error pnpm raises for a node_modules tree whose recorded store no longer
+ * matches the store it resolves now: a home or XDG root moved under an existing
+ * tree, and pnpm refuses to add a package to it. */
+const UNEXPECTED_STORE_CODE = 'ERR_PNPM_UNEXPECTED_STORE'
+
+/**
+ * Execute pnpm on a profile whose caller already holds the profile write lock.
+ * A tree written under an earlier layout records a store that no longer matches
+ * the one pnpm resolves now, and every later add refuses outright. A plain
+ * install rewrites the store metadata with zero downloads, so the first refusal
+ * repairs the tree and repeats the run once: whichever layout a deployment
+ * upgrades from, the next install recovers by itself.
+ * @param context Launcher-owned profile and resolution locations.
+ * @param args Pnpm arguments, before relative path anchoring.
+ * @param options Output, activation and cancellation policy.
+ * @returns Exit status, whether the silence bound stopped the run, and the diagnostic path.
+ */
+export async function runProfilePnpm(
+  context: PackageOperationContext, args: readonly string[], options: PackageOperationOptions,
+): Promise<PackageResult> {
+  const attempt = await runProfilePnpmOnce(context, args, options)
+  if (attempt.exitCode === 0 || !attempt.output.includes(UNEXPECTED_STORE_CODE)) return attempt
+  await runProfilePnpmOnce(context, ['install'], { ...options, activateNewBundles: false })
+  return runProfilePnpmOnce(context, args, options)
+}
+
+/** Execute one pnpm operation inside a profile whose caller already holds the profile write lock.
  * Newly installed or updated direct dependencies are checked even when activation is disabled;
  * an untouched dependency never blocks an unrelated operation and stays denied at startup.
  * Compatibility denial restores the profile manifest and lockfile, but leaves downloaded modules on disk.
@@ -282,7 +308,7 @@ function bundleComponentManifests(manifest: ProfileManifest, dir: string, anchor
  * A compatibility denial returns exit code 1. Service output is bounded; CLI output uses inherited descriptors.
  * The diagnostic file is closed on return or rejection, including preparation and spawn failures.
  */
-export async function runProfilePnpm(
+async function runProfilePnpmOnce(
   context: PackageOperationContext, args: readonly string[], options: PackageOperationOptions,
 ): Promise<PackageResult> {
   const dir = context.dir ?? resolveProfileDir(context.profile, context.home)
