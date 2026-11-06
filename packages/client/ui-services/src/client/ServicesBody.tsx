@@ -50,7 +50,7 @@ export function ServicesBody({ useTabInfo, useStore, actions, t }: ServicesBodyP
   /** The gesture in flight; one at a time keeps two rows from racing. */
   const [pending, setPending] = useState<Pending | undefined>(undefined)
   /** Failure lines keyed by port: the answer belongs beside the row that asked. */
-  const [failures, setFailures] = useState<Readonly<Record<number, string>>>({})
+  const [failures, setFailures] = useState<ReadonlyMap<number, string>>(() => new Map())
   const mounted = useRef(true)
 
   useEffect(() => {
