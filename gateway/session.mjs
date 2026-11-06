@@ -64,6 +64,10 @@ export async function openSessionStore(path, { ttlMs }) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL');
+  // The data volume is shared storage, where WAL locks arrive late and in
+  // bursts; without a busy timeout one unlucky touch kills a login or a
+  // socket upgrade outright.
+  db.exec('PRAGMA busy_timeout = 5000');
   db.exec(SCHEMA);
 
   const insert = db.prepare(
