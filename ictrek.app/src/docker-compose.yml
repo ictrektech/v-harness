@@ -65,6 +65,14 @@ x-v-harness-base: &v-harness-base
     - "traefik.http.routers.v-harness-api.rule=(PathPrefix(`/api`) || PathPrefix(`/plugins`) || PathPrefix(`/assets`) || PathPrefix(`/__vh`) || Path(`/favicon.ico`)) && (HeaderRegexp(`Referer`, `/app/com\\.ictrek\\.v-harness/`) || PathPrefix(`/__vh`))"
     - "traefik.http.routers.v-harness-api.priority=1300"
     - "traefik.http.routers.v-harness-api.service=v-harness"
+    # A plugin serving its own routes (`/dsh-gitea/config`) issues them at the
+    # root, where no path prefix identifies the application. The Referer still
+    # does: it is the workspace page that made the call. Catch those requests
+    # here so they reach the gateway instead of the platform's 404 — this holds
+    # even when the injected bridge could not run.
+    - "traefik.http.routers.v-harness-ref.rule=HeaderRegexp(`Referer`, `/app/com\\.ictrek\\.v-harness/`)"
+    - "traefik.http.routers.v-harness-ref.priority=1200"
+    - "traefik.http.routers.v-harness-ref.service=v-harness"
     - "traefik.http.services.v-harness.loadbalancer.server.port=8080"
   healthcheck:
     test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/__vh/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

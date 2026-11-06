@@ -33,6 +33,16 @@ import { listUsers } from './users.mjs';
 const LAUNCH_TIMEOUT_MS = 90_000;
 /** One loopback round trip: a slow exchange means the instance is not answering. */
 const EXCHANGE_TIMEOUT_MS = 15_000;
+/**
+ * dsh prints its launch URL from the listener callback, but the socket may not
+ * accept a dial yet: the first connect can be refused even though the URL is
+ * already on stdout. Retrying that window is what keeps a healthy boot from
+ * being killed and launched again.
+ */
+const EXCHANGE_RETRY_MS = 250;
+const RETRYABLE_EXCHANGE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ETIMEDOUT',
+]);
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const LOG_DIR_NAME = 'logs';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
@@ -205,24 +215,36 @@ function waitForLaunchUrl(child, timeoutMs) {
 }
 
 /**
- * Exchange the launch URL for dsh's signed browser cookie.
+ * Whether a failed exchange never reached dsh at all.
  *
- * dsh announces its launch URL on the tenant's own loopback address (the one
- * its uid maps to). The request dials that address, while the Host header
- * keeps naming `127.0.0.1:<port>`: that authority is what the handed-back
- * cookie is bound to, and what every later forwarded request replays.
+ * A refused or dropped connection is proof the single-use launch token was not
+ * consumed, so the same URL stays valid and another dial is safe. A non-303
+ * answer is different: dsh did read the token, and repeating it would only
+ * trade a clear error for a confusing one.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isRetryableExchangeError(error) {
+  const code = String(/** @type {{ code?: string }} */ (error)?.code ?? '');
+  if (RETRYABLE_EXCHANGE_CODES.has(code)) return true;
+  const message = String(/** @type {{ message?: string }} */ (error)?.message ?? '');
+  return /socket hang up|timed out exchanging/i.test(message);
+}
+
+/**
+ * One exchange attempt against the tenant's loopback address.
  * @param {string} launchUrl - the URL dsh printed on its own stdout.
- * @param {number} uid - tenant uid, which selects its private loopback address.
+ * @param {string} host - the tenant's private loopback address.
  * @returns {Promise<{ cookie: string, expiresAt: number }>}
  */
-async function exchangeCookie(launchUrl, uid) {
+async function exchangeOnce(launchUrl, host) {
   const target = new URL(launchUrl);
   const secure = target.protocol === 'https:';
   const port = Number(target.port === '' ? (secure ? 443 : 80) : target.port);
   const response = await new Promise((resolve, reject) => {
     const request = secure ? httpsRequest : httpRequest;
     const upstream = request({
-      host: instanceAddress(uid),
+      host,
       port,
       method: 'GET',
       path: `${target.pathname}${target.search}`,
@@ -247,6 +269,40 @@ async function exchangeCookie(launchUrl, uid) {
   const pair = raw.split(';', 1)[0]?.trim();
   if (!pair) throw new Error('dsh launch exchange returned a malformed cookie');
   return { cookie: pair, expiresAt: Date.now() + COOKIE_MAX_AGE_MS };
+}
+
+/**
+ * Exchange the launch URL for dsh's signed browser cookie.
+ *
+ * dsh announces its launch URL on the tenant's own loopback address (the one
+ * its uid maps to). The request dials that address, while the Host header
+ * keeps naming `127.0.0.1:<port>`: that authority is what the handed-back
+ * cookie is bound to, and what every later forwarded request replays.
+ *
+ * The URL is announced from the listener callback, which is not the same thing
+ * as the socket accepting connections: the first dial of a freshly printed URL
+ * can be refused. Retrying that window is deliberate — giving up on it kills a
+ * boot that was going to succeed, and the relaunch then races the boot it just
+ * abandoned.
+ * @param {string} launchUrl - the URL dsh printed on its own stdout.
+ * @param {number} uid - tenant uid, which selects its private loopback address.
+ * @param {{ host?: string, timeoutMs?: number }} [options] - dial and budget,
+ *   overridable so a test can point the exchange at a local listener.
+ * @returns {Promise<{ cookie: string, expiresAt: number }>}
+ */
+export async function exchangeCookie(launchUrl, uid, options = {}) {
+  const host = options.host ?? instanceAddress(uid);
+  const deadline = Date.now() + (options.timeoutMs ?? EXCHANGE_TIMEOUT_MS);
+  for (;;) {
+    try {
+      return await exchangeOnce(launchUrl, host);
+    } catch (error) {
+      if (!isRetryableExchangeError(error) || Date.now() + EXCHANGE_RETRY_MS >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, EXCHANGE_RETRY_MS));
+    }
+  }
 }
 
 /**
@@ -411,11 +467,29 @@ async function reclaimPort(port, uid, account) {
   }
   console.warn(`instance launch: reclaiming port ${String(port)} from pid ${String(owner.pid)} (${account})`);
   process.kill(owner.pid, 'SIGTERM');
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    if (listenerIn(port) === undefined) return;
-  }
+  if (await waitForFreePort(port, 50)) return;
+  // An instance is init of its own pid namespace, and such a process only takes
+  // the signals it handles: a wedged one can keep its port through SIGTERM. A
+  // SIGKILL from this namespace always lands, and a workspace that cannot be
+  // started is far worse than one that was not shut down politely.
+  console.warn(`instance launch: SIGKILL pid ${String(owner.pid)} (${account}) kept its port through SIGTERM`);
+  process.kill(owner.pid, 'SIGKILL');
+  if (await waitForFreePort(port, 30)) return;
   throw new Error(`port ${String(port)} is still held after reclaiming it from pid ${String(owner.pid)}`);
+}
+
+/**
+ * Watch one port until nothing listens on it.
+ * @param {number} port
+ * @param {number} attempts - times to look, 100ms apart.
+ * @returns {Promise<boolean>} whether the port came free.
+ */
+async function waitForFreePort(port, attempts) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (listenerIn(port) === undefined) return true;
+  }
+  return false;
 }
 
 /**

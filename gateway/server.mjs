@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
+import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'node:zlib';
 
 import {
   WorkspaceError,
@@ -58,6 +59,7 @@ import {
   openSessionStore,
   parseCookies,
 } from './session.mjs';
+import { DECODABLE_ENCODINGS, injectShell } from './shell-inject.mjs';
 import { findUser, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
 import {
@@ -771,6 +773,32 @@ async function proxyServiceUpgrade(req, socket, head) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
+  // A plugin bundle patch that carries configuration is applied by the bundle
+  // layer at startup only, and the surface only reports that a restart is owed.
+  // This is the control that pays the debt, from the button the shell injects.
+  if (url.pathname === '/__vh/restart') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method !== 'POST') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    // The control rewrites the tenant's process, so it is refused where a
+    // browser would not attach the session on its own.
+    if (req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+    try {
+      const instance = await restartInstance(record);
+      json(res, 200, { ok: true, port: instance.port });
+    } catch (error) {
+      console.error(`restart failed for ${record.account ?? record.linuxName}:`, error?.message ?? error);
+      json(res, 502, { error: 'restart-failed', message: '重启失败，请稍后重试' });
+    }
+    return;
+  }
+
   if (url.pathname.startsWith('/__vh/scheduler/')) {
     await handleScheduler(req, res, url.pathname.slice('/__vh/scheduler'.length) + url.search);
     return;
@@ -1156,28 +1184,59 @@ async function instanceFor(session) {
 }
 
 /**
- * Publish the tenant's language to the surface shell.
+ * Replace the tenant's dsh process with a fresh one.
  *
- * The browser locale plugin reads the `preferences-locale` entry before it
- * mounts, so writing it here opens the surface in the VOS language even when
- * the platform injects no locale bridge into the page; a language the user
- * chose in Settings is an explicit preference and still outranks it. The entry
- * is rewritten on every load, so a VOS language change reaches the next visit
- * instead of pinning the first one.
- * @param {string} html - the document served by the tenant's dsh instance.
- * @param {string | undefined} locale - stored tenant language (`zh` / `en`).
- * @returns {string} the document, with the host-locale script when one applies.
+ * The jail is signalled first so dsh drains its own session state; a process
+ * that outlives the signal still holds its port, and `ensureInstance` answers
+ * that by reclaiming the port before it listens, which is what keeps a slow
+ * drain from turning a restart into EADDRINUSE.
+ * @param {Awaited<ReturnType<typeof findUser>>} record - the tenant to restart.
+ * @returns {Promise<{ port: number, cookie: string | undefined }>} the instance
+ *   that replaced it.
  */
-function injectHostLocale(html, locale) {
-  const tag = locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : '';
-  if (tag === '') return html;
-  const script = `<script>try{localStorage.setItem("preferences-locale",JSON.stringify({value:"${tag}"}))}catch(e){}</script>`;
-  const head = /<head[^>]*>/iu.exec(html);
-  // A document without a head still gets the entry: prepending keeps the rest
-  // of the markup untouched, and the browser hoists the script either way.
-  if (head === null) return `${script}${html}`;
-  const at = head.index + head[0].length;
-  return `${html.slice(0, at)}${script}${html.slice(at)}`;
+async function restartInstance(record) {
+  const order = record.account ?? record.linuxName;
+  console.log(`restart requested: ${order}`);
+  stopInstance(record.subject);
+  const instance = await ensureInstance({
+    record,
+    stateRoot: STATE_ROOT,
+    dshBin: DSH_BIN,
+    nodeBin: NODE_BIN,
+    statePath: STATE_FILE,
+    userHelper: USER_HELPER,
+  });
+  await startCapabilities(record);
+  console.log(`restarted: ${order} port=${String(instance.port)}`);
+  return instance;
+}
+
+/**
+ * Decode a shell document that arrived compressed.
+ *
+ * The proxy strips `accept-encoding` from document requests, so dsh answers
+ * plain; a hop that compresses on its own would otherwise cost the document its
+ * injected scripts, which is exactly the silent failure this guards.
+ * @param {Buffer} body - the upstream body.
+ * @param {string} encoding - the `content-encoding` value, lowercased.
+ * @returns {Buffer | undefined} the decoded body, or undefined when the
+ *   encoding is not one this gateway can read.
+ */
+function decodeDocument(body, encoding) {
+  try {
+    if (encoding === 'gzip' || encoding === 'x-gzip') return gunzipSync(body);
+    if (encoding === 'deflate') {
+      try {
+        return inflateSync(body);
+      } catch {
+        return inflateRawSync(body);
+      }
+    }
+    if (encoding === 'br') return brotliDecompressSync(body);
+  } catch (error) {
+    console.warn(`shell decode failed (${encoding}):`, error?.message ?? error);
+  }
+  return undefined;
 }
 
 /**
@@ -1186,6 +1245,10 @@ function injectHostLocale(html, locale) {
  * @returns {Promise<void>}
  */
 async function proxyRequest(req, res) {
+  const url0 = String(req.url ?? '');
+  if (!url0.includes('dsh-pet') && !url0.includes('/assets/')) {
+    console.log(`[req] ${String(req.method)} ${url0.slice(0, 70)} accept=${String(req.headers.accept ?? '').slice(0, 24)} cookie=${req.headers.cookie === undefined ? 'no' : 'yes'} host=${String(req.headers.host ?? '')}`);
+  }
   const session = authenticate(req);
   if (!session) {
     if (isDocumentRequest(req)) {
@@ -1225,7 +1288,7 @@ async function proxyRequest(req, res) {
   // instead, which replays the VOS login and then returns here. Resolving the
   // token here — not just checking for one — also covers a refresh token VOS no
   // longer accepts: the page then re-authorizes instead of entering dead.
-  if (isDocumentRequest(req) && await accessTokenFor(record.namespace) === undefined) {
+  if (!AUTH_DISABLED && isDocumentRequest(req) && await accessTokenFor(record.namespace) === undefined) {
     sendBootstrap(res);
     return;
   }
@@ -1267,10 +1330,13 @@ async function proxyRequest(req, res) {
         responseHeaders[name] = value;
       }
       // dsh regenerates its SPA boot manifest on restart; a cached shell pins
-      // the browser to stale plugin bundles. A compressed body is passed
-      // through instead of being rewritten as text.
-      const injectable = String(upstreamRes.headers['content-type'] ?? '').startsWith('text/html')
-        && upstreamRes.headers['content-encoding'] === undefined;
+      // the browser to stale plugin bundles.
+      const encoding = String(upstreamRes.headers['content-encoding'] ?? '').toLowerCase();
+      // Only a navigation is the shell. An HTML body fetched as data belongs to
+      // whoever asked for it, and the bridge in it would rewrite their requests.
+      const injectable = documentRequest
+        && String(upstreamRes.headers['content-type'] ?? '').startsWith('text/html')
+        && (encoding === '' || DECODABLE_ENCODINGS.has(encoding));
       if (!injectable) {
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
         upstreamRes.pipe(res);
@@ -1289,14 +1355,22 @@ async function proxyRequest(req, res) {
         resolve();
       });
       upstreamRes.on('end', () => {
-        const html = injectHostLocale(Buffer.concat(chunks).toString('utf8'), locale);
+        const raw = Buffer.concat(chunks);
+        const source = encoding === '' ? raw : decodeDocument(raw, encoding);
+        if (source === undefined) {
+          // An encoding this gateway cannot read: the document ships as dsh
+          // wrote it, injection and all, rather than not at all.
+          res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+          res.end(raw);
+          resolve();
+          return;
+        }
+        const html = injectShell(source.toString('utf8'), { locale, basePath: APP_BASE_PATH });
         // Give the entire module graph a fresh URL after older gateways served
         // incompatible responses at the shared asset URLs. Relative imports
         // stay in this directory, so the entry and vendor modules move together.
-        const body = Buffer.from(
-          documentRequest ? html.replaceAll('./assets/', './__vh-ui-v2/assets/') : html,
-          'utf8',
-        );
+        const body = Buffer.from(html.replaceAll('./assets/', './__vh-ui-v2/assets/'), 'utf8');
+        delete responseHeaders['content-encoding'];
         delete responseHeaders['content-length'];
         responseHeaders['content-length'] = String(body.byteLength);
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
