@@ -292,11 +292,24 @@ COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
 # replaces its published counterpart. A hand-maintained name list drifted from
 # the source tree once and shipped the old attachment editor, so a plugin now
 # only has to be built above to reach the shared installation.
+#
+# A package the published graph never carried — the unpublished forks — has no
+# copy to patch, and is materialized whole here. Leaving such a package only in
+# a tenant profile is what loses it: a profile-scoped pnpm run (every market
+# install) treats anything outside the profile manifest as extraneous, moves it
+# into node_modules/.ignored, and the market deletes that directory, so the
+# panel disappears with no diagnostic. Bundle resolution reads the installation
+# before the profile (app-boot `resolveBundleDir`), so the copy made here is the
+# one every tenant loads and no profile install can reach it.
 RUN set -eu; for source in /opt/v-harness/plugins/*/; do \
       name=$(basename "$source"); \
       target="/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/$name"; \
       if [ ! -f "$target/package.json" ]; then \
-        echo "plugin $name has no shared installation copy"; \
+        echo "plugin $name: materialized into the shared installation"; \
+        mkdir -p "$target"; \
+        cp -R "$source/package.json" "$target/package.json"; \
+        if [ -d "$source/lib" ]; then mkdir -p "$target/lib"; cp -R "$source/lib/." "$target/lib/"; fi; \
+        if [ -d "$source/locale" ]; then mkdir -p "$target/locale"; cp -R "$source/locale/." "$target/locale/"; fi; \
         continue; \
       fi; \
       cp -R "$source/lib/." "$target/lib/"; \
@@ -307,9 +320,19 @@ RUN set -eu; for source in /opt/v-harness/plugins/*/; do \
 COPY --from=plugins /build/apps/web/dist/ /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/
 
 # Agent-side tool plugins plus their carrier bundle (manifest.json lists the
-# plugins); gateway/plugins.mjs copies them into each tenant profile and
-# mounts the carrier before dsh starts.
+# plugins); bundle resolution checks the shared installation first, so the
+# payload packages live there instead of in per-profile copies. A copy inside
+# a tenant profile is what pnpm removes on every market install — it treats
+# anything outside the profile manifest as garbage — and the carrier bundle
+# dying mid-operation is what unloaded the market under its own users.
 COPY --from=agent-plugins /build/agent-plugins/ /opt/v-harness/agent-plugins/
+# Image-owned plugins (the payload manifest plus the carrier) overwrite their
+# installation copy on every build, so an updated image reaches every tenant at
+# the next start; a payload library the installation already resolves — a
+# runtime dependency, or a package another image layer placed there — stays
+# untouched. gateway/install-installation-plugins.mjs owns both rules, and why
+# the copy lives next to the runtime instead of in a tenant profile.
+RUN node /opt/v-harness/gateway/install-installation-plugins.mjs
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/vh-service.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs \
