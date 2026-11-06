@@ -83,6 +83,16 @@ const capabilities = new Map();
 const restartedJails = new Map();
 
 /**
+ * How long a restart watches its jail before answering.
+ *
+ * A replay that cannot run at all — a missing entry file, a `--cwd` the record
+ * never carried — exits within milliseconds. Answering `200` before that
+ * happens left the row reading "stopped" with no error, which the panel showed
+ * as a button that did nothing at all.
+ */
+const EARLY_EXIT_MS = 1_500;
+
+/**
  * @param {string} subject
  * @returns {Map<number, ServiceRecord>}
  */
@@ -276,7 +286,7 @@ function register(tenant, body) {
  * stand down, so its supervisor must take the child down and exit.
  * @param {TenantIdentity} tenant
  * @param {number} port
- * @param {{ name: string, cmd: string[], pid?: number, basePath?: string }} body
+ * @param {{ name: string, cmd: string[], pid?: number, basePath?: string, cwd?: string }} body
  * @returns {{ status: number, error?: string, message?: string }}
  */
 function heartbeat(tenant, port, body) {
@@ -287,6 +297,12 @@ function heartbeat(tenant, port, body) {
     }
     existing.lastSeen = Date.now();
     if (Number.isInteger(body.pid)) existing.pid = Number(body.pid);
+    // Records written before the CLI sent its working directory cannot be
+    // replayed. The next heartbeat from a supervisor that knows it repairs the
+    // record in place, so nobody has to re-register a running service.
+    if (existing.cwd === undefined && typeof body.cwd === 'string' && body.cwd.startsWith('/')) {
+      existing.cwd = body.cwd;
+    }
     persist();
     return { status: 200 };
   }
@@ -414,14 +430,35 @@ export function resolveService(subject, port) {
  * @returns {string[]} argv for `vh-jail`, after the account/uid/home.
  */
 function replayArgs(record) {
+  const cwd = jailCwd(record);
   return [
     SERVICE_BIN, 'run',
     '--name', record.name,
     '--port', String(record.port),
     ...(record.basePath === undefined ? [] : ['--basePath', record.basePath]),
-    ...(record.cwd === undefined ? [] : ['--cwd', record.cwd]),
+    ...(cwd === undefined ? [] : ['--cwd', cwd]),
     '--', ...record.cmd,
   ];
+}
+
+/**
+ * The recorded working directory as the jail sees it.
+ *
+ * A registration made from inside the jail records `/home/<account>/…`; one
+ * written by hand, or by a client that only knows the container's paths, can
+ * carry `/data/<account>/…` instead. The chroot has no `/data`, so the replay
+ * died with `spawn ENOENT` — the button looked dead because the command could
+ * not even reach its own directory.
+ * @param {ServiceRecord} record
+ * @returns {string | undefined}
+ */
+function jailCwd(record) {
+  if (record.cwd === undefined) return undefined;
+  const host = join(HOME_ROOT, record.account);
+  const jailHome = `/home/${record.account}`;
+  if (record.cwd === host) return jailHome;
+  if (record.cwd.startsWith(`${host}/`)) return `${jailHome}${record.cwd.slice(host.length)}`;
+  return record.cwd;
 }
 
 /**
@@ -435,9 +472,9 @@ function replayArgs(record) {
  * instance process, not to this one.
  * @param {string} subject
  * @param {number} port - the service's own port on the container loopback.
- * @returns {{ status: number, error?: string, message?: string }}
+ * @returns {Promise<{ status: number, error?: string, message?: string }>}
  */
-export function restartService(subject, port) {
+export async function restartService(subject, port) {
   const record = registry.get(subject)?.get(port);
   if (!record) return { status: 404, error: 'not-found', message: '服务不存在' };
   if (isRunning(record)) return { status: 409, error: 'already-running', message: `「${record.name}」正在运行` };
@@ -474,25 +511,65 @@ export function restartService(subject, port) {
       detached: true,
     },
   );
+  /** @type {string | undefined} */
+  let failure;
   child.stderr?.on('data', (chunk) => {
-    // First line only: a failing command reports a stack, and the gateway log
-    // is shared with every tenant.
-    const first = String(chunk).split('\n').map((line) => line.trim()).find((line) => line !== '');
-    if (first !== undefined) console.warn(`service restart (${record.account} port=${String(port)}): ${first}`);
+    // One line only: a failing command reports a stack, and the gateway log is
+    // shared with every tenant. The line worth keeping names the problem, which
+    // is not always the first one — a module loader prints its frame header
+    // before the file it could not find.
+    const lines = String(chunk).split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    const named = lines.find((line) => /error|cannot|no such|not found|ENOENT/i.test(line)) ?? lines[0];
+    if (named === undefined) return;
+    failure ??= named;
+    console.warn(`service restart (${record.account} port=${String(port)}): ${named}`);
   });
   // Without a listener an unspawnable jail (missing JAIL_BIN) emits 'error' and
   // takes the whole gateway down.
   child.on('error', (error) => {
+    failure ??= error.message;
     console.error(`service restart failed (${record.account} port=${String(port)}):`, error);
   });
   child.unref();
-  restartedJails.set(`${subject}:${String(port)}`, child);
+  const key = `${subject}:${String(port)}`;
+  restartedJails.set(key, child);
   child.once('exit', () => {
-    if (restartedJails.get(`${subject}:${String(port)}`) === child) {
-      restartedJails.delete(`${subject}:${String(port)}`);
-    }
+    if (restartedJails.get(key) === child) restartedJails.delete(key);
   });
   console.log(`service restart: ${record.account} port=${String(port)} pid=${String(child.pid)} cwd=${record.cwd ?? '-'}`);
+
+  // Give the jail a moment to fail. A replay that cannot run at all exits at
+  // once, and answering 200 before that left the row reading "stopped" with no
+  // error anywhere the owner could see it — a button that looked like it did
+  // nothing.
+  const exitCode = await new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve(child.exitCode);
+      return;
+    }
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(undefined);
+    }, EARLY_EXIT_MS);
+    /** @param {number | null} code */
+    function onExit(code) {
+      clearTimeout(timer);
+      resolve(code ?? -1);
+    }
+    child.once('exit', onExit);
+  });
+  if (exitCode !== undefined) {
+    restartedJails.delete(key);
+    const reason = failure === undefined ? '' : `：${failure}`;
+    const hint = record.cwd === undefined
+      ? '（这条登记没有启动目录，相对路径的命令找不到入口文件，请用 vh-service run --cwd 重新登记）'
+      : '';
+    return {
+      status: 502,
+      error: 'exited',
+      message: `「${record.name}」启动后立即退出（退出码 ${String(exitCode)}）${reason}${hint}`,
+    };
+  }
   return { status: 200 };
 }
 

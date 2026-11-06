@@ -650,7 +650,7 @@ async function handleServiceAction(req, res, url) {
   }
   const port = Number(match[1]);
   const result = match[2] === 'restart'
-    ? restartService(record.subject, port)
+    ? await restartService(record.subject, port)
     : stopService(record.subject, port);
   console.log(`service ${match[2]}: ${record.account ?? record.linuxName} port=${String(port)} -> ${String(result.status)}`);
   json(res, result.status, result.status === 200 ? { ok: true } : { error: result.error, message: result.message });
