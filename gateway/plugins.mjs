@@ -5,15 +5,22 @@
  * built in this repository would otherwise be replaced by the published copy
  * the first time a user signs in — and a new user would never see it at all.
  * The image carries the built plugin under `/opt/v-harness/plugins`, and this
- * module copies it over the profile's copy once dsh has finished installing.
+ * module stages it before the tenant's web process starts.
+ *
+ * Two rules, and they cover every package the image ships:
+ *
+ * - a published plugin is a declared dependency of the profile, so `pnpm`
+ *   installs it, keeps it, and repairs it on every run;
+ * - everything else — the unpublished carrier and the browser builds whose
+ *   package the registry does not carry — goes into the shared layer
+ *   `<home>/.dsh/profiles/node_modules`, which dsh resolves from the profile
+ *   but a profile-scoped `pnpm` run never manages. A copy inside the profile
+ *   instead is what deleted itself on the next install.
  *
  * The copy must happen before dsh starts, not after. One client bundle is read
  * exactly once at boot — its mtime/ctime/size become the immutable `?rev=` URL
  * and its bytes stay in memory — so a copy that lands after the process started
- * is invisible until the next restart. The image also installs these artifacts
- * into the shared dsh installation, which default profiles use without a local
- * node_modules tree. Existing profile-local overrides are synchronized before
- * their web process starts.
+ * is invisible until the next restart.
  *
  * @module
  */
@@ -24,8 +31,6 @@ import { join } from 'node:path'
 
 /** Where the image puts built client plugins; a deployment may relocate both roots. */
 const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
-const INSTALLATION_MODULES = process.env.VH_DSH_MODULES_DIR
-  ?? '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
 
 /** Where the image puts the built agent-side tool plugins and their carrier. */
 const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/agent-plugins'
@@ -197,7 +202,54 @@ async function replaceDirectory(source, target) {
 }
 
 /**
- * Copy the image's build of each deployed plugin over one profile's copy.
+ * The `node_modules` shared by every profile under one home.
+ *
+ * A row whose package no manifest declares is resolved by Node's ancestor
+ * lookup from the profile directory, and this is the last position below the
+ * tenant home. It is also the one position a profile-scoped `pnpm` run never
+ * manages: pnpm prunes its own `node_modules` against the manifest, so a copy
+ * staged there is deleted by the next install — every market install is one.
+ * @param {string} home - the tenant home.
+ * @returns {string} the shared layer directory.
+ */
+function profileLayer(home) {
+  return join(home, '.dsh', 'profiles', 'node_modules')
+}
+
+/**
+ * Remove a copy an earlier revision staged inside the profile itself.
+ *
+ * Such a copy sits below the layer, so it answers first and then disappears on
+ * the tenant's next install. A package the profile declares is left alone:
+ * `pnpm` installs, owns, and repairs that one.
+ * @param {string} profile - the tenant's profile directory.
+ * @param {string} relative - package name relative to `node_modules`.
+ * @returns {Promise<void>}
+ */
+async function clearLegacyCopy(profile, relative) {
+  const declared = await readProfileDependencies(profile)
+  if (Object.hasOwn(declared, relative)) return
+  await rm(join(profile, 'node_modules', relative), { recursive: true, force: true }).catch(() => {})
+}
+
+/**
+ * The dependencies one profile declares.
+ * @param {string} profile - the profile directory.
+ * @returns {Promise<Record<string, unknown>>} declared dependencies, empty when unreadable.
+ */
+async function readProfileDependencies(profile) {
+  try {
+    const manifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'))
+    const dependencies = manifest?.dependencies
+    return dependencies !== null && typeof dependencies === 'object' ? dependencies : {}
+  } catch (_error) {
+    // A profile dsh has not created yet declares nothing; nothing is protected.
+    return {}
+  }
+}
+
+/**
+ * Stage the image's build of each deployed browser plugin into the shared layer.
  *
  * The payload directory is the list: whatever the image built is what a tenant
  * gets. A hand-maintained name list drifted from the source tree once and
@@ -208,11 +260,13 @@ async function replaceDirectory(source, target) {
  *   linuxName: string,
  *   uid: number,
  * }} user - the tenant whose profile to update.
- * @returns {Promise<void>} resolves once every present plugin was replaced;
+ * @returns {Promise<void>} resolves once every present plugin was staged;
  *   a managed-package failure prevents launching an inconsistent runtime.
  */
 export async function syncClientPlugins(user) {
-  const modules = join(user.home, '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai')
+  const profile = join(user.home, '.dsh', 'profiles', 'web')
+  const layer = profileLayer(user.home)
+  const modules = join(layer, '@deepseek-ai')
   // A deployment without the payload directory is not the image: it has nothing
   // to overlay, and failing here would keep every instance from starting.
   if (!(await exists(PLUGIN_ROOT))) return
@@ -224,39 +278,35 @@ export async function syncClientPlugins(user) {
   for (const name of MANAGED) {
     if (!deployed.includes(name)) throw new Error(`deployed plugin missing: ${name}`)
   }
+  try {
+    await mkdir(modules, { recursive: true })
+    // The tenant's own dsh process reads under this directory; root must not
+    // keep it.
+    await chownDir(layer, user.uid, user.linuxName)
+    await chownDir(modules, user.uid, user.linuxName)
+  } catch (error) {
+    throw new Error('plugin layer is not writable', { cause: error })
+  }
   for (const name of deployed) {
-    const source = join(PLUGIN_ROOT, name)
     const target = join(modules, name)
-    // Default profiles resolve bundled packages from the shared installation.
-    // Docker installs the matching artifacts there before any tenant starts.
-    // A package the published dependency graph never carried has no profile
-    // copy at all, so it is created here: the carrier bundle mounts its row and
-    // the profile-scope resolution needs the directory to exist.
-    if (!(await exists(join(target, 'package.json')))
-        && MANAGED.includes(name)
-        && !(await exists(join(INSTALLATION_MODULES, name, 'package.json')))) {
-      throw new Error(`installed plugin missing: ${name}`)
-    }
     try {
-      await mkdir(modules, { recursive: true })
-      // The profile's own install writes here later, so the scope directory
-      // and its `node_modules` parent belong to the tenant, not to root.
-      await chownDir(join(user.home, '.dsh', 'profiles', 'web', 'node_modules'), user.uid, user.linuxName)
-      await chownDir(modules, user.uid, user.linuxName)
-      await replaceDirectory(source, target)
+      await replaceDirectory(join(PLUGIN_ROOT, name), target)
       await chownTo(target, user.uid, user.linuxName)
     } catch (error) {
       throw new Error(`plugin sync failed: ${name}`, { cause: error })
     }
+    await clearLegacyCopy(profile, `@deepseek-ai/${name}`)
   }
 }
 
 /**
- * Stage the image's unpublished agent-side plugins into one tenant's profile.
+ * Stage the image's agent-side payload for one tenant.
  *
- * These packages are not on the registry, so no profile manifest can declare
- * them and `pnpm` would treat a copy of one as extraneous. Two rules keep the
- * copy safe:
+ * A published payload plugin is a declared profile dependency and lands in the
+ * profile's own `node_modules`, where `pnpm` owns it. Everything else lands in
+ * the shared layer (see {@link profileLayer}): those packages are not on the
+ * registry, so no manifest can declare them, and a copy inside the profile is
+ * extraneous to the next install. Two rules keep the copy safe:
  *
  * - the unpublished plugins and the carrier overwrite whatever the profile
  *   holds (a broken earlier hand-install must not survive, and an updated image
@@ -292,16 +342,24 @@ async function syncAgentPlugins(user) {
   const profile = join(user.home, '.dsh', 'profiles', 'web')
   const plugins = new Set(manifest.plugins ?? [])
   const payloadModules = join(AGENT_PLUGIN_ROOT, 'node_modules')
-  const modules = join(profile, 'node_modules')
-  await mkdir(modules, { recursive: true })
-  await chownDir(modules, user.uid, user.linuxName)
+  const profileModules = join(profile, 'node_modules')
+  const layer = profileLayer(user.home)
+  await mkdir(layer, { recursive: true })
+  await mkdir(profileModules, { recursive: true })
+  await chownDir(layer, user.uid, user.linuxName)
+  await chownDir(profileModules, user.uid, user.linuxName)
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
+    // A published plugin is a declared dependency: pnpm installs and keeps it,
+    // and the profile copy is the one it reconciles. Everything else is staged
+    // into the shared layer, the only place no profile-scoped install reaches.
+    const declared = PROFILE_PLUGINS.includes(name)
+    const root = declared ? profileModules : layer
     // The carrier must refresh on every start so an updated image's rows
     // reach existing tenants.
     const overwrite = plugins.has(name) || name === AGENT_BUNDLE_NAME
-    const target = join(modules, relative)
+    const target = join(root, relative)
     if (overwrite || !(await exists(join(target, 'package.json')))) {
       try {
         await replaceDirectory(join(payloadModules, relative), target)
@@ -310,6 +368,7 @@ async function syncAgentPlugins(user) {
         console.error(`agent plugin sync failed for ${name} in ${user.linuxName}:`, error.message)
       }
     }
+    if (!declared) await clearLegacyCopy(profile, relative)
   }
   // A name the manifest lists but the payload lacks used to leave no trace: the
   // loop above only walks packages that are present, so the tenant silently

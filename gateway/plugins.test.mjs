@@ -60,11 +60,12 @@ test('a new profile declares the published payload plugins as dependencies', asy
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', 'dshmarket', 'ds-bot',
   ]);
-  // Staged so the first boot needs no registry install; declared above so the
-  // next `pnpm` run keeps the copies instead of quarantining them.
-  assert.equal(existsSync(join(user.profile, 'node_modules', 'vh-agent-plugins')), true);
+  // Declared dependencies stay inside the profile: pnpm installs and repairs them.
   assert.equal(existsSync(join(user.profile, 'node_modules', 'dshmarket')), true);
   assert.equal(existsSync(join(user.profile, 'node_modules', 'ds-bot')), true);
+  // The undeclared ones live in the shared layer, out of every profile install's reach.
+  assert.equal(existsSync(join(user.home, '.dsh', 'profiles', 'node_modules', 'vh-agent-plugins')), true);
+  assert.equal(existsSync(join(user.profile, 'node_modules', 'vh-agent-plugins')), false);
   await rm(user.home, { recursive: true, force: true });
 });
 
