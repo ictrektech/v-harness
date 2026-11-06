@@ -630,6 +630,7 @@ async function launch(options) {
       child,
       cookie,
       cookieExpiresAt: expiresAt,
+      launchedAt: Date.now(),
       starting: undefined,
     };
   } catch (error) {
@@ -669,11 +670,6 @@ export async function ensureInstance(options) {
     return existing;
   }
 
-  await runUserHelper(options.userHelper, [
-    'ensure', account, String(record.uid), userPaths(stateRoot, account).home,
-  ]);
-
-
   /** @type {Instance} */
   const placeholder = {
     subject: record.subject,
@@ -685,13 +681,24 @@ export async function ensureInstance(options) {
     cookieExpiresAt: 0,
     starting: undefined,
   };
+  // Claim the slot before the first await. The helper call below outlasts a
+  // page load, and a request that arrived in that window used to see no entry
+  // at all, queue a second attempt behind this one, and start it the moment the
+  // first finished — reclaiming the port from the process that had just begun
+  // listening, which is what a tab saw as a white screen after a restart.
+  instances.set(record.subject, placeholder);
   // Launches for one tenant are serialized even across failures. A timed-out
   // attempt leaves the map before its jail has exited, so a retry that arrived
   // in that window used to start a second launch beside the dying one — two
   // processes writing the same profile (`plugin sync failed` with EEXIST) and
   // racing for the same port.
   const previous = launchChains.get(record.subject) ?? Promise.resolve();
-  const attempt = previous.catch(() => {}).then(() => launch(options));
+  const attempt = previous
+    .catch(() => {})
+    .then(() => runUserHelper(options.userHelper, [
+      'ensure', account, String(record.uid), userPaths(stateRoot, account).home,
+    ]))
+    .then(() => launch(options));
   launchChains.set(record.subject, attempt);
   placeholder.starting = attempt.then((launched) => {
     // Every process start exchanges its own launch URL for a cookie. A cached
@@ -704,7 +711,6 @@ export async function ensureInstance(options) {
     });
     instances.set(record.subject, launched);
   });
-  instances.set(record.subject, placeholder);
 
   try {
     await placeholder.starting;
@@ -722,6 +728,22 @@ export async function ensureInstance(options) {
  */
 export function liveInstance(subject) {
   return instances.get(subject);
+}
+
+/**
+ * The boot identity of one tenant's instance.
+ *
+ * A document is served by one process; that process stamps every bundle URL
+ * with a revision of its own graph, so a document outlives its usefulness the
+ * moment the process behind it is replaced. This number lets the injected
+ * script notice that replacement — the alternative is a tab that keeps asking
+ * the new process for the old graph and dies on the first plugin it still has
+ * to mount.
+ * @param {string} subject
+ * @returns {number} launch time, or 0 when nothing is running.
+ */
+export function instanceBoot(subject) {
+  return instances.get(subject)?.launchedAt ?? 0;
 }
 
 /**

@@ -57,9 +57,33 @@ ensure() {
   chown "$name:$name" "$home"
   # Tighten only: never widen an existing mode.
   chmod 0700 "$home"
-  chown -R "$name:$name" "$home/.dsh" "$home/.agents" "$home/workspace" \
-    "$home/.npm-global" "$home/.local" "$home/.config" \
-    "$home/.cargo" "$home/.bun" "$home/.nvm" "$home/.cache"
+
+  # Ownership is adopted best-effort. A plugin install rewrites `node_modules`
+  # while this walks `.dsh`, and a bundle swap renames a staged package out of
+  # the tree mid-walk; `chown -R` answers that with ENOENT and, under `set -e`,
+  # the whole launch failed — which is what turned "install a plugin, then
+  # restart" into a restart that never happened. Retry once, then report and
+  # continue: the jail mount and the 0700 root are what isolate tenants, not
+  # this chown.
+  adopt() {
+    local target="$1" label="$2"
+    [[ -e "$target" ]] || return 0
+    chown -R "$name:$name" "$target" 2>/dev/null && return 0
+    sleep 0.2
+    chown -R "$name:$name" "$target" 2>/dev/null && return 0
+    printf 'vh-userctl: chown under %s raced a writer, leaving it to the next ensure\n' "$label" >&2
+    return 0
+  }
+  adopt "$home/.dsh" '.dsh'
+  adopt "$home/.agents" '.agents'
+  adopt "$home/workspace" 'workspace'
+  adopt "$home/.npm-global" '.npm-global'
+  adopt "$home/.local" '.local'
+  adopt "$home/.config" '.config'
+  adopt "$home/.cargo" '.cargo'
+  adopt "$home/.bun" '.bun'
+  adopt "$home/.nvm" '.nvm'
+  adopt "$home/.cache" '.cache'
   chmod 0700 "$home/.dsh" "$home/.agents"
 
   # What this machine is, for the agent that has to work on it. Written once:

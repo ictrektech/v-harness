@@ -25,6 +25,9 @@
 /** Restart endpoint the injected button calls; the gateway answers it. */
 export const RESTART_PATH = '/__vh/restart';
 
+/** Boot identity of the instance serving this document; polled by the script. */
+export const BOOT_PATH = '/__vh/boot';
+
 /** Encodings the shell can be decoded from before it is rewritten. */
 export const DECODABLE_ENCODINGS = new Set(['gzip', 'x-gzip', 'deflate', 'br']);
 
@@ -88,7 +91,7 @@ function localeScript(locale) {
  * @returns {string} the bridge script tag.
  */
 function runtimeScript(copy, basePath) {
-  const config = JSON.stringify({ base: basePath, path: RESTART_PATH, copy });
+  const config = JSON.stringify({ base: basePath, path: RESTART_PATH, boot: BOOT_PATH, copy });
   return `<script>(function(){try{var vh=${config};${BRIDGE}}catch(e){}})();</script>`;
 }
 
@@ -179,17 +182,37 @@ function wrapSocket(native) {
 if (typeof window.WebSocket === "function") window.WebSocket = wrapSocket(window.WebSocket);
 if (typeof window.EventSource === "function") window.EventSource = wrapSocket(window.EventSource);
 
+function requestRestart() {
+  return fetch(vh.path, { method: "POST", credentials: "same-origin", cache: "no-store", body: "" })
+    .then(function (response) {
+      if (!response.ok) throw new Error(String(response.status));
+      return response.json();
+    });
+}
+// The market's restart button calls this hook when it exists; without it the
+// market spawns its own replacement process, which this gateway does not track
+// — the old cookie dies with it and the port is fought over on the next launch.
+try {
+  var shell = window.__dshHostShell;
+  if (shell === undefined || shell === null) shell = window.__dshHostShell = {};
+  if (typeof shell.restart !== "function") {
+    shell.restart = function () {
+      requestRestart()
+        .then(function () { setTimeout(function () { location.reload(); }, 400); })
+        .catch(function () {
+          window.alert(vh.copy.failed);
+          setTimeout(function () { location.reload(); }, 200);
+        });
+    };
+  }
+} catch (e) {}
 function restart(button) {
   if (button.disabled) return;
   if (!window.confirm(vh.copy.confirm)) return;
   var label = button.textContent;
   button.disabled = true;
   button.textContent = vh.copy.busy;
-  fetch(vh.path, { method: "POST", credentials: "same-origin", cache: "no-store", body: "" })
-    .then(function (response) {
-      if (!response.ok) throw new Error(String(response.status));
-      return response.json();
-    })
+  requestRestart()
     .then(function () {
       setTimeout(function () { location.reload(); }, 400);
     })
@@ -220,4 +243,25 @@ function mountRestart() {
 }
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mountRestart);
 else mountRestart();
+// A restart replaces the process this document came from: the bundle URLs it
+// holds carry a revision the new process never served, and every plugin the
+// document has not mounted yet would 404. The gateway publishes the current
+// boot, so a change means this document is stale — reload, which is also what
+// the market's own "restarting" surface never does on its own.
+var vhBoot = null;
+function watchBoot() {
+  if (typeof fetch !== "function") return;
+  fetch(vh.boot, { credentials: "same-origin", cache: "no-store" })
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      if (!data || typeof data.boot !== "number" || data.boot === 0) return;
+      if (vhBoot === null) { vhBoot = data.boot; return; }
+      if (data.boot !== vhBoot) { vhBoot = data.boot; location.reload(); }
+    })
+    .catch(function () {});
+}
+try {
+  setTimeout(watchBoot, 1500);
+  setInterval(watchBoot, 2000);
+} catch (e) {}
 `;

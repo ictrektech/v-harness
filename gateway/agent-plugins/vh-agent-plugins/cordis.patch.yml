@@ -29,22 +29,9 @@
     # `present` deliverables. The flow ships as a plain skill (skills/album)
     # whose CLI the model runs and presents with — the channel a reader sees.
 
-    # Fork-only browser plugins: the upstream dsh-web-app neither depends on
-    # these packages nor mounts their rows, and gateway/plugins.mjs copies the
-    # image's builds into the profile's node_modules (creating absent targets).
-    # The packages are declared in this bundle's dependencies so the
-    # profile-scope resolution carries them for the modules node half.
-    - id: ui-tool-cards
-      name: '@deepseek-ai/dsh-client-ui-tool-cards'
-
-    - id: ui-user-questions
-      name: '@deepseek-ai/dsh-client-ui-user-questions'
-
-    # The knowledge-base surface: the `@` scope picker, the source cards under
-    # an answer, and the evidence panel. Same channel as the two rows above —
-    # the upstream web-app bundle neither depends on nor mounts it.
-    - id: ui-knowledge
-      name: '@deepseek-ai/dsh-client-ui-knowledge'
+    # `ui-tool-cards`, `ui-user-questions` and `ui-knowledge` are mounted by the
+    # web-app bundle itself (packages/bundle/web-app/cordis.patch.yml). Inserting
+    # them here too duplicates the loader entry id and fails the profile load.
 
     # The composer's `@` source over the user's own V-Office folder. Published
     # nowhere, so nothing in the dependency graph names it: gateway/plugins.mjs

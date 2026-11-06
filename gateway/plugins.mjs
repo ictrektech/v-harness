@@ -197,6 +197,56 @@ export async function syncPlugins(user) {
 }
 
 /**
+ * Fingerprint a source tree without copying it.
+ *
+ * A restart used to recopy the whole payload — 83 MB across 4400 files — for
+ * every tenant boot, which is most of the twenty seconds a restart took. File
+ * count, total bytes and the newest mtime move on any image rebuild and stay
+ * put otherwise, so the copy can be skipped when the fingerprint matches what
+ * the target was built from.
+ *
+ * @param {string} root - source directory.
+ * @returns {Promise<string>} a comparable stamp.
+ */
+async function treeStamp(root) {
+  let count = 0
+  let bytes = 0
+  let newest = 0
+  /** @param {string} dir */
+  const walk = async (dir) => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(path)
+        continue
+      }
+      const info = await stat(path).catch(() => undefined)
+      if (info === undefined) continue
+      count += 1
+      bytes += info.size
+      if (info.mtimeMs > newest) newest = info.mtimeMs
+    }
+  }
+  await walk(root)
+  return `${String(count)}:${String(bytes)}:${String(Math.trunc(newest))}`
+}
+
+/**
+ * Read the stamp ledger that records which source build each target holds.
+ * @param {string} path
+ * @returns {Promise<Record<string, string>>}
+ */
+async function readStamps(path) {
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8'))
+    return parsed !== null && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Replace one profile package directory with the image's build.
  *
  * The copy is staged beside the target and renamed into place. `rm` then `cp`
@@ -315,14 +365,24 @@ export async function syncClientPlugins(user) {
   } catch (error) {
     throw new Error('plugin layer is not writable', { cause: error })
   }
+  const stampPath = join(modules, '.vh-sync.json')
+  const stamps = await readStamps(stampPath)
   for (const name of deployed) {
     const target = join(modules, name)
+    const source = join(PLUGIN_ROOT, name)
+    const stamp = await treeStamp(source)
+    if (stamps[name] === stamp && (await exists(join(target, 'package.json')))) {
+      await clearLegacyCopy(profile, `@deepseek-ai/${name}`)
+      continue
+    }
     try {
-      await replaceDirectory(join(PLUGIN_ROOT, name), target)
+      await replaceDirectory(source, target)
       await chownTo(target, user.uid, user.linuxName)
     } catch (error) {
       throw new Error(`plugin sync failed: ${name}`, { cause: error })
     }
+    stamps[name] = stamp
+    await writeFile(stampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
     await clearLegacyCopy(profile, `@deepseek-ai/${name}`)
   }
 }
@@ -376,6 +436,8 @@ async function syncAgentPlugins(user) {
   await mkdir(profileModules, { recursive: true })
   await chownDir(layer, user.uid, user.linuxName)
   await chownDir(profileModules, user.uid, user.linuxName)
+  const agentStampPath = join(profile, '.vh-agent-sync.json')
+  const stamps = await readStamps(agentStampPath)
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
@@ -384,14 +446,18 @@ async function syncAgentPlugins(user) {
     // into the shared layer, the only place no profile-scoped install reaches.
     const declared = PROFILE_PLUGINS.includes(name)
     const root = declared ? profileModules : layer
-    // The carrier must refresh on every start so an updated image's rows
-    // reach existing tenants.
-    const overwrite = plugins.has(name) || name === AGENT_BUNDLE_NAME
     const target = join(root, relative)
-    if (overwrite || !(await exists(join(target, 'package.json')))) {
+    // The carrier and every manifest plugin are refreshed when the image's
+    // build moved — the stamp records which build the copy came from, so an
+    // unchanged image costs a stat walk instead of a copy on every boot.
+    const stamp = await treeStamp(join(payloadModules, relative))
+    const stale = stamps[relative] !== stamp || !(await exists(join(target, 'package.json')))
+    if (stale) {
       try {
         await replaceDirectory(join(payloadModules, relative), target)
         await chownTo(target, user.uid, user.linuxName)
+        stamps[relative] = stamp
+        await writeFile(agentStampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
       } catch (error) {
         console.error(`agent plugin sync failed for ${name} in ${user.linuxName}:`, error.message)
       }

@@ -29,6 +29,7 @@ import {
 } from './files.mjs';
 import {
   ensureInstance,
+  instanceBoot,
   liveInstance,
   migrateInstanceStateKeys,
   stopAll,
@@ -435,6 +436,52 @@ function sendBootstrap(res) {
 }
 
 /**
+ * The page a navigation gets while its instance is still coming up.
+ *
+ * A replacing process answers nothing, and the browser is left holding whatever
+ * the last byte was — a tab that reads as a white screen with no way back. This
+ * page waits for the boot identity to appear and then loads the shell, so the
+ * end of a restart is the app rather than a blank tab.
+ */
+const STARTING = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>v-harness</title>
+<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0d10;color:#c8ccd4;font:14px/1.7 system-ui,sans-serif}
+#m{opacity:.85;display:flex;gap:.6rem;align-items:center}
+#s{width:14px;height:14px;border:2px solid #2a2f38;border-top-color:#7aa2f7;border-radius:50%;animation:r .8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}</style>
+</head><body><div id="m"><span id="s"></span><span>正在启动工作区…</span></div>
+<script>
+var tries = 0;
+function poll() {
+  tries += 1;
+  fetch('./__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (d && typeof d.boot === 'number' && d.boot > 0) { location.replace('./'); return; }
+      setTimeout(poll, tries < 120 ? 700 : 3000);
+    })
+    .catch(function () { setTimeout(poll, 1000); });
+}
+setTimeout(poll, 500);
+</script></body></html>`;
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ */
+function sendStarting(res) {
+  const body = Buffer.from(STARTING, 'utf8');
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': String(body.byteLength),
+    'cache-control': 'no-store',
+    'x-frame-options': 'SAMEORIGIN',
+  });
+  res.end(body);
+}
+
+/**
  * Whether the request is a browser navigation that should receive the
  * bootstrap page rather than a 401.
  * @param {import('node:http').IncomingMessage} req
@@ -765,6 +812,52 @@ async function proxyServiceUpgrade(req, socket, head) {
   socket.on('close', () => upstream.destroy());
 }
 
+/** The market's own restart control; the gateway owns the instance it replaces. */
+const MARKET_RESTART_PATH = '/dsh-market/restart';
+
+/** One market-triggered restart at a time; the market retries a 409 itself. */
+let marketRestartInFlight = false;
+
+/**
+ * Answer the market's restart control with the gateway's own restart.
+ *
+ * The market ships its own replacement helper, which spawns a second dsh the
+ * gateway never registered: the old launch cookie goes stale and the next
+ * request reclaims the port the helper just took. Reporting 202 and replacing
+ * the instance here keeps one restart path — the same one `/__vh/restart`
+ * drives. The market then polls its status until the new boot answers.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+async function handleMarketRestart(req, res) {
+  const record = await requireUser(req, res);
+  if (!record) return;
+  if (req.method !== 'POST') {
+    json(res, 405, { ok: false, error: 'method-not-allowed' });
+    return;
+  }
+  if (req.headers['sec-fetch-site'] === 'cross-site') {
+    json(res, 403, { ok: false, error: 'cross-site request rejected' });
+    return;
+  }
+  if (marketRestartInFlight) {
+    json(res, 409, { ok: false, error: 'restart-in-progress' });
+    return;
+  }
+  marketRestartInFlight = true;
+  // Answer before the drain: exactly the process that would answer this request
+  // is the one being replaced, and the market's next poll reaches the new boot.
+  json(res, 202, { ok: true });
+  void restartInstance(record)
+    .catch((error) => {
+      console.error(`market restart failed for ${record.account ?? record.linuxName}:`, error?.message ?? error);
+    })
+    .finally(() => {
+      marketRestartInFlight = false;
+    });
+}
+
 /**
  * Control endpoints owned by the gateway itself.
  * @param {import('node:http').IncomingMessage} req
@@ -773,6 +866,23 @@ async function proxyServiceUpgrade(req, socket, head) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
+  // The document a tab holds belongs to the process that served it. After a
+  // restart that process is gone, and every bundle URL in the document carries
+  // a revision the new one never had — the tab dies on the first plugin it has
+  // left to mount. The injected script polls this to notice the swap itself.
+  if (url.pathname === '/__vh/boot') {
+    // Session cookie only: this is polled every couple of seconds from every
+    // open tab, and the full check would put an identity recheck on that path.
+    // The answer is a launch timestamp, which is nothing a caller can act on.
+    const session = authenticate(req);
+    if (!session) {
+      json(res, 401, { error: 'unauthenticated' });
+      return;
+    }
+    json(res, 200, { boot: instanceBoot(session.subject) });
+    return;
+  }
+
   // A plugin bundle patch that carries configuration is applied by the bundle
   // layer at startup only, and the surface only reports that a restart is owed.
   // This is the control that pays the debt, from the button the shell injects.
@@ -1183,6 +1293,9 @@ async function instanceFor(session) {
   return instance;
 }
 
+/** Restarts in flight, keyed by subject: a second click joins the first. */
+const restarts = new Map();
+
 /**
  * Replace the tenant's dsh process with a fresh one.
  *
@@ -1196,8 +1309,30 @@ async function instanceFor(session) {
  */
 async function restartInstance(record) {
   const order = record.account ?? record.linuxName;
+  const key = record.subject;
+  const inflight = restarts.get(key);
+  if (inflight !== undefined) return inflight;
+  const run = (async () => {
   console.log(`restart requested: ${order}`);
-  stopInstance(record.subject);
+  const previous = liveInstance(key);
+  stopInstance(key);
+  // The port has to be free before the next bind. Waiting for the exit here is
+  // cheaper than letting the launch discover a draining process and reclaim
+  // the port from it, which is where most of a restart's wall time went: a
+  // second click used to start a second launch that fought the first one.
+  if (previous?.child) {
+    await new Promise((resolve) => {
+      if (previous.child.exitCode !== null) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(resolve, 3000);
+      previous.child.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
   const instance = await ensureInstance({
     record,
     stateRoot: STATE_ROOT,
@@ -1209,6 +1344,13 @@ async function restartInstance(record) {
   await startCapabilities(record);
   console.log(`restarted: ${order} port=${String(instance.port)}`);
   return instance;
+  })();
+  restarts.set(key, run);
+  try {
+    return await run;
+  } finally {
+    restarts.delete(key);
+  }
 }
 
 /**
@@ -1237,6 +1379,135 @@ function decodeDocument(body, encoding) {
     console.warn(`shell decode failed (${encoding}):`, error?.message ?? error);
   }
   return undefined;
+}
+
+// The `rev` in a bundle URL is a pointer into one client graph. dsh composes a
+// single graph at a time and answers 404 to every other stamp ("versioned code
+// is immutable"), while the stamp moves on each install, uninstall, toggle and
+// post-boot reconcile. A tab opened minutes earlier therefore asks for a stamp
+// the instance no longer serves: the bundle never executes and the shell dies
+// on "HTML did not preload @deepseek-ai/dsh-client-modules/client.js". The same
+// package set is still served under the current stamp, so look it up in the
+// live shell and replay — the tab keeps running instead of blanking out. A
+// package that is genuinely gone has no counterpart and still gets the reload.
+const CURRENT_GRAPH_TTL_MS = 3_000;
+/** @type {Map<string, { at: number, urls: string[] }>} */
+const currentGraphCache = new Map();
+
+/**
+ * The package set a bundle URL names, stripped of its stamp.
+ * @param {string} url - bundle URL, with or without a leading slash.
+ * @returns {string | undefined} the identity shared by every stamp of it.
+ */
+function bundleIdentity(url) {
+  const cut = url.indexOf('&rev=');
+  if (cut < 0) return undefined;
+  return url.slice(0, cut).replace(/^\.?\//, '');
+}
+
+/**
+ * Read one instance's shell and collect the bundle URLs it advertises now.
+ * @param {{ uid: number, port: number, cookie: string }} instance
+ * @param {Record<string, string>} headers - headers already accepted by the
+ *   instance; dsh pins its cookie to `127.0.0.1:<port>`, so the host and cookie
+ *   have to be the ones the proxy uses or the read comes back 401.
+ * @returns {Promise<string[]>} advertised paths, still carrying their stamps.
+ */
+function fetchAdvertisedBundles(instance, headers) {
+  return new Promise((resolve) => {
+    const upstream = httpRequest({
+      host: instanceAddress(instance.uid),
+      port: instance.port,
+      method: 'GET',
+      path: '/',
+      headers: {
+        ...headers,
+        host: `127.0.0.1:${String(instance.port)}`,
+        cookie: instance.cookie,
+        accept: 'text/html',
+        'accept-encoding': 'identity',
+      },
+    }, (upstreamRes) => {
+      const chunks = [];
+      upstreamRes.on('data', (chunk) => { chunks.push(chunk); });
+      upstreamRes.on('end', () => {
+        const html = Buffer.concat(chunks).toString('utf8');
+        resolve([...new Set(html.match(/plugins\/\?\?[^"'\s]+/g) ?? [])]);
+      });
+      upstreamRes.on('error', () => resolve([]));
+    });
+    upstream.on('error', () => resolve([]));
+    upstream.end();
+  });
+}
+
+/**
+ * Find the live URL for a bundle request whose stamp has moved on.
+ * @param {{ uid: number, port: number, cookie: string }} instance
+ * @param {string} stalePath - the request path dsh refused.
+ * @param {Record<string, string>} headers - headers the instance accepts.
+ * @returns {Promise<string | undefined>} the live path, or undefined when the
+ *   package set left the graph altogether.
+ */
+async function currentBundlePath(instance, stalePath, headers) {
+  const identity = bundleIdentity(stalePath);
+  if (identity === undefined) return undefined;
+  const cacheKey = `${String(instance.uid)}\u0000${identity}`;
+  const now = Date.now();
+  const hit = currentGraphCache.get(cacheKey);
+  let advertised = hit !== undefined && now - hit.at < CURRENT_GRAPH_TTL_MS ? hit.urls : undefined;
+  if (advertised === undefined) {
+    advertised = await fetchAdvertisedBundles(instance, headers);
+    currentGraphCache.set(cacheKey, { at: now, urls: advertised });
+  }
+  const live = advertised
+    .map((url) => url.replaceAll('&amp;', '&').replace(/[,)]+$/, ''))
+    .find((url) => bundleIdentity(url) === identity);
+  if (live === undefined) return undefined;
+  return live.startsWith('/') ? live : `/${live}`;
+}
+
+/**
+ * Replay a bundle request against its live URL and stream the answer back.
+ * @param {{ uid: number, port: number, cookie: string }} instance
+ * @param {string} livePath - the URL the current graph advertises.
+ * @param {Record<string, string>} headers - the browser's upstream headers.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<boolean>} whether a body was served.
+ */
+function replayBundle(instance, livePath, headers, req, res) {
+  return new Promise((resolve) => {
+    const replay = httpRequest({
+      host: instanceAddress(instance.uid),
+      port: instance.port,
+      method: 'GET',
+      path: livePath,
+      headers,
+    }, (upstreamRes) => {
+      if ((upstreamRes.statusCode ?? 0) !== 200) {
+        upstreamRes.resume();
+        upstreamRes.on('end', () => resolve(false));
+        upstreamRes.on('error', () => resolve(false));
+        return;
+      }
+      /** @type {Record<string, string | string[]>} */
+      const responseHeaders = {};
+      for (const [name, value] of Object.entries(upstreamRes.headers)) {
+        if (value === undefined || HOP_BY_HOP.has(name)) continue;
+        responseHeaders[name] = value;
+      }
+      // The stamp was swapped under the browser's feet, so nothing may cache it.
+      responseHeaders['cache-control'] = 'no-store';
+      res.writeHead(200, responseHeaders);
+      upstreamRes.pipe(res);
+      upstreamRes.on('end', () => resolve(true));
+      upstreamRes.on('error', () => resolve(true));
+    });
+    replay.on('error', () => resolve(false));
+    req.on('close', () => replay.destroy());
+    replay.end();
+  });
 }
 
 /**
@@ -1297,6 +1568,17 @@ async function proxyRequest(req, res) {
   // the domain this tenant is actually on.
   rememberOrigin(req.headers, record.namespace);
 
+  // A navigation never waits for a launch: what it would receive meanwhile is
+  // the blank answer of a process being replaced. The waiting page holds the
+  // tab while the launch finishes behind it.
+  if (isDocumentRequest(req) && !liveInstance(record.subject)?.cookie) {
+    void instanceFor(session).catch((error) => {
+      console.error(`instance start failed for ${record.account ?? record.linuxName}:`, error?.message ?? error);
+    });
+    sendStarting(res);
+    return;
+  }
+
   const instance = await instanceFor(session);
   if (!instance?.cookie) {
     res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
@@ -1328,6 +1610,40 @@ async function proxyRequest(req, res) {
         if (value === undefined) continue;
         if (HOP_BY_HOP.has(name) && name !== 'upgrade') continue;
         responseHeaders[name] = value;
+      }
+      // A stale `rev` used to end here. Serve the same package set under the
+      // stamp the instance composes now instead: the tab never notices the
+      // graph moved. Only a package that left the graph falls through to the
+      // reload answer, and the document is `no-store`, so that retry does pick
+      // up the current manifest. The window (3 reloads / 5 min) keeps a truly
+      // missing plugin from spinning the browser; a storage-less context
+      // reloads nothing, because it cannot count.
+      if (upstreamRes.statusCode === 404 && path.startsWith('/plugins/??')) {
+        upstreamRes.resume();
+        void (async () => {
+          const livePath = await currentBundlePath(instance, path, headers);
+          if (livePath !== undefined && await replayBundle(instance, livePath, headers, req, res)) {
+            resolve();
+            return;
+          }
+          const retry = Buffer.from(
+            'try{var k="vh-stale-bundle",t=Date.now(),v=null,r=[],i;'
+            + 'try{v=JSON.parse(sessionStorage.getItem(k)||"[]");}catch(e2){v=[];}'
+            + 'if(Object.prototype.toString.call(v)!=="[object Array]")v=[];'
+            + 'for(i=0;i<v.length;i++)if(typeof v[i]==="number"&&t-v[i]<300000)r.push(v[i]);'
+            + 'if(r.length<3){r.push(t);sessionStorage.setItem(k,JSON.stringify(r));location.reload();}'
+            + '}catch(e){}',
+            'utf8',
+          );
+          res.writeHead(200, {
+            'content-type': 'text/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+            'content-length': String(retry.byteLength),
+          });
+          res.end(retry);
+          resolve();
+        })();
+        return;
       }
       // dsh regenerates its SPA boot manifest on restart; a cached shell pins
       // the browser to stale plugin bundles.
@@ -1440,6 +1756,14 @@ const server = createServer((req, res) => {
     void handleControl(req, res, url).catch((error) => {
       console.error('control handler failed:', error);
       if (!res.headersSent) json(res, 500, { error: 'internal' });
+      else res.destroy();
+    });
+    return;
+  }
+  if (stripPrefix(url.pathname) === MARKET_RESTART_PATH) {
+    void handleMarketRestart(req, res).catch((error) => {
+      console.error('market restart failed:', error);
+      if (!res.headersSent) json(res, 502, { ok: false, error: 'restart-failed' });
       else res.destroy();
     });
     return;
