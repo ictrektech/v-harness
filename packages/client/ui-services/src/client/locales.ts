@@ -27,6 +27,8 @@ export const zh = {
   open: '打开',
   restart: '重启',
   stop: '停止',
+  restarting: '重启中…',
+  stopping: '停止中…',
   'error.unavailable': '读取失败：{message}',
   'action.failed': '操作失败：{message}',
 } satisfies Record<string, string>
@@ -47,6 +49,8 @@ export const en = {
   open: 'Open',
   restart: 'Restart',
   stop: 'Stop',
+  restarting: 'Restarting…',
+  stopping: 'Stopping…',
   'error.unavailable': 'Read failed: {message}',
   'action.failed': 'Action failed: {message}',
 } satisfies Record<UiServicesKey, string>

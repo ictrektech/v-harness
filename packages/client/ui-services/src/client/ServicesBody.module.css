@@ -16,12 +16,25 @@
 }
 
 .row {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
+  display: grid;
+  gap: 0.25rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--dsh-border-color, #2a2e35);
   border-radius: 0.5rem;
+}
+
+.main {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.rowError {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--dsh-danger-color, #e5534b);
+  overflow-wrap: anywhere;
 }
 
 .dot {
@@ -70,6 +83,15 @@
 
 .tool:hover {
   border-color: var(--dsh-border-hover-color, #3d434c);
+}
+
+.tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tool:disabled:hover {
+  border-color: var(--dsh-border-color, #2a2e35);
 }
 
 .note {
