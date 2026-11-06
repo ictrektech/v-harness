@@ -19,8 +19,8 @@
  */
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 
 /** Where the image puts built client plugins; a deployment may relocate both roots. */
 const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
@@ -71,6 +71,36 @@ autoInstallPeers: false
 /** Plugins shipped from this repository, by package name. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
 
+/** Payload plugins that are published, so a profile declares them like any other dependency. */
+const PROFILE_PLUGINS = ['dshmarket', 'ds-bot']
+
+/**
+ * The dependencies every tenant profile declares: the published payload
+ * plugins, pinned to the version this image was built and tested with.
+ *
+ * Declaring them is what makes them survive. `pnpm` treats a package the
+ * manifest does not name as extraneous and moves it into `node_modules/.ignored`
+ * on the next install; every market install runs one, so an undeclared market
+ * deleted itself — and the bot, the carrier and the client panels — halfway
+ * through installing a plugin. A declared package is never extraneous, whatever
+ * pnpm version answers.
+ * @returns {Promise<Record<string, string>>} package name → exact version.
+ */
+async function profileDependencies() {
+  /** @type {Record<string, string>} */
+  const dependencies = {}
+  for (const name of PROFILE_PLUGINS) {
+    try {
+      const manifest = JSON.parse(await readFile(join(AGENT_PLUGIN_ROOT, 'node_modules', name, 'package.json'), 'utf8'))
+      if (typeof manifest.version === 'string') dependencies[name] = manifest.version
+    } catch (_error) {
+      // Not the image, or a payload without that plugin: nothing to declare.
+      // The bundle list still says what the image intends.
+    }
+  }
+  return dependencies
+}
+
 /**
  * Create the tenant's profile directory before dsh's first boot when it does
  * not exist yet, with the same manifest, user patch, and pnpm settings dsh's
@@ -93,7 +123,7 @@ async function ensureProfile(user) {
   const manifest = {
     name: 'dsh-profile-web',
     private: true,
-    dependencies: {},
+    dependencies: await profileDependencies(),
     dsh: { profile: { bundles: [...PROFILE_BUNDLES] } },
   }
   await writeFile(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`)
@@ -222,21 +252,24 @@ export async function syncClientPlugins(user) {
 }
 
 /**
- * Copy the image's agent-side tool plugins into one tenant's profile and
- * mount the carrier bundle.
+ * Stage the image's unpublished agent-side plugins into one tenant's profile.
  *
- * The profile installs its harness packages from the npm registry, and these
- * plugins are unpublished, so dsh would skip their rows on every start. Two
- * rules keep the copy safe:
+ * These packages are not on the registry, so no profile manifest can declare
+ * them and `pnpm` would treat a copy of one as extraneous. Two rules keep the
+ * copy safe:
  *
- * - the plugin packages and the carrier overwrite whatever the profile holds
- *   (a broken earlier hand-install must not survive, and an updated image
+ * - the unpublished plugins and the carrier overwrite whatever the profile
+ *   holds (a broken earlier hand-install must not survive, and an updated image
  *   must reach existing tenants);
- * - every other staged package is copied only when missing, so a published
- *   or runtime-resolved dependency is never shadowed by this payload.
+ * - every other staged package is copied only when missing, so a published or
+ *   runtime-resolved dependency is never shadowed by this payload.
  *
- * Runs after {@link ensureProfile}, so a brand-new tenant's first boot
- * already resolves the carrier bundle and its plugin packages.
+ * A published payload plugin (see {@link PROFILE_PLUGINS}) is staged *and*
+ * declared: the copy makes the first boot work without a registry install, the
+ * declaration is what stops the next `pnpm` run from deleting that copy.
+ *
+ * Runs after {@link ensureProfile}, so a brand-new tenant's first boot already
+ * resolves the carrier bundle and its plugin packages.
  *
  * @param {{
  *   home: string,
@@ -262,7 +295,6 @@ async function syncAgentPlugins(user) {
   const modules = join(profile, 'node_modules')
   await mkdir(modules, { recursive: true })
   await chownDir(modules, user.uid, user.linuxName)
-  await materializePayloadLinks(modules, payloadModules, user)
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
@@ -286,53 +318,6 @@ async function syncAgentPlugins(user) {
   for (const name of plugins) {
     if (await exists(join(payloadModules, name))) continue
     console.error(`agent plugin missing from payload: ${name} (tenant ${user.linuxName}, root ${AGENT_PLUGIN_ROOT})`)
-  }
-}
-
-/**
- * Replace symlinks that point into the image payload with real directories.
- *
- * `link:` dependencies from an earlier revision left these in a profile's
- * `node_modules`. They resolve inside the container, so the "already installed"
- * check in {@link syncAgentPlugins} skips them, but the tenant's jail never
- * mounts the payload root: inside the jail every one of them is a broken import
- * ("Cannot find package …") that silently drops whichever plugin needed it.
- *
- * @param {string} modules - the profile's node_modules directory.
- * @param {string} payloadModules - the payload's node_modules directory.
- * @param {{ linuxName: string, uid: number }} user - the tenant being repaired.
- * @returns {Promise<void>}
- */
-async function materializePayloadLinks(modules, payloadModules, user) {
-  /** @type {string[]} */
-  const candidates = []
-  for (const entry of await readdir(modules, { withFileTypes: true }).catch(() => [])) {
-    if (entry.name.startsWith('@')) {
-      for (const child of await readdir(join(modules, entry.name)).catch(() => [])) {
-        candidates.push(`${entry.name}/${child}`)
-      }
-    } else {
-      candidates.push(entry.name)
-    }
-  }
-  for (const relative of candidates) {
-    const target = join(modules, relative)
-    const link = await readlink(target).catch(() => undefined)
-    if (link === undefined) continue
-    const resolved = resolve(modules, link)
-    const insidePayload = [PLUGIN_ROOT, AGENT_PLUGIN_ROOT].some(
-      (root) => resolved === root || resolved.startsWith(`${root}/`),
-    )
-    if (!insidePayload) continue
-    const source = join(payloadModules, relative)
-    if (!await exists(join(source, 'package.json'))) continue
-    try {
-      await rm(target, { recursive: true, force: true })
-      await replaceDirectory(source, target)
-      await chownTo(target, user.uid, user.linuxName)
-    } catch (error) {
-      console.error(`payload link repair failed for ${relative} in ${user.linuxName}:`, error.message)
-    }
   }
 }
 
@@ -375,16 +360,24 @@ function isPayloadLink(spec) {
 }
 
 /**
- * Append the bundles a profile is missing (idempotent JSON edit). A bundle
- * layer is what mounts its plugin rows; without the entry the copied packages
- * would sit in node_modules unloaded. Appended in {@link PROFILE_BUNDLES}
- * order, so a later layer still overrides an earlier one.
+ * Append the bundles and dependencies a profile is missing (idempotent JSON
+ * edit), and drop the ones an earlier revision got wrong.
+ *
+ * A bundle layer is what mounts its plugin rows, so a profile that predates the
+ * carrier still has to receive it. A dependency is what keeps a plugin out of
+ * `pnpm`'s extraneous sweep, so a profile created before this image declared the
+ * market and the bot has to receive those too — otherwise its next install
+ * deletes them. `link:` specs onto this image's payload are the opposite case:
+ * `pnpm install` runs inside the tenant's jail, where that path does not exist,
+ * so the install failed and left `node_modules` incomplete ("1 entry did not
+ * activate"). Those entries are removed.
  * @param {string} profile - the tenant's profile directory.
  * @param {{ linuxName: string }} user - the tenant, for diagnostics.
  * @param {readonly string[]} names - bundle package names that must be listed.
+ * @param {Record<string, string>} declared - dependencies that must be present.
  * @returns {Promise<void>}
  */
-async function mountBundles(profile, user, names) {
+async function mountBundles(profile, user, names, declared) {
   const manifestPath = join(profile, 'package.json')
   try {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
@@ -396,17 +389,15 @@ async function mountBundles(profile, user, names) {
       bundles.push(name)
       changed = true
     }
-    // An earlier revision declared these bundles as `link:` dependencies onto
-    // this image's payload. `pnpm install` runs inside the tenant's jail, where
-    // that path does not exist, so the install failed and left the profile's
-    // `node_modules` incomplete — the browser bundles resolved from there then
-    // failed to activate ("1 entry did not activate"). Bundles are copied into
-    // the profile by this module; the manifest never needs to name them, and a
-    // stale entry is removed here so an affected tenant repairs itself.
     const dependencies = manifest.dependencies ?? {}
     for (const [name, spec] of Object.entries(dependencies)) {
       if (!isPayloadLink(spec)) continue
       delete dependencies[name]
+      changed = true
+    }
+    for (const [name, spec] of Object.entries(declared)) {
+      if (dependencies[name] === spec) continue
+      dependencies[name] = spec
       changed = true
     }
     if (!changed) return
@@ -418,7 +409,7 @@ async function mountBundles(profile, user, names) {
 }
 
 /**
- * Ensure one tenant's profile lists every bundle this image ships.
+ * Ensure one tenant's profile lists every bundle and dependency this image ships.
  * @param {{
  *   home: string,
  *   linuxName: string,
@@ -427,7 +418,12 @@ async function mountBundles(profile, user, names) {
  * @returns {Promise<void>}
  */
 async function mountProfileBundles(user) {
-  await mountBundles(join(user.home, '.dsh', 'profiles', 'web'), user, PROFILE_BUNDLES)
+  await mountBundles(
+    join(user.home, '.dsh', 'profiles', 'web'),
+    user,
+    PROFILE_BUNDLES,
+    await profileDependencies(),
+  )
 }
 
 /**
