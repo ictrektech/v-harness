@@ -41,6 +41,13 @@ shift 3 || die 'usage: vh-jail <account> <uid> <home> <command...>'
 [[ "$home" == "${HOME_ROOT}/${account}" ]] || die "home must be ${HOME_ROOT}/${account}: ${home}"
 [[ -d "$home" ]] || die "home does not exist: ${home}"
 
+# The data root must stay traversable or every tenant write below it fails with
+# EACCES no matter how correct the home permissions are. Boot does this too,
+# but the volume mode has been observed to change after boot (the platform
+# resets it on the host), and boot runs only once.
+chmod 0711 "${HOME_ROOT}" 2>/dev/null \
+  || printf "vh-jail: could not keep %s traversable\n" "${HOME_ROOT}" >&2
+
 export VH_JAIL_ACCOUNT="$account"
 export VH_JAIL_UID="$uid"
 export VH_JAIL_HOME="$home"
