@@ -166,41 +166,6 @@ async function replaceDirectory(source, target) {
   }
 }
 
-/** Suffix {@link replaceDirectory} stages under: `<target>.vh-<pid>-<8 hex>`. */
-const STAGING_SUFFIX = /\.vh-[0-9]+-[0-9a-f]{8}$/
-
-/** Age past which a staging directory cannot belong to a copy still in flight. */
-const STAGING_STALE_MS = 10 * 60 * 1000
-
-/**
- * Remove staging directories an interrupted copy left beside its targets.
- *
- * {@link replaceDirectory} copies a whole package into `<target>.vh-<pid>-<rand>`
- * and renames it into place, so a gateway that dies mid-copy — a restart, a
- * killed launch — leaves the staging directory behind and nothing ever collects
- * it. A directory younger than {@link STAGING_STALE_MS} is left alone: a second
- * launch for the same tenant may be copying into it right now.
- *
- * @param {string} root - the profile's `node_modules` directory.
- * @returns {Promise<void>}
- */
-async function pruneStaleStaging(root) {
-  const now = Date.now()
-  const sweep = async (dir) => {
-    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      if (!entry.isDirectory() || !STAGING_SUFFIX.test(entry.name)) continue
-      const path = join(dir, entry.name)
-      const info = await stat(path).catch(() => undefined)
-      if (info === undefined || now - info.mtimeMs < STAGING_STALE_MS) continue
-      await rm(path, { recursive: true, force: true }).catch(() => {})
-    }
-  }
-  await sweep(root)
-  for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
-    if (entry.isDirectory() && entry.name.startsWith('@')) await sweep(join(root, entry.name))
-  }
-}
-
 /**
  * Copy the image's build of each deployed plugin over one profile's copy.
  *
@@ -218,7 +183,6 @@ async function pruneStaleStaging(root) {
  */
 export async function syncClientPlugins(user) {
   const modules = join(user.home, '.dsh', 'profiles', 'web', 'node_modules', '@deepseek-ai')
-  await pruneStaleStaging(join(user.home, '.dsh', 'profiles', 'web', 'node_modules'))
   // A deployment without the payload directory is not the image: it has nothing
   // to overlay, and failing here would keep every instance from starting.
   if (!(await exists(PLUGIN_ROOT))) return
@@ -258,25 +222,28 @@ export async function syncClientPlugins(user) {
 }
 
 /**
- * Verify the image's agent-side payload against one tenant's profile.
+ * Copy the image's agent-side tool plugins into one tenant's profile and
+ * mount the carrier bundle.
  *
- * The payload packages ride in the shared dsh installation — the image copies
- * them next to the runtime at build time — so bundle resolution finds them
- * through the installation anchor, and a profile-scoped pnpm run, which is
- * what every market install performs, can never remove them. Nothing is
- * staged into the profile any more. What remains is the repair for `link:`
- * dependencies an earlier revision left behind and the check that the payload
- * actually carries what this image promises.
+ * The profile installs its harness packages from the npm registry, and these
+ * plugins are unpublished, so dsh would skip their rows on every start. Two
+ * rules keep the copy safe:
+ *
+ * - the plugin packages and the carrier overwrite whatever the profile holds
+ *   (a broken earlier hand-install must not survive, and an updated image
+ *   must reach existing tenants);
+ * - every other staged package is copied only when missing, so a published
+ *   or runtime-resolved dependency is never shadowed by this payload.
  *
  * Runs after {@link ensureProfile}, so a brand-new tenant's first boot
- * resolves the carrier bundle and its plugin packages from the installation.
+ * already resolves the carrier bundle and its plugin packages.
  *
  * @param {{
  *   home: string,
  *   linuxName: string,
  *   uid: number,
  * }} user - the tenant whose profile to update.
- * @returns {Promise<void>} resolves once the profile was checked; a failure
+ * @returns {Promise<void>} resolves once the profile was updated; a failure
  *   is logged and never breaks the launch.
  */
 async function syncAgentPlugins(user) {
@@ -296,10 +263,26 @@ async function syncAgentPlugins(user) {
   await mkdir(modules, { recursive: true })
   await chownDir(modules, user.uid, user.linuxName)
   await materializePayloadLinks(modules, payloadModules, user)
+  for (const relative of await stagedPackagePaths(payloadModules)) {
+    const parts = relative.split('/')
+    const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
+    // The carrier must refresh on every start so an updated image's rows
+    // reach existing tenants.
+    const overwrite = plugins.has(name) || name === AGENT_BUNDLE_NAME
+    const target = join(modules, relative)
+    if (overwrite || !(await exists(join(target, 'package.json')))) {
+      try {
+        await replaceDirectory(join(payloadModules, relative), target)
+        await chownTo(target, user.uid, user.linuxName)
+      } catch (error) {
+        console.error(`agent plugin sync failed for ${name} in ${user.linuxName}:`, error.message)
+      }
+    }
+  }
   // A name the manifest lists but the payload lacks used to leave no trace: the
-  // tenant silently booted without that plugin (no market, no bot) and nothing
-  // was logged. An image whose payload was copied without these packages must
-  // say so.
+  // loop above only walks packages that are present, so the tenant silently
+  // booted without that plugin (no market, no bot) and nothing was logged. An
+  // image whose payload was copied without these packages must say so.
   for (const name of plugins) {
     if (await exists(join(payloadModules, name))) continue
     console.error(`agent plugin missing from payload: ${name} (tenant ${user.linuxName}, root ${AGENT_PLUGIN_ROOT})`)
@@ -351,6 +334,33 @@ async function materializePayloadLinks(modules, payloadModules, user) {
       console.error(`payload link repair failed for ${relative} in ${user.linuxName}:`, error.message)
     }
   }
+}
+
+/**
+ * Staged payload package paths: top-level entries, with @scopes expanded.
+ * @param {string} root - the payload's node_modules directory.
+ * @returns {Promise<string[]>} package paths relative to the modules root,
+ *   sorted.
+ */
+async function stagedPackagePaths(root) {
+  const paths = []
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return paths
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (entry.name.startsWith('@')) {
+      for (const child of await readdir(join(root, entry.name), { withFileTypes: true })) {
+        if (child.isDirectory()) paths.push(`${entry.name}/${child.name}`)
+      }
+    } else {
+      paths.push(entry.name)
+    }
+  }
+  return paths.sort()
 }
 
 /**
