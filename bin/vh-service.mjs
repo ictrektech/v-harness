@@ -79,7 +79,7 @@ function call(method, path, body) {
   });
 }
 
-/** @returns {{ name: string, port: number, basePath: string | undefined, cmd: string[] }} */
+/** @returns {{ name: string, port: number, basePath: string | undefined, cwd: string, cmd: string[] }} */
 function parseRunArgs() {
   // slice(3) skips node, the script and the `run` subcommand itself; keeping
   // `run` here made the loop below reject it as an unknown flag, so no service
@@ -88,6 +88,10 @@ function parseRunArgs() {
   let name = '';
   let port = 0;
   let basePath;
+  // The directory is part of the registration: the panel's restart replays the
+  // command in a fresh jail whose landing directory is the tenant home, so a
+  // relative entry file (`node server.js`) cannot be found without it.
+  let cwd = process.cwd();
   const dashdash = argv.indexOf('--');
   if (dashdash < 0) die('用法: vh-service run --name <名称> --port <端口> -- <启动命令...>');
   const cmd = argv.slice(dashdash + 1);
@@ -97,6 +101,7 @@ function parseRunArgs() {
     if (flag === '--name' && value !== undefined) { name = value.trim(); i += 1; }
     else if (flag === '--port' && value !== undefined) { port = Number(value); i += 1; }
     else if (flag === '--basePath' && value !== undefined) { basePath = value; i += 1; }
+    else if (flag === '--cwd' && value !== undefined) { cwd = value; i += 1; }
     else die(`未知参数: ${flag}`);
   }
   if (name === '' || name.length > 64) die('服务名称不能为空且不超过 64 个字符');
@@ -104,7 +109,8 @@ function parseRunArgs() {
   if (port >= RESERVED_MIN && port <= RESERVED_MAX) die(`端口 ${String(port)} 在实例保留段 3100-3999 内，请换一个`);
   if (cmd.length === 0) die('-- 后面必须跟启动命令');
   if (basePath !== undefined && !basePath.startsWith('/')) die('--basePath 必须以 / 开头');
-  return { name, port, basePath, cmd };
+  if (!cwd.startsWith('/')) die('--cwd 必须是绝对路径');
+  return { name, port, basePath, cwd, cmd };
 }
 
 /**
@@ -117,12 +123,15 @@ function parseRunArgs() {
  * service that has not bound anything within the window registers as before;
  * this check only rejects what is known to be unreachable.
  * @param {number} port
- * @returns {string | undefined} the refusal message, or undefined to proceed.
+ * @param {import('node:child_process').ChildProcess} child - the wrapped command,
+ *   so a command that dies at once is never registered as a running service.
+ * @returns {Promise<string | undefined>} the refusal message, or undefined to proceed.
  */
-function bindProblem(port) {
+async function bindProblem(port, child) {
   const tenantIp = process.env.VH_TENANT_IP;
   if (tenantIp === undefined || tenantIp === '') return undefined;
   for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (child.exitCode !== null || child.signalCode !== null) return undefined;
     let listeners = [];
     try {
       listeners = execFileSync('ss', ['-Hltn'], { encoding: 'utf8' }).split('\n');
@@ -139,21 +148,31 @@ function bindProblem(port) {
       if (dialable) return undefined;
       return `服务监听在 ${bound.join('、')}，网关要从 ${tenantIp}:${String(port)} 访问它。请给启动命令加 --host 0.0.0.0，或绑定 ${tenantIp}`;
     }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    await new Promise((resolve) => { setTimeout(resolve, 500); });
   }
   return undefined;
 }
 
 /** Register, supervise, heartbeat. */
 async function run() {
-  const { name, port, basePath, cmd } = parseRunArgs();
-  const child = spawn(cmd[0], cmd.slice(1), { stdio: 'inherit' });
-  const refusal = bindProblem(port);
+  const { name, port, basePath, cwd, cmd } = parseRunArgs();
+  const child = spawn(cmd[0], cmd.slice(1), { stdio: 'inherit', cwd });
+  // A command that cannot be executed at all (missing binary, vanished --cwd)
+  // never emits 'exit'; without this the supervisor would keep heartbeating a
+  // service that does not exist.
+  child.on('error', (error) => {
+    process.stderr.write(`vh-service: 无法启动「${cmd[0]}」: ${error.message}\n`);
+    process.exit(1);
+  });
+  const refusal = await bindProblem(port, child);
   if (refusal !== undefined) {
     child.kill('SIGTERM');
     die(refusal);
   }
-  const registration = { name, port, cmd, pid: child.pid, basePath };
+  // The command is already gone: its exit handler owns the report, and
+  // registering now would show a running service that is not there.
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const registration = { name, port, cmd, pid: child.pid, basePath, cwd };
 
   let registered = false;
   const register = async () => {
@@ -195,6 +214,12 @@ async function run() {
         process.stderr.write(`vh-service: ${String(payload.message ?? '登记已失效')}，退出\n`);
         goodbye();
         child.kill('SIGTERM');
+        // A service that ignores SIGTERM must not leave the supervisor — and
+        // the port — behind a stop the owner already asked for.
+        const reap = setTimeout(() => {
+          if (child.pid !== undefined && child.exitCode === null) child.kill('SIGKILL');
+        }, 5_000);
+        reap.unref();
       }
     })().catch(() => {});
     // Ref'd on purpose: the heartbeat is the only handle this process holds

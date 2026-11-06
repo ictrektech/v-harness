@@ -23,8 +23,8 @@
  */
 
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
-import { chmodSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { chmodSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -50,6 +50,8 @@ const RESERVED_PORT_MAX = 3999;
 
 const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
+/** The tenant CLI, reachable inside the jail through the read-only /usr bind. */
+const SERVICE_BIN = process.env.VH_SERVICE_BIN ?? '/usr/local/bin/vh-service';
 
 /**
  * @typedef {object} ServiceRecord
@@ -62,6 +64,9 @@ const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
  * @property {number | undefined} pid - the supervisor's pid inside the tenant
  *   pid namespace; meaningful only to same-namespace callers (stop, liveness).
  * @property {string | undefined} basePath - path prefix the app expects.
+ * @property {boolean | undefined} stopped - the owner asked for this service to
+ *   stand down. The record is kept so the panel can still offer restart, and
+ *   the supervisor that keeps heartbeating it is refused on its next beat.
  * @property {'user' | 'gateway'} source - who last (re)started it.
  * @property {number} registeredAt - epoch milliseconds.
  * @property {number} lastSeen - last heartbeat, epoch milliseconds.
@@ -95,7 +100,7 @@ function tenantServices(subject) {
  * @returns {boolean} whether the heartbeat is recent enough to call it running.
  */
 function isRunning(record) {
-  return Date.now() - record.lastSeen < STALE_MS;
+  return record.stopped !== true && Date.now() - record.lastSeen < STALE_MS;
 }
 
 /** @returns {Record<string, ServiceRecord[]>} the persisted shape. */
@@ -145,7 +150,9 @@ export async function initServices(options) {
       if (!Array.isArray(records)) continue;
       const services = tenantServices(subject);
       for (const record of records) {
-        if (isValidRecord(record)) services.set(record.port, record);
+        // `stopped` is written by this module only; anything else on disk is
+        // read as "not stopped" rather than as a truthy accident.
+        if (isValidRecord(record)) services.set(record.port, { ...record, stopped: record.stopped === true });
       }
     }
   } catch (error) {
@@ -221,10 +228,18 @@ function register(tenant, body) {
     : undefined;
 
   const services = tenantServices(tenant.subject);
-  if (!services.has(port) && services.size >= MAX_SERVICES_PER_TENANT) {
-    return { status: 429, error: 'too-many-services', message: `每个用户最多登记 ${String(MAX_SERVICES_PER_TENANT)} 个服务` };
-  }
   const existing = services.get(port);
+  if (!existing && services.size >= MAX_SERVICES_PER_TENANT) {
+    // A stopped record is a bookmark, not a service: it must not be the reason
+    // the owner cannot register the next one. Drop the least recently seen.
+    const disposable = [...services.values()]
+      .filter((record) => record.stopped === true)
+      .sort((a, b) => a.lastSeen - b.lastSeen)[0];
+    if (disposable === undefined) {
+      return { status: 429, error: 'too-many-services', message: `每个用户最多登记 ${String(MAX_SERVICES_PER_TENANT)} 个服务` };
+    }
+    services.delete(disposable.port);
+  }
   const pid = Number.isInteger(body.pid) ? Number(body.pid) : undefined;
   if (existing && existing.pid !== pid && isRunning(existing) && existing.source === 'user') {
     return { status: 409, error: 'port-in-use', message: `端口 ${String(port)} 已被「${existing.name}」占用` };
@@ -239,6 +254,12 @@ function register(tenant, body) {
     cmd: body.cmd,
     pid,
     basePath,
+    // The directory the command was started in. Recorded so a restart can
+    // replay it; without it the jail's landing directory is used and a
+    // relative entry file is not found.
+    cwd: typeof body.cwd === 'string' && body.cwd.startsWith('/') && body.cwd.length <= 512 ? body.cwd : undefined,
+    // An explicit `vh-service run` is the owner starting it again.
+    stopped: false,
     source: 'user',
     registeredAt: Date.now(),
     lastSeen: Date.now(),
@@ -250,7 +271,9 @@ function register(tenant, body) {
 /**
  * Heartbeat: the supervisor is alive. Re-registration after a gateway restart
  * happens here too — the ping of an unregistered port re-creates the record,
- * so a live process is never orphaned by a registry rebuild.
+ * so a live process is never orphaned by a registry rebuild. A stopped record
+ * is the one answer that is not a heartbeat: the owner asked for the service to
+ * stand down, so its supervisor must take the child down and exit.
  * @param {TenantIdentity} tenant
  * @param {number} port
  * @param {{ name: string, cmd: string[], pid?: number, basePath?: string }} body
@@ -259,6 +282,9 @@ function register(tenant, body) {
 function heartbeat(tenant, port, body) {
   const existing = registry.get(tenant.subject)?.get(port);
   if (existing) {
+    if (existing.stopped === true) {
+      return { status: 409, error: 'stopped', message: `「${existing.name}」已停止` };
+    }
     existing.lastSeen = Date.now();
     if (Number.isInteger(body.pid)) existing.pid = Number(body.pid);
     persist();
@@ -269,22 +295,81 @@ function heartbeat(tenant, port, body) {
 }
 
 /**
- * Remove one registration; stop a gateway-held jail if this one is ours.
+ * The tenant's own listeners on one port, as the kernel sees them.
+ *
+ * A tenant-held supervisor only learns about a stop on its next heartbeat (up
+ * to one 10s beat), and until then the port is still taken — a restart in that
+ * window would die on EADDRINUSE. The uid check keeps this from ever touching
+ * another tenant's listener on the same port number.
+ * @param {number} port
+ * @param {number} uid
+ * @returns {number[]}
+ */
+function listenerPids(port, uid) {
+  /** @type {string} */
+  let listing;
+  try {
+    listing = execFileSync('ss', ['-Hltnp', `sport = :${String(port)}`], { encoding: 'utf8' });
+  } catch {
+    return []; // no ss here: the heartbeat still stops the service
+  }
+  const pids = [];
+  for (const match of listing.matchAll(/pid=(\d+)/g)) {
+    const pid = Number(match[1]);
+    if (!Number.isInteger(pid) || pids.includes(pid)) continue;
+    let owner;
+    try {
+      owner = Number(/^Uid:\s+(\d+)/m.exec(readFileSync(`/proc/${String(pid)}/status`, 'utf8'))?.[1]);
+    } catch {
+      continue; // exited between the listing and the lookup
+    }
+    if (owner === uid) pids.push(pid);
+  }
+  return pids;
+}
+
+/**
+ * @param {number} port
+ * @param {number} uid
+ * @param {NodeJS.Signals} signal
+ */
+function signalListeners(port, uid, signal) {
+  for (const pid of listenerPids(port, uid)) {
+    try { process.kill(pid, signal); } catch { /* exited already */ }
+  }
+}
+
+/**
+ * Revoke one registration: the owner wants it down. The record is kept as a
+ * stopped row (so the panel can still offer restart, and so a stale supervisor
+ * cannot re-register itself by heartbeating); a tenant-held supervisor learns
+ * about the revocation on its next heartbeat and shuts its child down, and a
+ * gateway-held jail is killed here.
  * @param {string} subject
  * @param {number} port
- * @returns {boolean} whether a record was removed.
+ * @returns {ServiceRecord | undefined} the stopped record, or undefined.
  */
 function unregister(subject, port) {
-  const removed = tenantServices(subject).get(port);
-  if (!removed) return false;
-  tenantServices(subject).delete(port);
+  const record = tenantServices(subject).get(port);
+  if (!record) return undefined;
+  record.stopped = true;
   const jail = restartedJails.get(`${subject}:${String(port)}`);
   if (jail) {
     restartedJails.delete(`${subject}:${String(port)}`);
-    jail.kill('SIGTERM');
+    // The jail is a process-group leader (`detached: true`), and the outer bash
+    // does not forward signals to the unshare/supervisor below it: signalling
+    // only that pid leaves the service running with nobody reporting it.
+    if (jail.pid !== undefined && jail.exitCode === null) {
+      try { process.kill(-jail.pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
   }
+  // Ask the listener itself, so the stop lands now instead of on the next
+  // heartbeat; repeat without mercy for a service that ignores SIGTERM.
+  signalListeners(port, record.uid, 'SIGTERM');
+  const escalate = setTimeout(() => { signalListeners(port, record.uid, 'SIGKILL'); }, 5_000);
+  escalate.unref();
   persist();
-  return true;
+  return record;
 }
 
 /**
@@ -308,19 +393,42 @@ export function listServices(subject) {
 /**
  * Resolve the proxy target for `/__vh/svc/<port>`. Only a port this subject
  * registered is ever returned; stale heartbeats still resolve so the upstream
- * connection error (not a local 404) tells the user the service is down.
+ * connection error (not a local 404) tells the user the service is down. A
+ * stopped service does not resolve: its supervisor gets a beat to exit, and
+ * until then nothing may be served through the panel.
  * @param {string} subject
  * @param {number} port
  * @returns {ServiceRecord | undefined}
  */
 export function resolveService(subject, port) {
-  return registry.get(subject)?.get(port);
+  const record = registry.get(subject)?.get(port);
+  return record?.stopped === true ? undefined : record;
 }
 
 /**
- * Restart one service as its tenant: a fresh jail running the registered
- * command. Independent of the dsh instance — workspace files come from the
- * same physical home, while /tmp stays private to each jail.
+ * The argv that replays one registration inside the tenant's jail. The tenant's
+ * own CLI wraps the command, so the restarted service is supervised and
+ * heartbeats like one the tenant started by hand — which is what makes the
+ * panel show it running instead of leaving the row stopped forever.
+ * @param {ServiceRecord} record
+ * @returns {string[]} argv for `vh-jail`, after the account/uid/home.
+ */
+function replayArgs(record) {
+  return [
+    SERVICE_BIN, 'run',
+    '--name', record.name,
+    '--port', String(record.port),
+    ...(record.basePath === undefined ? [] : ['--basePath', record.basePath]),
+    ...(record.cwd === undefined ? [] : ['--cwd', record.cwd]),
+    '--', ...record.cmd,
+  ];
+}
+
+/**
+ * Restart one service as its tenant: a fresh jail running the tenant's CLI
+ * around the registered command, in the directory it was registered from.
+ * Independent of the dsh instance — workspace files come from the same
+ * physical home, while /tmp stays private to each jail.
  *
  * The jail needs nothing but its identity: the service listens on the same
  * container loopback the gateway dials, and the instance's port belongs to the
@@ -341,9 +449,17 @@ export function restartService(subject, port) {
     return { status: 409, error: 'already-running', message: `「${record.name}」正在启动` };
   }
 
+  // The record has to stop reading as revoked before the supervisor's first
+  // heartbeat lands, or that heartbeat would be refused as a stop; and it must
+  // read as not-running until that heartbeat actually arrives, so a replay that
+  // dies shows stopped instead of borrowing the old heartbeat's freshness.
+  record.stopped = false;
+  record.lastSeen = 0;
+  persist();
+
   const child = spawn(
     JAIL_BIN,
-    [record.account, String(record.uid), join(HOME_ROOT, record.account), ...record.cmd],
+    [record.account, String(record.uid), join(HOME_ROOT, record.account), ...replayArgs(record)],
     {
       env: {
         HOME_ROOT,
@@ -352,10 +468,23 @@ export function restartService(subject, port) {
         VH_GATEWAY_PORT: process.env.PORT ?? '8080',
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       },
-      stdio: 'ignore',
+      // stderr only, and for the record: `stdio: 'ignore'` used to swallow the
+      // reason a replayed command never came up.
+      stdio: ['ignore', 'ignore', 'pipe'],
       detached: true,
     },
   );
+  child.stderr?.on('data', (chunk) => {
+    // First line only: a failing command reports a stack, and the gateway log
+    // is shared with every tenant.
+    const first = String(chunk).split('\n').map((line) => line.trim()).find((line) => line !== '');
+    if (first !== undefined) console.warn(`service restart (${record.account} port=${String(port)}): ${first}`);
+  });
+  // Without a listener an unspawnable jail (missing JAIL_BIN) emits 'error' and
+  // takes the whole gateway down.
+  child.on('error', (error) => {
+    console.error(`service restart failed (${record.account} port=${String(port)}):`, error);
+  });
   child.unref();
   restartedJails.set(`${subject}:${String(port)}`, child);
   child.once('exit', () => {
@@ -363,22 +492,24 @@ export function restartService(subject, port) {
       restartedJails.delete(`${subject}:${String(port)}`);
     }
   });
-  console.log(`service restart: ${record.account} port=${String(port)} pid=${String(child.pid)}`);
+  console.log(`service restart: ${record.account} port=${String(port)} pid=${String(child.pid)} cwd=${record.cwd ?? '-'}`);
   return { status: 200 };
 }
 
 /**
  * Stop one service on behalf of its owner (UI button or tenant CLI). The
- * registry entry goes first, so the supervisor's next heartbeat finds nothing
- * and the supervisor shuts its child down; a gateway-held jail is killed here.
+ * registration is revoked rather than deleted: the panel keeps the row so
+ * restart stays reachable, and the supervisor that owns the process learns of
+ * the revocation on its next heartbeat and shuts its child down. Without that,
+ * deleting the record let the supervisor register itself straight back on the
+ * next beat — which is what made the panel's Stop button look like a no-op.
  * @param {string} subject
  * @param {number} port
  * @returns {{ status: number, error?: string, message?: string }}
  */
 export function stopService(subject, port) {
-  const record = registry.get(subject)?.get(port);
-  if (!record) return { status: 404, error: 'not-found', message: '服务不存在' };
-  unregister(subject, port);
+  const stopped = unregister(subject, port);
+  if (stopped === undefined) return { status: 404, error: 'not-found', message: '服务不存在' };
   return { status: 200 };
 }
 
