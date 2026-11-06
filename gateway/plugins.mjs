@@ -73,6 +73,33 @@ nodeLinker: hoisted
 autoInstallPeers: false
 `
 
+/**
+ * Pin one profile's pnpm store to the path the tenant sees.
+ *
+ * The same home has two names inside the container: root and the gateway see
+ * `<home>`, the tenant's jail sees `/home/<account>`. `pnpm` records the store's
+ * absolute path in `node_modules/.modules.yaml` and refuses every later install
+ * with `ERR_PNPM_UNEXPECTED_STORE` once the recorded path and the resolved one
+ * differ — which happens the first time a copy is built outside the jail. The
+ * setting makes both views resolve the same store, and a profile that already
+ * recorded another one has its `node_modules` rebuilt, the only way to clear it.
+ * @param {{ home: string, linuxName: string, uid: number }} user - the tenant.
+ * @returns {Promise<void>} resolves once the profile agrees on one store.
+ */
+async function alignProfileStore(user) {
+  const profile = join(user.home, '.dsh', 'profiles', 'web')
+  const workspace = join(profile, 'pnpm-workspace.yaml')
+  const current = await readFile(workspace, 'utf8').catch(() => undefined)
+  if (current === undefined) return
+  const storeDir = `/home/${user.linuxName}/.local/share/pnpm/store`
+  if (current.includes(`storeDir: ${storeDir}`)) return
+  const next = /^storeDir:.*$/mu.test(current)
+    ? current.replace(/^storeDir:.*$/mu, `storeDir: ${storeDir}`)
+    : `${current.trimEnd()}\nstoreDir: ${storeDir}\n`
+  await writeFile(workspace, next)
+  await rm(join(profile, 'node_modules'), { recursive: true, force: true }).catch(() => {})
+}
+
 /** Plugins shipped from this repository, by package name. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
 
@@ -160,6 +187,7 @@ export async function syncPlugins(user) {
   } catch (error) {
     console.error(`profile pre-creation failed for ${user.linuxName}:`, error.message)
   }
+  await alignProfileStore(user)
   await syncClientPlugins(user)
   await syncAgentPlugins(user)
   // A profile that predates a bundle must still receive it: pre-creation
