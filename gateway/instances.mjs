@@ -23,6 +23,7 @@ import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import { syncPlugins } from './plugins.mjs';
+import { mcphubEnvironment, mcphubLaunchPatch } from './mcphub.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
 
@@ -520,10 +521,26 @@ async function launch(options) {
   // an internal identifier.
   const jailHome = `/home/${account}`;
 
+  // The MCPHub panel row and the Agent's MCP capability are issued only where
+  // the sibling application answers; the probe is cached, so a platform without
+  // MCPHub pays for one miss per minute rather than one per launch.
+  const mcphub = await mcphubEnvironment(record.namespace);
+  // A tenant that chose services mounts one MCP client per service instead of
+  // the aggregate endpoint; the overlay is regenerated on every launch so a
+  // rotated capability key never has to be chased through the tenant home.
+  const mcphubChoice = mcphub.VH_MCPHUB === undefined ? {} : await mcphubLaunchPatch({
+    namespace: record.namespace,
+    home: paths.home,
+    linuxName: account,
+    jailHome,
+    uid: record.uid,
+  });
+
   const launchArgs = [
     account, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
     '--patch', '/usr/local/share/v-harness/vos.patch.yml',
+    ...(mcphubChoice.patch === undefined ? [] : ['--patch', mcphubChoice.patch]),
     // The tenant's own loopback address: the kernel treats all of 127/8 as
     // local, and the per-tenant iptables rules keep every other uid off it.
     '--host', tenantLoopback(record.uid),
@@ -594,6 +611,8 @@ async function launch(options) {
       DS_BOT_WORKSPACE: `${jailHome}/workspace`,
       NODE_ENV: 'production',
       ...schedulerEnvironment(record.namespace),
+      ...mcphub,
+      ...mcphubChoice.env,
       // Without a UTF-8 locale bash escapes non-ASCII names: the default
       // workspace `日常` shows up as $'\346\227\245\345\270\270' in terminals
       // and in tool output.

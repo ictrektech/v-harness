@@ -121,6 +121,7 @@
     { "path": "./packages/client/ui-sidebar-browser/tsconfig.client.json" },
     { "path": "./packages/client/ui-sidebar-files" },
     { "path": "./packages/client/ui-services" },
+    { "path": "./packages/client/ui-mcphub" },
     { "path": "./packages/client/ui-jobs" },
     { "path": "./packages/client/ui-schedule" },
     { "path": "./packages/client/ui-directory-picker-browse" },

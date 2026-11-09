@@ -50,6 +50,14 @@ import {
 } from './office.mjs';
 import { closeAlbumCapabilities, ensureAlbumCapability } from './album.mjs';
 import { closeImageStudioCapabilities, ensureImageStudioCapability } from './image-studio.mjs';
+import {
+  handleAgent as handleMcphubAgent,
+  mcphubRouting,
+  mcphubSelection,
+  mcphubServices,
+  mcphubTools,
+  saveMcphubSelection,
+} from './mcphub.mjs';
 import { closePhotocraftCapabilities, ensurePhotocraftCapability } from './photocraft.mjs';
 import {
   CSRF_COOKIE,
@@ -935,6 +943,85 @@ async function handleControl(req, res, url) {
     const record = await requireUser(req, res);
     if (!record) return;
     await handleWeknoraControl(record.namespace, req, res, url.pathname.slice('/__vh/weknora'.length));
+    return;
+  }
+
+  // The Agent's MCP transport to MCPHub. A dsh instance authenticates with the
+  // capability key the gateway minted for it, so the tenant's VOS token stays
+  // here; the MCPHub session id and stream are passed through untouched.
+  if (url.pathname.startsWith('/__vh/mcphub/agent/')) {
+    await handleMcphubAgent(req, res, url.pathname.slice('/__vh/mcphub/agent'.length));
+    return;
+  }
+
+  // The MCPHub service list for the left-Sidebar panel. The page holds no VOS
+  // token, so the gateway resolves the tenant from its session and forwards
+  // with that tenant's token; the answer is rebuilt field by field upstream.
+  if (url.pathname === '/__vh/mcphub/services') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method !== 'GET') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    const routing = mcphubRouting();
+    json(res, 200, { ...(await mcphubServices(record.namespace)), routing });
+    return;
+  }
+
+  // The tools behind those services, for the panel's preview. Same read-only
+  // trust boundary as the list: the tenant's token travels upstream, and the
+  // answer keeps tool names and descriptions only.
+  if (url.pathname === '/__vh/mcphub/tools') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method !== 'GET') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    json(res, 200, await mcphubTools(record.namespace));
+    return;
+  }
+
+  // Which services the Agent mounts. A choice is a plan for the next launch,
+  // so the answer says a restart applies it rather than pretending otherwise.
+  if (url.pathname === '/__vh/mcphub/selection') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method === 'GET') {
+      json(res, 200, { selected: (await mcphubSelection(record.namespace)) ?? null, restartRequired: true });
+      return;
+    }
+    if (req.method !== 'PUT') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    // The choice rewrites what the Agent can call, so it is refused where a
+    // browser would not attach the session on its own.
+    if (req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (error) {
+      console.error('mcphub selection body rejected:', error?.message ?? error);
+      json(res, 400, { error: 'invalid-body', message: '请求体不是合法的 JSON 对象' });
+      return;
+    }
+    const names = body.names;
+    const valid = names === null || names === undefined
+      || (Array.isArray(names) && names.every((name) => typeof name === 'string'));
+    if (!valid) {
+      json(res, 400, { error: 'invalid-selection', message: 'names 必须是字符串数组或 null' });
+      return;
+    }
+    const selected = await saveMcphubSelection(
+      record.namespace,
+      names === null || names === undefined ? undefined : /** @type {string[]} */ (names),
+    );
+    json(res, 200, { ok: true, selected: selected ?? null, restartRequired: true });
     return;
   }
 

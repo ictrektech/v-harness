@@ -43,3 +43,30 @@
     # the tenant registered through the gateway's vh-services capability.
     - id: ui-services
       name: '@deepseek-ai/dsh-client-ui-services'
+
+    # The MCPHub service panel. Hidden by not being mounted: the gateway sets
+    # VH_MCPHUB only when a probe of the sibling MCPHub container answers, so a
+    # platform without that application serves no bundle and shows no entry.
+    - id: ui-mcphub
+      name: '@deepseek-ai/dsh-client-ui-mcphub'
+      disabled: !!js "!process.env.VH_MCPHUB"
+
+    # MCPHub's MCP surface as the Agent sees it. The URL names the gateway, not
+    # MCPHub: the key in `authorization` resolves to this tenant, and only the
+    # gateway holds the VOS token that signs the upstream request. One
+    # connection carries every visible service, so nothing here needs to know
+    # which services exist — unless the tenant chose services, in which case
+    # the gateway's generated overlay mounts one client per service and sets
+    # VH_MCPHUB_SELECT to retire this row.
+    - id: mcp-mcphub
+      name: '@deepseek-ai/dsh-mcp-client'
+      disabled: !!js "!process.env.VH_MCPHUB || !!process.env.VH_MCPHUB_SELECT"
+      config:
+        transport: streamable-http
+        serverName: mcphub
+        # `smart` asks MCPHub's vector router for a per-request tool subset; it
+        # only answers in database mode, so the default stays the discovery
+        # endpoint that carries every visible tool.
+        url: !!js "process.env.VH_MCPHUB_ENDPOINT + (process.env.VH_MCPHUB_ROUTING === 'smart' ? '/$smart' : '/mcp')"
+        headers: !!js "({ authorization: 'Bearer ' + process.env.VH_MCPHUB_KEY })"
+        toolCallTimeoutMs: 120000
