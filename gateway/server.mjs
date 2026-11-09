@@ -470,7 +470,7 @@ function poll() {
   // A launch that keeps failing would otherwise spin here forever with no
   // explanation; say how long it has been, and what to do about it.
   if (tries === 80) hint.textContent = '启动时间较长，仍在重试…';
-  if (tries === 200) hint.textContent = '仍未启动：请重启工作区，或由管理员查看工作区日志。';
+  if (tries === 200) hint.textContent = '仍在自动重试：若长时间无响应，请联系管理员查看工作区日志。';
   fetch('./__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
@@ -914,16 +914,11 @@ async function handleControl(req, res, url) {
       json(res, 403, { error: 'cross-site request rejected' });
       return;
     }
-    try {
-      const instance = await restartInstance(record);
-      json(res, 200, { ok: true, port: instance.port });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error(`restart failed for ${record.account ?? record.linuxName}:`, detail);
-      // The reason names the tenant's own log and the line the launcher wrote:
-      // "try again later" alone leaves an owner with nothing to act on.
-      json(res, 502, { error: 'restart-failed', message: `重启失败：${detail.slice(0, 400)}` });
-    }
+    // Answer before the drain: the process that would answer this request is
+    // the one being replaced. A restart is a restart — the page reloads into the
+    // starting page and waits, so the request never becomes a failure dialog.
+    json(res, 202, { ok: true });
+    void restartUntilUp(record);
     return;
   }
 
@@ -1499,6 +1494,37 @@ async function restartInstance(record) {
     return await run;
   } finally {
     restarts.delete(key);
+  }
+}
+
+/** Wait before each launch attempt; the last value repeats for ever. */
+const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
+
+/**
+ * Restart a tenant until it answers.
+ *
+ * A restart is a restart: the owner asked for a new process, and a launch that
+ * fails is the gateway's problem to keep solving, not a dialog to hand back.
+ * Every attempt is logged with its reason, and the loop settles on a slow retry
+ * so a tenant whose configuration cannot start costs one launch every half
+ * minute rather than a busy spin.
+ * @param {Awaited<ReturnType<typeof findUser>>} record - the tenant to restart.
+ * @returns {Promise<void>} resolves once a launch succeeded.
+ */
+async function restartUntilUp(record) {
+  const order = record.account ?? record.linuxName;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await restartInstance(record);
+      return;
+    } catch (error) {
+      const wait = RESTART_BACKOFF_MS[Math.min(attempt, RESTART_BACKOFF_MS.length - 1)];
+      console.error(
+        `restart attempt ${String(attempt + 1)} failed for ${order}, retrying in ${String(wait)}ms:`,
+        error instanceof Error ? error.message : error,
+      );
+      await new Promise((resolve) => { setTimeout(resolve, wait); });
+    }
   }
 }
 

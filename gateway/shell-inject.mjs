@@ -36,16 +36,12 @@ const COPY = {
   zh: {
     label: '重启工作区',
     hint: '安装插件后需重启才能生效',
-    confirm: '重启会中断正在进行中的任务，确定继续？',
     busy: '正在重启…',
-    failed: '重启失败，请稍后重试',
   },
   en: {
     label: 'Restart workspace',
     hint: 'A plugin install takes effect after a restart',
-    confirm: 'Restarting interrupts running tasks. Continue?',
     busy: 'Restarting…',
-    failed: 'Restart failed. Try again in a moment.',
   },
 };
 
@@ -183,18 +179,13 @@ if (typeof window.WebSocket === "function") window.WebSocket = wrapSocket(window
 if (typeof window.EventSource === "function") window.EventSource = wrapSocket(window.EventSource);
 
 function requestRestart() {
-  return fetch(vh.path, { method: "POST", credentials: "same-origin", cache: "no-store", body: "" })
-    .then(function (response) {
-      return response.json().catch(function () { return null; }).then(function (body) {
-        // The gateway names the reason it failed — its own log line or the
-        // launcher's — and a reader who only sees "failed" cannot act on it.
-        if (!response.ok) {
-          var detail = body && typeof body.message === "string" ? body.message : String(response.status);
-          throw new Error(detail);
-        }
-        return body;
-      });
-    });
+  return fetch(vh.path, { method: "POST", credentials: "same-origin", cache: "no-store", body: "" });
+}
+// The gateway answers before it drains and keeps launching until the
+// replacement is up, so the page reloads either way: it lands on the starting
+// page, which is also where the owner waits for any other restart to finish.
+function reloadForRestart() {
+  setTimeout(function () { location.reload(); }, 400);
 }
 // The market's restart button calls this hook when it exists; without it the
 // market spawns its own replacement process, which this gateway does not track
@@ -204,30 +195,15 @@ try {
   if (shell === undefined || shell === null) shell = window.__dshHostShell = {};
   if (typeof shell.restart !== "function") {
     shell.restart = function () {
-      requestRestart()
-        .then(function () { setTimeout(function () { location.reload(); }, 400); })
-        .catch(function (error) {
-          window.alert(vh.copy.failed + (error && error.message ? " - " + error.message : ""));
-          setTimeout(function () { location.reload(); }, 200);
-        });
+      requestRestart().then(reloadForRestart, reloadForRestart);
     };
   }
 } catch (e) {}
 function restart(button) {
   if (button.disabled) return;
-  if (!window.confirm(vh.copy.confirm)) return;
-  var label = button.textContent;
   button.disabled = true;
   button.textContent = vh.copy.busy;
-  requestRestart()
-    .then(function () {
-      setTimeout(function () { location.reload(); }, 400);
-    })
-    .catch(function (error) {
-      button.disabled = false;
-      button.textContent = label;
-      window.alert(vh.copy.failed + (error && error.message ? " - " + error.message : ""));
-    });
+  requestRestart().then(reloadForRestart, reloadForRestart);
 }
 function mountRestart() {
   if (document.getElementById("vh-restart")) return;
