@@ -56,6 +56,7 @@ const PROFILE_BUNDLES = [
   AGENT_BUNDLE_NAME,
   'dshmarket',
   'ds-bot',
+  '@xmanrui/dsh-im',
 ]
 
 /** Mirrors dsh's profile user-patch template. */
@@ -103,8 +104,13 @@ async function alignProfileStore(user) {
 /** Plugins shipped from this repository, by package name. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
 
-/** Payload plugins that are published, so a profile declares them like any other dependency. */
-const PROFILE_PLUGINS = ['dshmarket', 'ds-bot']
+/**
+ * Payload plugins that are published, so a profile declares them like any other
+ * dependency. `@xmanrui/dsh-im` is the IM bridge (WeCom/Feishu/DingTalk/QQ/
+ * Telegram/...), a third-party registry package staged like the market and the
+ * bot: its version is read from the payload, never pinned here.
+ */
+const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im']
 
 /**
  * The dependencies every tenant profile declares: the published payload

@@ -184,12 +184,16 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
 # installed: dsh supplies them from the installation at runtime.
 ARG DSMARKET_VERSION=1.73.8
 ARG DS_BOT_VERSION=0.2.5
+# The IM bridge (WeCom/Feishu/DingTalk/QQ/Telegram/...), a third-party registry
+# package that ships to every tenant like the market and the bot. Its runtime
+# dependencies (IM SDKs, mail/IMAP clients) ride along with the closure below.
+ARG DSH_IM_VERSION=5.10.0
 RUN mkdir -p /tmp/registry-plugins \
  && npm install --prefix /tmp/registry-plugins --no-save --ignore-scripts --legacy-peer-deps \
-      "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" \
+      "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" "@xmanrui/dsh-im@${DSH_IM_VERSION}" \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
- && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')"
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')"
 
 # ============================================================
 # Stage: runtime image
