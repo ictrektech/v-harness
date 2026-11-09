@@ -357,6 +357,25 @@ test('a service choice is recorded per tenant and becomes a launch overlay', asy
   // The capability travels in the environment, never through the file.
   assert.match(text, /process\.env\.VH_MCPHUB_ENDPOINT \+ '\/mcp\/amap'/u);
   assert.equal(text.includes(alice.VH_MCPHUB_KEY ?? ''), false);
+  // `--patch` reads a loader patch list: rows must arrive inside `insert`, and
+  // a plugin-tree document makes the launcher refuse to boot the workspace.
+  assert.match(text, /^- insert:$/mu);
+  assert.equal(/^plugins:/mu.test(text), false);
+});
+
+test('an empty choice still writes a patch list the launcher accepts', async () => {
+  const home = join(selectionRoot, 'empty-home');
+  const options = { ...launchOptions, home };
+  assert.deepEqual(await saveMcphubSelection('carol', []), []);
+
+  const overlay = await mcphubLaunchPatch({ ...options, namespace: 'carol' });
+  assert.equal(overlay.patch, '/home/alice/.dsh/profiles/web/mcphub.patch.yml');
+  const text = await readFile(join(home, '.dsh', 'profiles', 'web', 'mcphub.patch.yml'), 'utf8');
+  // A header-only document parses as `null`, which the launcher rejects; the
+  // empty list is the shape that means "nothing to add".
+  assert.match(text, /^\[\]$/mu);
+
+  await saveMcphubSelection('carol', undefined);
 });
 
 test('following the aggregate endpoint removes the overlay again', async () => {
