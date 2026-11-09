@@ -453,11 +453,13 @@ async function boot(){
     catch(error){showRenew(error);return;}
     // Reload the page that asked, not the directory above it: the proof just
     // issued covers this navigation, and a deep link must survive the trip.
-    location.replace(location.pathname+location.search);
+    // reload() keeps the whole URL (hash included) where replace(same url) can
+    // collapse into a fragment change that never reaches the server.
+    location.reload();
     return;
   }
   await authorize(cfg);
-  location.replace(location.pathname+location.search);
+  location.reload();
 }
 boot().catch(error=>fail(error?.message||String(error)));
 </script></body></html>`;
@@ -505,10 +507,15 @@ function poll() {
   // explanation; say how long it has been, and what to do about it.
   if (tries === 80 && !failed) hint.textContent = '启动时间较长，仍在重试…';
   if (tries === 200 && !failed) hint.textContent = '仍在自动重试：若长时间无响应，请联系管理员查看工作区日志。';
-  fetch('./__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
+  // Absolute: a relative path would resolve under whatever deep link asked for
+  // this page and poll the instance instead of the gateway that answers it.
+  fetch('/__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
-      if (d && typeof d.boot === 'number' && d.boot > 0) { location.replace(location.pathname + location.search); return; }
+      // reload(), not replace(same url): a shell with a hash route treats an
+      // unchanged-URL replace as a fragment change and answers it without
+      // asking the server, which leaves the tab on this page for good.
+      if (d && typeof d.boot === 'number' && d.boot > 0) { location.reload(); return; }
       if (d && typeof d.error === 'string' && d.error !== '') {
         failed = d.error;
         hint.textContent = '启动失败：' + d.error;
