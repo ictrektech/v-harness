@@ -1293,6 +1293,53 @@ async function instanceFor(session) {
   return instance;
 }
 
+/**
+ * Requests currently forwarded to one tenant's instance, keyed by subject.
+ *
+ * A restart replaces the process those requests are riding on. Signalling it
+ * first turns every one of them into a hang-up, which the browser reported as a
+ * burst of 502s and a blank page: the shell had already been served, so the tab
+ * kept a document whose modules never arrived. Waiting for them to land is what
+ * removes that window.
+ */
+const inFlight = new Map();
+
+/** How long a restart waits for forwarded requests before it signals anyway. */
+const DRAIN_TIMEOUT_MS = 2_000;
+
+/**
+ * Count one forwarded request; the returned release is idempotent because the
+ * proxy resolves from several places.
+ * @param {string} subject
+ * @returns {() => void}
+ */
+function trackRequest(subject) {
+  inFlight.set(subject, (inFlight.get(subject) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (inFlight.get(subject) ?? 1) - 1;
+    if (left > 0) inFlight.set(subject, left);
+    else inFlight.delete(subject);
+  };
+}
+
+/**
+ * Wait for a tenant's forwarded requests to finish, bounded.
+ *
+ * The bound is what keeps one long download from holding a restart hostage; a
+ * request that outlives it loses to the signal, exactly as before.
+ * @param {string} subject
+ * @returns {Promise<void>}
+ */
+async function drainRequests(subject) {
+  const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+  while ((inFlight.get(subject) ?? 0) > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 /** Restarts in flight, keyed by subject: a second click joins the first. */
 const restarts = new Map();
 
@@ -1315,6 +1362,11 @@ async function restartInstance(record) {
   const run = (async () => {
   console.log(`restart requested: ${order}`);
   const previous = liveInstance(key);
+  // Let what was already forwarded finish on the process that owns it. Without
+  // this the signal lands under in-flight asset requests, the gateway reports
+  // the hang-up as 502, and the tab that asked for the restart gets a shell
+  // whose modules never load.
+  await drainRequests(key);
   stopInstance(key);
   // The port has to be free before the next bind. Waiting for the exit here is
   // cheaper than letting the launch discover a draining process and reclaim
@@ -1595,6 +1647,11 @@ async function proxyRequest(req, res) {
   if (documentRequest) delete headers['accept-encoding'];
   const locale = documentRequest ? record.locale : undefined;
 
+  // A long-lived event stream never drains and is expected to die with the
+  // process; counting it would only spend the whole bound on every restart.
+  const release = String(req.headers.accept ?? '').includes('text/event-stream')
+    ? () => {}
+    : trackRequest(instance.subject);
   await new Promise((resolve) => {
     const upstream = httpRequest({
       // The instance listens on the tenant's own loopback address.
@@ -1703,7 +1760,7 @@ async function proxyRequest(req, res) {
     });
     res.on('close', () => { upstream.destroy(); resolve(); });
     req.pipe(upstream);
-  });
+  }).finally(release);
 }
 
 /**
