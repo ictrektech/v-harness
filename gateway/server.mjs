@@ -30,6 +30,7 @@ import {
 import {
   ensureInstance,
   instanceBoot,
+  launchFailure,
   liveInstance,
   migrateInstanceStateKeys,
   stopAll,
@@ -465,16 +466,21 @@ const STARTING = `<!doctype html>
 <script>
 var tries = 0;
 var hint = document.getElementById('h');
+var failed = '';
 function poll() {
   tries += 1;
   // A launch that keeps failing would otherwise spin here forever with no
   // explanation; say how long it has been, and what to do about it.
-  if (tries === 80) hint.textContent = '启动时间较长，仍在重试…';
-  if (tries === 200) hint.textContent = '仍在自动重试：若长时间无响应，请联系管理员查看工作区日志。';
+  if (tries === 80 && !failed) hint.textContent = '启动时间较长，仍在重试…';
+  if (tries === 200 && !failed) hint.textContent = '仍在自动重试：若长时间无响应，请联系管理员查看工作区日志。';
   fetch('./__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
       if (d && typeof d.boot === 'number' && d.boot > 0) { location.replace('./'); return; }
+      if (d && typeof d.error === 'string' && d.error !== '') {
+        failed = d.error;
+        hint.textContent = '启动失败：' + d.error;
+      }
       setTimeout(poll, tries < 120 ? 700 : 3000);
     })
     .catch(function () { setTimeout(poll, 1000); });
@@ -894,7 +900,12 @@ async function handleControl(req, res, url) {
       json(res, 401, { error: 'unauthenticated' });
       return;
     }
-    json(res, 200, { boot: instanceBoot(session.subject) });
+    // A launch that failed says why: the starting page shows the reason while
+    // it keeps retrying, which is the difference between waiting and not
+    // knowing.
+    const boot = instanceBoot(session.subject);
+    const failure = launchFailure(session.subject);
+    json(res, 200, failure === undefined ? { boot } : { boot, error: failure });
     return;
   }
 

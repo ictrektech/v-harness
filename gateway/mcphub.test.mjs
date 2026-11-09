@@ -120,7 +120,9 @@ process.env.MCPHUB_SELECTION_FILE = join(selectionRoot, 'selection.json');
 
 const { rememberTokens } = await import('./office.mjs');
 const {
+  dropMcphubLaunchPatch,
   handleAgent,
+  isLaunchPatch,
   mcphubEnvironment,
   mcphubLaunchPatch,
   mcphubRouting,
@@ -385,4 +387,30 @@ test('following the aggregate endpoint removes the overlay again', async () => {
     readFile(join(selectionHome, '.dsh', 'profiles', 'web', 'mcphub.patch.yml')),
     /ENOENT/u,
   );
+});
+
+test('only a document the launcher accepts is handed to --patch', async () => {
+  // The shape that took a workspace down: a plugin tree, not a patch list.
+  assert.equal(isLaunchPatch('# header\nplugins:\n  - id: x\n    name: y\n'), false);
+  assert.equal(isLaunchPatch('# header\n'), false);
+  assert.equal(isLaunchPatch(''), false);
+  assert.equal(isLaunchPatch('# header\n- insert:\n'), false);
+  assert.equal(isLaunchPatch('# header\n[]\n'), true);
+
+  assert.deepEqual(await saveMcphubSelection('dave', ['amap']), ['amap']);
+  const overlay = await mcphubLaunchPatch({ ...launchOptions, namespace: 'dave' });
+  const text = await readFile(join(selectionHome, '.dsh', 'profiles', 'web', 'mcphub.patch.yml'), 'utf8');
+  assert.equal(isLaunchPatch(text), true);
+  assert.equal(overlay.patch, '/home/alice/.dsh/profiles/web/mcphub.patch.yml');
+});
+
+test('an overlay can be dropped, so the next launch runs without a choice', async () => {
+  await dropMcphubLaunchPatch({ home: selectionHome });
+  await assert.rejects(
+    readFile(join(selectionHome, '.dsh', 'profiles', 'web', 'mcphub.patch.yml')),
+    /ENOENT/u,
+  );
+  // Dropping one that is already gone is not an error: a retry may arrive after
+  // the first attempt already removed it.
+  await dropMcphubLaunchPatch({ home: selectionHome });
 });

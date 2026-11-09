@@ -22,8 +22,11 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { instanceAddress, tenantLoopback } from './addressing.mjs';
+import { rememberProfile, restoreProfile } from './last-good.mjs';
 import { syncPlugins } from './plugins.mjs';
-import { mcphubEnvironment, mcphubLaunchPatch } from './mcphub.mjs';
+import {
+  dropMcphubLaunchPatch, mcphubEnvironment, mcphubLaunchPatch, saveMcphubSelection,
+} from './mcphub.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
 
@@ -75,6 +78,15 @@ const instances = new Map();
 
 /** @type {Map<string, Promise<unknown>>} */
 const launchChains = new Map();
+
+/**
+ * Why the last launch of one tenant failed, when it did.
+ *
+ * The starting page reads it so a workspace that cannot come up says what
+ * happened instead of turning a spinner forever.
+ * @type {Map<string, string>}
+ */
+const launchFailures = new Map();
 
 /**
  * Directory layout for one tenant. The home is `<DATA_ROOT>/<account>` and nothing
@@ -536,11 +548,16 @@ async function launch(options) {
     uid: record.uid,
   });
 
-  const launchArgs = [
+  /**
+   * The jail's arguments for one launch.
+   * @param {{ patch?: string }} choice - the MCP overlay to add, if any.
+   * @returns {string[]} the arguments.
+   */
+  const launchArgsFor = (choice) => [
     account, String(record.uid), paths.home,
     nodeBin, dshBin, '--profile', 'web',
     '--patch', '/usr/local/share/v-harness/vos.patch.yml',
-    ...(mcphubChoice.patch === undefined ? [] : ['--patch', mcphubChoice.patch]),
+    ...(choice.patch === undefined ? [] : ['--patch', choice.patch]),
     // The tenant's own loopback address: the kernel treats all of 127/8 as
     // local, and the per-tenant iptables rules keep every other uid off it.
     '--host', tenantLoopback(record.uid),
@@ -612,7 +629,6 @@ async function launch(options) {
       NODE_ENV: 'production',
       ...schedulerEnvironment(record.namespace),
       ...mcphub,
-      ...mcphubChoice.env,
       // Without a UTF-8 locale bash escapes non-ASCII names: the default
       // workspace `日常` shows up as $'\346\227\245\345\270\270' in terminals
       // and in tool output.
@@ -623,17 +639,103 @@ async function launch(options) {
   };
   // Update profile-local overrides before dsh snapshots its browser bundles,
   // then stage the agent-side tool plugins and their carrier: the loader reads
-  // the carrier row list at this same boot.
-  await syncPlugins({ home: paths.home, linuxName: account, uid: record.uid });
-  await reclaimPort(record.port, record.uid, account);
-  const child = spawn(JAIL_BIN, launchArgs, launchOptions);
+  // the carrier row list at this same boot. A refresh that fails leaves the
+  // profile the previous boot used, which is worth more than a dead workspace.
+  try {
+    await syncPlugins({ home: paths.home, linuxName: account, uid: record.uid });
+  } catch (error) {
+    console.error(
+      `plugin sync failed for ${account}, launching with the profile already on disk:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
 
-  const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });
-  child.stdout?.pipe(log, { end: false });
-  child.stderr?.pipe(log, { end: false });
+  /**
+   * Spawn the jail once and wait for the line it writes to the log.
+   * @param {string[]} argv - the jail's arguments.
+   * @returns {Promise<{ child: import('node:child_process').ChildProcess, launchUrl: string }>}
+   *   the running child and the URL it announced.
+   */
+  const startOnce = async (argv) => {
+    await reclaimPort(record.port, record.uid, account);
+    const child = spawn(JAIL_BIN, argv, launchOptions);
+    const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });
+    child.stdout?.pipe(log, { end: false });
+    child.stderr?.pipe(log, { end: false });
+    try {
+      return { child, launchUrl: await waitForLaunchUrl(child, LAUNCH_TIMEOUT_MS) };
+    } catch (error) {
+      child.kill('SIGTERM');
+      throw error;
+    }
+  };
+
+  /**
+   * Start the tenant, stepping down to configurations that cannot be the cause.
+   *
+   * A restart re-reads everything the boot composes, including files this
+   * gateway wrote, so an invalid one of those turns every later launch into an
+   * immediate exit. The ladder is deliberate: what the tenant chose, then what
+   * the gateway generated, then what last worked. A workspace without a
+   * preference is recoverable; a workspace that does not start is not.
+   * @returns {Promise<{ child: import('node:child_process').ChildProcess, launchUrl: string }>}
+   *   the running child and the URL it announced.
+   */
+  const start = async () => {
+    /** @type {string[]} */
+    const failures = [];
+    /** @param {unknown} error */
+    const note = (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      failures.push(detail);
+      return detail;
+    };
+
+    try {
+      Object.assign(launchOptions.env, mcphubChoice.env ?? {});
+      return await startOnce(launchArgsFor(mcphubChoice));
+    } catch (error) {
+      console.error(`launch failed for ${account}:`, note(error));
+    }
+
+    // The service choice is a preference, so it goes first: an owner who picked
+    // services is better served by a workspace without them than by none.
+    if (mcphubChoice.patch !== undefined) {
+      try {
+        console.error(`dropping the MCP service choice for ${account} and launching again`);
+        await dropMcphubLaunchPatch({ home: paths.home });
+        // The record goes with the file: a choice that cannot start would
+        // otherwise cost two extra launch attempts on every boot from here on.
+        await saveMcphubSelection(record.namespace, undefined);
+        delete launchOptions.env.VH_MCPHUB_SELECT;
+        return await startOnce(launchArgsFor({}));
+      } catch (error) {
+        console.error(`launch without the MCP service choice failed for ${account}:`, note(error));
+      }
+    }
+
+    // Then the configuration this tenant last booted with: what the gateway
+    // writes between boots is the only input it can also put back.
+    try {
+      const restored = await restoreProfile({
+        home: paths.home, stateRoot, account, uid: record.uid, linuxName: account,
+      });
+      if (restored) {
+        console.error(`restored the last known good profile for ${account} and launching again`);
+        delete launchOptions.env.VH_MCPHUB_SELECT;
+        return await startOnce(launchArgsFor({}));
+      }
+    } catch (error) {
+      console.error(`last known good profile not restored for ${account}:`, note(error));
+    }
+
+    launchFailures.set(record.subject, failures.at(-1) ?? 'launch failed');
+    throw new Error(`${failures.at(-1) ?? 'launch failed'} (log: ${paths.log})`);
+  };
+
+  const { child, launchUrl } = await start();
 
   try {
-    const launchUrl = await waitForLaunchUrl(child, LAUNCH_TIMEOUT_MS);
     const { cookie, expiresAt } = await exchangeCookie(launchUrl, record.uid);
     // Instances are keyed by the immutable subject. Drop the legacy namespace
     // key the same time the subject key is written, so one launch finishes
@@ -641,6 +743,12 @@ async function launch(options) {
     if (record.namespace !== record.subject) delete state[record.namespace];
     state[record.subject] = { cookie, cookieExpiresAt: expiresAt };
     await writeState(statePath, state);
+    // Only a boot that answered becomes the fallback: a snapshot of anything
+    // else would restore the reason the next launch fails.
+    await rememberProfile({ home: paths.home, stateRoot, account }).catch((error) => {
+      console.error(`last known good profile not recorded for ${account}:`, error?.message ?? error);
+    });
+    launchFailures.delete(record.subject);
     return {
       subject: record.subject,
       linuxName: account,
@@ -747,6 +855,19 @@ export async function ensureInstance(options) {
  */
 export function liveInstance(subject) {
   return instances.get(subject);
+}
+
+/**
+ * Why the last launch of one tenant failed.
+ *
+ * The starting page reads this so a workspace that cannot come up says what
+ * happened instead of waiting forever; a successful launch clears it.
+ * @param {string} subject - the tenant.
+ * @returns {string | undefined} the failure, or undefined when the last launch
+ *   succeeded or nothing has been attempted yet.
+ */
+export function launchFailure(subject) {
+  return launchFailures.get(subject);
 }
 
 /**

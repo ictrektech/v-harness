@@ -420,6 +420,12 @@ export async function mcphubLaunchPatch(options) {
   const body = selected.length === 0
     ? `${PATCH_HEADER}\n[]\n`
     : `${PATCH_HEADER}\n- insert:\n${selected.map(insertRow).join('')}`;
+  if (!isLaunchPatch(body)) {
+    // Refusing to hand over a document the launcher would reject is the only
+    // way this module can be sure it never keeps a workspace down.
+    console.error(`mcphub selection patch refused for ${linuxName}: not a loader patch list`);
+    return {};
+  }
   try {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, body, { mode: 0o600 });
@@ -454,6 +460,34 @@ function insertRow(name) {
     '        toolCallTimeoutMs: 120000',
     '',
   ].join('\n');
+}
+
+/**
+ * Whether a generated overlay is the document the launcher accepts.
+ *
+ * Checked against the shape the launcher requires — a top-level list of patch
+ * entries — because that is the failure that takes a workspace down: the file
+ * is refused before a single row is read, and nothing else in this module can
+ * notice. The generator's output is verified here rather than trusted.
+ * @param {string} text - the document about to be written.
+ * @returns {boolean} whether it may be handed to `--patch`.
+ */
+export function isLaunchPatch(text) {
+  const lines = text.split('\n').filter((line) => line !== '' && !line.startsWith('#'));
+  if (lines.length === 1 && lines[0] === '[]') return true;
+  if (lines[0] !== '- insert:') return false;
+  const rest = lines.slice(1);
+  if (!rest.some((line) => /^ {4}- id: /u.test(line))) return false;
+  return rest.every((line) => /^ {4}- id: [\w.$~%-]+$/u.test(line) || /^ {6,}\S/u.test(line));
+}
+
+/**
+ * Remove the overlay, so the next launch runs without a service choice.
+ * @param {{ home: string }} options - the tenant home the overlay lives in.
+ * @returns {Promise<void>}
+ */
+export async function dropMcphubLaunchPatch(options) {
+  await rm(join(options.home, PATCH_RELATIVE), { force: true });
 }
 
 /**
