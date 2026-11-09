@@ -456,14 +456,21 @@ const STARTING = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>v-harness</title>
 <style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0d10;color:#c8ccd4;font:14px/1.7 system-ui,sans-serif}
-#m{opacity:.85;display:flex;gap:.6rem;align-items:center}
+#w{text-align:center}
+#m{opacity:.85;display:flex;gap:.6rem;align-items:center;justify-content:center}
 #s{width:14px;height:14px;border:2px solid #2a2f38;border-top-color:#7aa2f7;border-radius:50%;animation:r .8s linear infinite}
+#h{margin-top:1rem;color:#7d8492;font-size:12px;line-height:1.6}
 @keyframes r{to{transform:rotate(360deg)}}</style>
-</head><body><div id="m"><span id="s"></span><span>正在启动工作区…</span></div>
+</head><body><div id="w"><div id="m"><span id="s"></span><span>正在启动工作区…</span></div><div id="h"></div></div>
 <script>
 var tries = 0;
+var hint = document.getElementById('h');
 function poll() {
   tries += 1;
+  // A launch that keeps failing would otherwise spin here forever with no
+  // explanation; say how long it has been, and what to do about it.
+  if (tries === 80) hint.textContent = '启动时间较长，仍在重试…';
+  if (tries === 200) hint.textContent = '仍未启动：请重启工作区，或由管理员查看工作区日志。';
   fetch('./__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
@@ -911,8 +918,11 @@ async function handleControl(req, res, url) {
       const instance = await restartInstance(record);
       json(res, 200, { ok: true, port: instance.port });
     } catch (error) {
-      console.error(`restart failed for ${record.account ?? record.linuxName}:`, error?.message ?? error);
-      json(res, 502, { error: 'restart-failed', message: '重启失败，请稍后重试' });
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`restart failed for ${record.account ?? record.linuxName}:`, detail);
+      // The reason names the tenant's own log and the line the launcher wrote:
+      // "try again later" alone leaves an owner with nothing to act on.
+      json(res, 502, { error: 'restart-failed', message: `重启失败：${detail.slice(0, 400)}` });
     }
     return;
   }

@@ -185,8 +185,15 @@ if (typeof window.EventSource === "function") window.EventSource = wrapSocket(wi
 function requestRestart() {
   return fetch(vh.path, { method: "POST", credentials: "same-origin", cache: "no-store", body: "" })
     .then(function (response) {
-      if (!response.ok) throw new Error(String(response.status));
-      return response.json();
+      return response.json().catch(function () { return null; }).then(function (body) {
+        // The gateway names the reason it failed — its own log line or the
+        // launcher's — and a reader who only sees "failed" cannot act on it.
+        if (!response.ok) {
+          var detail = body && typeof body.message === "string" ? body.message : String(response.status);
+          throw new Error(detail);
+        }
+        return body;
+      });
     });
 }
 // The market's restart button calls this hook when it exists; without it the
@@ -199,8 +206,8 @@ try {
     shell.restart = function () {
       requestRestart()
         .then(function () { setTimeout(function () { location.reload(); }, 400); })
-        .catch(function () {
-          window.alert(vh.copy.failed);
+        .catch(function (error) {
+          window.alert(vh.copy.failed + (error && error.message ? " - " + error.message : ""));
           setTimeout(function () { location.reload(); }, 200);
         });
     };
@@ -216,10 +223,10 @@ function restart(button) {
     .then(function () {
       setTimeout(function () { location.reload(); }, 400);
     })
-    .catch(function () {
+    .catch(function (error) {
       button.disabled = false;
       button.textContent = label;
-      window.alert(vh.copy.failed);
+      window.alert(vh.copy.failed + (error && error.message ? " - " + error.message : ""));
     });
 }
 function mountRestart() {
