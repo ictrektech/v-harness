@@ -64,6 +64,10 @@ const MAX_TOOL_DESCRIPTION = 200;
 const MAX_SELECTION = 64;
 /** Budget for the dashboard read the tool preview needs. */
 const TOOLS_TIMEOUT_MS = 8_000;
+/** Actions the panel may take on one service; everything else stays in MCPHub. */
+const SERVER_ACTIONS = new Set(['toggle', 'reload']);
+/** Budget for one management action; enabling a stdio service starts a process. */
+const ACTION_TIMEOUT_MS = 15_000;
 /** Where the per-service patch is written, relative to the tenant home. */
 const PATCH_RELATIVE = join('.dsh', 'profiles', 'web', 'mcphub.patch.yml');
 
@@ -304,6 +308,89 @@ export async function mcphubTools(namespace) {
     ? raw.map(displayToolEntry).filter((entry) => entry !== undefined)
     : [];
   return { available: true, authorized: true, servers };
+}
+
+/**
+ * One management action on one service, as `POST /__vh/mcphub/servers/<name>/
+ * <toggle|reload>` answers.
+ *
+ * The panel holds no VOS token, so the call is signed here with the session
+ * user's own token. Whether that user may act at all is MCPHub's decision: its
+ * `auth` middleware accepts the VOS token on every `/api/*` route, and its
+ * controller answers 404 for a service the caller neither owns nor administers.
+ * This module adds nothing to that verdict — it only pins the surface to two
+ * actions and rebuilds the answer, so an upstream that grows fields cannot
+ * leak configuration into the page.
+ * @param {string} namespace - the tenant's namespace.
+ * @param {string} name - the service name as the raw path segment; the
+ *   percent-escapes are decoded here, so a malformed one is a 400 rather than
+ *   the `URIError` `decodeURIComponent` throws.
+ * @param {'toggle' | 'reload'} action - what to do to the service.
+ * @param {unknown} body - the request body; `toggle` needs `{enabled: boolean}`.
+ * @returns {Promise<{
+ *   ok: true,
+ *   message?: string,
+ * } | {
+ *   ok: false,
+ *   status: number,
+ *   error: string,
+ *   message?: string,
+ * }>} the rebuilt answer; `status` is what the route replies with.
+ */
+export async function mcphubServerAction(namespace, name, action, body) {
+  if (!SERVER_ACTIONS.has(action)) return { ok: false, status: 404, error: 'route-not-allowed' };
+  let decoded;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    // A segment this process cannot decode is garbage, not a fault: the route
+    // above allows `%`, so `%zz` lands here instead of a thrown URIError.
+    return { ok: false, status: 400, error: 'invalid-name' };
+  }
+  if (!SERVER_NAME.test(decoded)) return { ok: false, status: 400, error: 'invalid-name' };
+  const record = body !== null && typeof body === 'object' ? /** @type {Record<string, unknown>} */ (body) : {};
+  const enabled = record.enabled;
+  if (action === 'toggle' && typeof enabled !== 'boolean') {
+    return { ok: false, status: 400, error: 'invalid-body', message: 'enabled 必须是布尔值' };
+  }
+
+  const target = await upstream(true);
+  if (target === undefined) return { ok: false, status: 503, error: 'mcphub-unreachable' };
+  const token = await accessTokenFor(namespace);
+  if (token === undefined || token === '') return { ok: false, status: 401, error: 'vos-token-unavailable' };
+
+  /** @type {Response} */
+  let response;
+  try {
+    response = await fetch(`${target}/api/servers/${encodeURIComponent(decoded)}/${action}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(action === 'toggle' ? { enabled } : {}),
+      signal: AbortSignal.timeout(ACTION_TIMEOUT_MS),
+    });
+  } catch (error) {
+    console.error(`mcphub server action unreachable (${namespace} ${action} ${name}):`, error?.message ?? error);
+    upstreamFailed();
+    return { ok: false, status: 502, error: 'unreachable' };
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, status: response.status, error: 'unauthorized' };
+  }
+  const payload = await response.json().catch(() => undefined);
+  const message = payload !== null && typeof payload === 'object'
+    && typeof /** @type {Record<string, unknown>} */ (payload).message === 'string'
+    ? /** @type {Record<string, unknown>} */ (payload).message
+    : undefined;
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: 'upstream',
+      ...(message !== undefined ? { message } : { message: `http-${String(response.status)}` }),
+    };
+  }
+  return { ok: true, ...(message !== undefined ? { message } : {}) };
 }
 
 /**

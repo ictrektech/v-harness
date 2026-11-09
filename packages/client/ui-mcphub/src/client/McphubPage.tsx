@@ -1,15 +1,16 @@
 /**
  * The MCPHub service page: what the current user may call through MCPHub, the
- * tools behind each service, and which of them the Agent mounts.
+ * tools behind each service, which of them the Agent mounts, and the start,
+ * stop and reload of a service the user may act on.
  *
- * Creating, sharing and editing services stay in MCPHub; this page reads, and
- * records one choice that the workspace's next start applies.
+ * Creating, sharing and editing services stay in MCPHub; whether a user may
+ * act on one is MCPHub's verdict, relayed by the gateway.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { McphubFace, McphubServer, McphubSnapshot, McphubTool } from './face.ts'
+import type { McphubFace, McphubServer, McphubServerAction, McphubSnapshot, McphubTool } from './face.ts'
 import type { McphubKey } from './locales.ts'
 import css from './McphubPage.module.css'
 
@@ -54,6 +55,12 @@ interface SaveNote {
   readonly text: string
 }
 
+/** Why the last action on one service failed; success shows as a new status. */
+interface ActionFailure {
+  readonly name: string
+  readonly text: string
+}
+
 /** Everything the section renderers read, assembled once per render. */
 interface View {
   readonly snapshot: McphubSnapshot | undefined
@@ -68,11 +75,14 @@ interface View {
   readonly note: SaveNote | undefined
   readonly saving: boolean
   readonly changed: boolean
+  readonly acting: string | undefined
+  readonly actionFailure: ActionFailure | undefined
   readonly t: Translate
   readonly toggleTools: (name: string) => void
   readonly pick: (name: string) => void
   readonly choose: (mode: MountMode) => void
   readonly save: () => void
+  readonly act: (name: string, action: McphubServerAction, enabled?: boolean) => void
 }
 
 /**
@@ -81,7 +91,7 @@ interface View {
  * @param props - the injected faces and the page's localized copy.
  * @returns the page element.
  */
-export function McphubPage({ load, loadTools, loadSelection, saveSelection, t }: McphubPageProps) {
+export function McphubPage({ load, loadTools, loadSelection, saveSelection, act: actOnServer, t }: McphubPageProps) {
   const [snapshot, setSnapshot] = useState<McphubSnapshot | undefined>(undefined)
   const [failure, setFailure] = useState<string | undefined>(undefined)
   const [pending, setPending] = useState(true)
@@ -98,15 +108,14 @@ export function McphubPage({ load, loadTools, loadSelection, saveSelection, t }:
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState<SaveNote | undefined>(undefined)
 
-  const refresh = useCallback(() => {
-    live.current?.abort()
-    const controller = new AbortController()
-    live.current = controller
+  const [acting, setActing] = useState<string | undefined>(undefined)
+  const [actionFailure, setActionFailure] = useState<ActionFailure | undefined>(undefined)
+
+  const readList = useCallback((controller: AbortController): Promise<void> => {
     // Read through a call so a later `await` cannot be mistaken for a point
     // where the answer is still wanted.
     const stale = (): boolean => controller.signal.aborted
-    setPending(true)
-    void (async () => {
+    return (async () => {
       try {
         const next = await load(controller.signal)
         if (stale()) return
@@ -115,9 +124,19 @@ export function McphubPage({ load, loadTools, loadSelection, saveSelection, t }:
       } catch (error) {
         if (stale()) return
         setFailure(error instanceof Error ? error.message : String(error))
-      } finally {
-        if (!stale()) setPending(false)
       }
+    })()
+  }, [load])
+
+  const refresh = useCallback(() => {
+    live.current?.abort()
+    const controller = new AbortController()
+    live.current = controller
+    const stale = (): boolean => controller.signal.aborted
+    setPending(true)
+    void (async () => {
+      await readList(controller)
+      if (!stale()) setPending(false)
       // The choice is a second read, and a failed one leaves the Agent on
       // "every service" — which is what an absent record already means.
       const chosen = await loadSelection(controller.signal).catch(() => null)
@@ -126,12 +145,22 @@ export function McphubPage({ load, loadTools, loadSelection, saveSelection, t }:
       setMode(chosen === null ? 'all' : 'some')
       setPicked(chosen ?? [])
     })()
-  }, [load, loadSelection])
+  }, [readList, loadSelection])
 
   useEffect(() => {
     refresh()
     return () => { live.current?.abort() }
   }, [refresh])
+
+  const reload = useCallback((): void => {
+    // A quiet re-read after an action: the list stays on screen (no reading
+    // state), and the mounting choice the user may still be editing keeps
+    // exactly the state it had.
+    live.current?.abort()
+    const controller = new AbortController()
+    live.current = controller
+    void readList(controller)
+  }, [readList])
 
   const toggleTools = useCallback((name: string): void => {
     setOpen(current => (current.includes(name)
@@ -189,11 +218,28 @@ export function McphubPage({ load, loadTools, loadSelection, saveSelection, t }:
       || picked.length !== saved.length
       || picked.some(name => !saved.includes(name))
 
+  const act = useCallback((name: string, action: McphubServerAction, enabled?: boolean): void => {
+    if (acting !== undefined) return
+    setActing(name)
+    setActionFailure(undefined)
+    void actOnServer(name, action, enabled)
+      // Success needs no line of its own: the quiet re-read shows the new
+      // status without flashing the page or resetting the mounting choice.
+      .then(() => { reload() }, (error: unknown) => {
+        setActionFailure({
+          name,
+          text: t('action.failed', { message: error instanceof Error ? error.message : String(error) }),
+        })
+      })
+      .finally(() => { setActing(undefined) })
+  }, [acting, actOnServer, reload, t])
+
   const view: View = {
     snapshot, failure, pending,
     tools, toolsPending, toolsFailure, open,
     mode, picked, note, saving, changed,
-    t, toggleTools, pick, choose, save,
+    acting, actionFailure,
+    t, toggleTools, pick, choose, save, act,
   }
 
   return (
@@ -243,6 +289,7 @@ function body(view: View) {
       <ul className={css.list}>
         {snapshot.servers.map(server => <Row key={server.name} view={view} server={server} />)}
       </ul>
+      <p className={css.actionHint}>{t('action.hint')}</p>
       {pending ? <p className={css.reading}>{t('loading')}</p> : null}
       <Selection view={view} />
     </>
@@ -256,7 +303,7 @@ function body(view: View) {
  * @returns the list item.
  */
 function Row({ view, server }: { view: View; server: McphubServer }) {
-  const { t, mode, picked, tools, open } = view
+  const { t, mode, picked, tools, open, acting, actionFailure } = view
   const dot = server.status === 'running' ? css.dotRunning : server.status === 'stopped' ? css.dotStopped : css.dotIdle
   const unfolded = open.includes(server.name)
   const listed = tools?.get(server.name)
@@ -274,6 +321,26 @@ function Row({ view, server }: { view: View; server: McphubServer }) {
           <button
             type="button"
             className={css.tool}
+            disabled={acting !== undefined}
+            aria-busy={acting === server.name}
+            title={t('action.hint')}
+            onClick={() => { view.act(server.name, 'toggle', server.status !== 'running') }}
+          >
+            {acting === server.name ? t('action.working') : server.status === 'running' ? t('action.stop') : t('action.start')}
+          </button>
+          <button
+            type="button"
+            className={css.tool}
+            disabled={acting !== undefined}
+            aria-busy={acting === server.name}
+            title={t('action.hint')}
+            onClick={() => { view.act(server.name, 'reload') }}
+          >
+            {t('action.reload')}
+          </button>
+          <button
+            type="button"
+            className={css.tool}
             aria-expanded={unfolded}
             onClick={() => { view.toggleTools(server.name) }}
           >
@@ -287,6 +354,7 @@ function Row({ view, server }: { view: View; server: McphubServer }) {
           )}
         </span>
       </div>
+      {actionFailure?.name === server.name ? <p className={css.rowError}>{actionFailure.text}</p> : null}
       {unfolded ? <ToolList view={view} listed={listed} /> : null}
     </li>
   )

@@ -21,6 +21,7 @@ function props(load: McphubPageProps['load'], extra: Partial<McphubPageProps> = 
     loadTools: vi.fn(async () => TOOLS),
     loadSelection: vi.fn(async () => null),
     saveSelection: vi.fn(async () => undefined),
+    act: vi.fn(async () => undefined),
     ...extra,
     t: (key, params) => {
       const template = (messages as Record<string, string>)[key] ?? key
@@ -162,5 +163,35 @@ describe('the MCPHub service page', () => {
     fireEvent.click(view.getAllByRole('checkbox')[0]!)
     fireEvent.click(view.getByRole('button', { name: '保存选择' }))
     await waitFor(() => { expect(view.getByText('保存失败：HTTP 403')).toBeTruthy() })
+  })
+
+  it('stops a running service and re-reads the list to show the new status', async () => {
+    const act = vi.fn(async () => undefined)
+    const load = vi.fn(async () => SNAPSHOT)
+    const view = render(<McphubPage {...props(load, { act })} />)
+    await waitFor(() => { expect(view.getByText('amap')).toBeTruthy() })
+
+    fireEvent.click(view.getAllByRole('button', { name: '停用' })[0]!)
+    await waitFor(() => { expect(act).toHaveBeenCalledWith('amap', 'toggle', false) })
+    await waitFor(() => { expect(load).toHaveBeenCalledTimes(2) })
+  })
+
+  it('starts a stopped service with the state it wants', async () => {
+    const act = vi.fn(async () => undefined)
+    const view = render(<McphubPage {...props(vi.fn(async () => SNAPSHOT), { act })} />)
+    await waitFor(() => { expect(view.getByText('shared')).toBeTruthy() })
+
+    // The second row is the stopped `shared`; its action reads 启用.
+    fireEvent.click(view.getAllByRole('button', { name: '启用' })[0]!)
+    await waitFor(() => { expect(act).toHaveBeenCalledWith('shared', 'toggle', true) })
+  })
+
+  it('reports a refused action on its own row, with MCPHub\'s verdict', async () => {
+    const act = vi.fn(async () => { throw new Error('Server not found') })
+    const view = render(<McphubPage {...props(vi.fn(async () => SNAPSHOT), { act })} />)
+    await waitFor(() => { expect(view.getByText('amap')).toBeTruthy() })
+
+    fireEvent.click(view.getAllByRole('button', { name: '重载' })[0]!)
+    await waitFor(() => { expect(view.getByText('操作失败：Server not found')).toBeTruthy() })
   })
 })

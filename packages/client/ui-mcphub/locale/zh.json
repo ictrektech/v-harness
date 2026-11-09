@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "MCP 服务面板",
+    "title": "MCPHUB 服务面板",
     "description": "列出 MCPHub 中当前用户有权使用的 MCP 服务，Agent 通过 MCPHub 调用它们。"
   }
 }

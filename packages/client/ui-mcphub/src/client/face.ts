@@ -35,6 +35,9 @@ export interface McphubTool {
   readonly enabled: boolean
 }
 
+/** A management action the page may take on one service. */
+export type McphubServerAction = 'toggle' | 'reload'
+
 /** One service and the tools behind it. */
 export interface McphubToolServer {
   readonly name: string
@@ -76,6 +79,14 @@ export interface McphubFace {
    * @returns resolves once the gateway recorded the choice.
    */
   readonly saveSelection: (names: readonly string[] | null) => Promise<void>
+  /**
+   * Start, stop or reload one service in MCPHub.
+   * @param name - the service to act on.
+   * @param action - what to do; `toggle` carries the desired state.
+   * @param enabled - the desired state, for `toggle`.
+   * @returns resolves once MCPHub accepted the action.
+   */
+  readonly act: (name: string, action: McphubServerAction, enabled?: boolean) => Promise<void>
 }
 
 /**
@@ -202,4 +213,43 @@ export async function saveMcphubSelection(names: readonly string[] | null): Prom
     body: JSON.stringify({ names }),
   })
   await objectBody(response)
+}
+
+/**
+ * The error a refused action carries, preferring the gateway's own message —
+ * it is MCPHub's verdict (missing service, or one this user may not act on),
+ * which is what the row should show.
+ * @param response - the gateway's answer.
+ * @returns the error to surface.
+ */
+async function actionFailure(response: Response): Promise<Error> {
+  const body: unknown = await response.json().catch(() => undefined)
+  const verdict = body !== null && typeof body === 'object'
+    && typeof (body as Record<string, unknown>).message === 'string'
+    ? (body as Record<string, unknown>).message as string
+    : `HTTP ${String(response.status)}`
+  return new Error(verdict)
+}
+
+/**
+ * Start, stop or reload one service, through the gateway's management route.
+ * @param name - the service to act on.
+ * @param action - what to do; `toggle` carries the desired state.
+ * @param enabled - the desired state, for `toggle`.
+ * @returns resolves once MCPHub accepted the action.
+ */
+export async function actOnMcphubServer(
+  name: string,
+  action: McphubServerAction,
+  enabled?: boolean,
+): Promise<void> {
+  const response = await fetch(`/__vh/mcphub/servers/${encodeURIComponent(name)}/${action}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(enabled === undefined ? {} : { enabled }),
+  })
+  if (!response.ok) throw await actionFailure(response)
+  await response.json().catch(() => undefined)
 }

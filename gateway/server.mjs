@@ -55,6 +55,7 @@ import {
   handleAgent as handleMcphubAgent,
   mcphubRouting,
   mcphubSelection,
+  mcphubServerAction,
   mcphubServices,
   mcphubTools,
   saveMcphubSelection,
@@ -1077,6 +1078,53 @@ async function handleControl(req, res, url) {
       names === null || names === undefined ? undefined : /** @type {string[]} */ (names),
     );
     json(res, 200, { ok: true, selected: selected ?? null, restartRequired: true });
+    return;
+  }
+
+  // One management action on one service: start/stop it, or reload its
+  // connection. The page holds no VOS token, so the gateway signs the upstream
+  // call with the session user's own; MCPHub decides whether that user may act
+  // on the service at all, and its verdict (404 included) is relayed as is.
+  if (url.pathname.startsWith('/__vh/mcphub/servers/')) {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method !== 'POST') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    // A stop is a write to shared state, so it is refused where a browser
+    // would not attach the session on its own.
+    if (req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+    const match = /^\/__vh\/mcphub\/servers\/([^/]+)\/(toggle|reload)$/u.exec(url.pathname);
+    if (match === null) {
+      json(res, 404, { error: 'route-not-allowed' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (error) {
+      console.error('mcphub server action body rejected:', error?.message ?? error);
+      json(res, 400, { error: 'invalid-body', message: '请求体不是合法的 JSON 对象' });
+      return;
+    }
+    // The raw segment travels to the module: it owns the decoding, so a
+    // malformed escape comes back as its own 400 instead of a thrown
+    // URIError this handler would answer with a misleading 500.
+    const result = await mcphubServerAction(
+      record.namespace,
+      match[1],
+      /** @type {'toggle' | 'reload'} */ (match[2]),
+      body,
+    );
+    if (!result.ok) {
+      json(res, result.status, { error: result.error, ...(result.message !== undefined ? { message: result.message } : {}) });
+      return;
+    }
+    json(res, 200, { ok: true, ...(result.message !== undefined ? { message: result.message } : {}) });
     return;
   }
 

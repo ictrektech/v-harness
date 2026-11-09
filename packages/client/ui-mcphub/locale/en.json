@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "MCP services panel",
+    "title": "MCPHUB services panel",
     "description": "Lists the MCP services the current user may use in MCPHub; the Agent calls them through MCPHub."
   }
 }

@@ -16,7 +16,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /** Simplified Chinese dictionary and key-set source of truth. */
 export const zh = {
-  panel: 'MCP 服务',
+  panel: 'MCPHUB服务',
   title: 'MCPHub 服务',
   description: '这里列出 MCPHub 中你有权使用的服务，Agent 通过 MCPHub 调用它们。',
   refresh: '刷新',
@@ -54,6 +54,12 @@ export const zh = {
   'selection.saved': '已保存，重启工作区后生效',
   'selection.failed': '保存失败：{message}',
   'selection.hint': '选择在下一次启动工作区时生效。',
+  'action.start': '启用',
+  'action.stop': '停用',
+  'action.reload': '重载',
+  'action.working': '处理中…',
+  'action.failed': '操作失败：{message}',
+  'action.hint': '启停与重载作用于 MCPHub 的共享连接，对该服务的所有使用者立即生效。',
 } satisfies Record<string, string>
 
 /** MCPHub panel dictionary key union. */
@@ -61,7 +67,7 @@ export type McphubKey = keyof typeof zh
 
 /** English dictionary, checked against the Chinese key set. */
 export const en = {
-  panel: 'MCP services',
+  panel: 'MCPHUB services',
   title: 'MCPHub services',
   description: 'The services you may use in MCPHub. The Agent calls them through MCPHub.',
   refresh: 'Refresh',
@@ -99,4 +105,10 @@ export const en = {
   'selection.saved': 'Saved. Restart the workspace to apply it',
   'selection.failed': 'Could not save: {message}',
   'selection.hint': 'The choice applies the next time the workspace starts.',
+  'action.start': 'Start',
+  'action.stop': 'Stop',
+  'action.reload': 'Reload',
+  'action.working': 'Working…',
+  'action.failed': 'Action failed: {message}',
+  'action.hint': 'Start, stop and reload act on the shared connection in MCPHub; every user of the service sees the change at once.',
 } satisfies Record<McphubKey, string>

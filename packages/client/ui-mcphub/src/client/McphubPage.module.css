@@ -311,6 +311,12 @@
   font-size: 12px;
 }
 
+.actionHint {
+  margin: 8px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .row {
     grid-template-columns: minmax(0, 1fr) auto;

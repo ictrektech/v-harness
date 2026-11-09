@@ -1,7 +1,8 @@
 /**
  * MCPHub services, browser half: the **MCP 服务** entry of the left Sidebar and
  * the page it opens. The page reads what the gateway discovered for this
- * tenant; it never talks to MCPHub itself, and it holds no credential.
+ * tenant and acts on its services through the same gateway; it never talks to
+ * MCPHub itself, and it holds no credential.
  *
  * The plugin is mounted only where the gateway proved MCPHub is installed
  * (`VH_MCPHUB` in the carrier's row), so an environment without that
@@ -18,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { McphubPage } from './McphubPage.tsx'
 import { McphubPanelIcon } from './McphubPanelIcon.tsx'
 import {
+  actOnMcphubServer,
   fetchMcphubSelection,
   fetchMcphubServices,
   fetchMcphubTools,
@@ -58,6 +60,7 @@ export function apply(ctx: ClientContext): void {
     loadTools: signal => fetchMcphubTools(signal),
     loadSelection: signal => fetchMcphubSelection(signal),
     saveSelection: names => saveMcphubSelection(names),
+    act: (name, action, enabled) => actOnMcphubServer(name, action, enabled),
   }
   ctx.effect(() => ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',

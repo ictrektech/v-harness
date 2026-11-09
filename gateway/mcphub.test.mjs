@@ -97,6 +97,38 @@ const hub = createServer((req, res) => {
     }));
     return;
   }
+  const action = /^\/app\/com\.ictrek\.mcphub\/api\/servers\/([^/]+)\/(toggle|reload)$/u.exec(req.url ?? '');
+  if (action !== null) {
+    let raw = '';
+    req.on('data', (chunk) => { raw += String(chunk); });
+    req.on('end', () => {
+      seen.at(-1).body = raw;
+      if (req.headers.authorization !== 'Bearer alice-token') {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end('{"success":false,"message":"VOS sign-in required"}');
+        return;
+      }
+      const name = decodeURIComponent(action[1]);
+      if (name === 'ghost') {
+        // MCPHub's own verdict for a service the caller may not act on.
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end('{"success":false,"message":"Server not found"}');
+        return;
+      }
+      if (action[2] === 'reload') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"success":true,"message":"Server amap reloaded"}');
+        return;
+      }
+      const enabled = JSON.parse(raw || '{}').enabled;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        message: `Server amap ${enabled === true ? 'enabled' : 'disabled'} successfully`,
+      }));
+    });
+    return;
+  }
   res.writeHead(404, { 'content-type': 'application/json' });
   res.end('{"success":false}');
 });
@@ -127,6 +159,7 @@ const {
   mcphubLaunchPatch,
   mcphubRouting,
   mcphubSelection,
+  mcphubServerAction,
   mcphubServices,
   mcphubTools,
   saveMcphubSelection,
@@ -327,6 +360,61 @@ test('the tool preview keeps names and descriptions, never configuration', async
 test('the preview reports an expired sign-in instead of an empty catalog', async () => {
   assert.deepEqual(await mcphubTools('expired'), { available: true, authorized: false, servers: [] });
   assert.deepEqual(await mcphubTools('nobody'), { available: true, authorized: false, servers: [] });
+});
+
+test('a service action carries the tenant token and rebuilds the answer', async () => {
+  seen.length = 0;
+  const result = await mcphubServerAction('alice', 'amap', 'toggle', { enabled: false });
+  assert.deepEqual(result, { ok: true, message: 'Server amap disabled successfully' });
+  const upstream = seen.at(-1);
+  assert.equal(upstream.method, 'POST');
+  assert.equal(upstream.path, `${BASE_PATH}/api/servers/amap/toggle`);
+  assert.equal(upstream.authorization, 'Bearer alice-token');
+});
+
+test('a toggle without a boolean enabled is refused before any network traffic', async () => {
+  seen.length = 0;
+  const result = await mcphubServerAction('alice', 'amap', 'toggle', { enabled: 'yes' });
+  assert.deepEqual(result, { ok: false, status: 400, error: 'invalid-body', message: 'enabled 必须是布尔值' });
+  assert.equal(seen.length, 0);
+});
+
+test('reload needs no body and reaches its own route', async () => {
+  seen.length = 0;
+  const result = await mcphubServerAction('alice', 'amap', 'reload', {});
+  assert.deepEqual(result, { ok: true, message: 'Server amap reloaded' });
+  assert.equal(seen.at(-1).path, `${BASE_PATH}/api/servers/amap/reload`);
+  assert.equal(seen.at(-1).body, '{}');
+});
+
+test('an action on a service the user may not touch relays the upstream verdict', async () => {
+  const result = await mcphubServerAction('alice', 'ghost', 'toggle', { enabled: true });
+  assert.deepEqual(result, { ok: false, status: 404, error: 'upstream', message: 'Server not found' });
+});
+
+test('an expired sign-in is an authorization answer, not an upstream fault', async () => {
+  const result = await mcphubServerAction('expired', 'amap', 'toggle', { enabled: true });
+  assert.deepEqual(result, { ok: false, status: 401, error: 'unauthorized' });
+});
+
+test('a signed-out tenant cannot act on a service', async () => {
+  const result = await mcphubServerAction('nobody', 'amap', 'toggle', { enabled: true });
+  assert.deepEqual(result, { ok: false, status: 401, error: 'vos-token-unavailable' });
+});
+
+test('a name that is not a path segment and an unknown action are refused locally', async () => {
+  seen.length = 0;
+  const named = await mcphubServerAction('alice', '../escape', 'toggle', { enabled: true });
+  assert.deepEqual(named, { ok: false, status: 400, error: 'invalid-name' });
+  // A malformed escape must be a 400, never the URIError the route used to
+  // leak as a 500; a decoded `/` is still not a service name.
+  const escape = await mcphubServerAction('alice', '%zz', 'toggle', { enabled: true });
+  assert.deepEqual(escape, { ok: false, status: 400, error: 'invalid-name' });
+  const slash = await mcphubServerAction('alice', 'amap%2Fx', 'toggle', { enabled: true });
+  assert.deepEqual(slash, { ok: false, status: 400, error: 'invalid-name' });
+  const acted = await mcphubServerAction('alice', 'amap', 'delete', {});
+  assert.deepEqual(acted, { ok: false, status: 404, error: 'route-not-allowed' });
+  assert.equal(seen.length, 0);
 });
 
 /** The tenant's own view of one launch, shared by the two selection tests. */
