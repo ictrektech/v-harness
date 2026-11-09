@@ -34,7 +34,8 @@ const VISIBILITY: Readonly<Record<string, McphubKey>> = {
 const STATUS: Readonly<Record<string, McphubKey>> = {
   running: 'status.running',
   stopped: 'status.stopped',
-  disconnected: 'status.disconnected',
+  connecting: 'status.connecting',
+  'oauth-required': 'status.oauthRequired',
 }
 
 /** Routing labels; `smart` needs a database-mode MCPHub, so it stays a label. */
@@ -304,7 +305,10 @@ function body(view: View) {
  */
 function Row({ view, server }: { view: View; server: McphubServer }) {
   const { t, mode, picked, tools, open, acting, actionFailure } = view
-  const dot = server.status === 'running' ? css.dotRunning : server.status === 'stopped' ? css.dotStopped : css.dotIdle
+  // A service that is off reads as stopped whatever its connection says.
+  const dot = !server.enabled || server.status === 'stopped'
+    ? css.dotStopped
+    : server.status === 'running' ? css.dotRunning : css.dotIdle
   const unfolded = open.includes(server.name)
   const listed = tools?.get(server.name)
   return (
@@ -324,9 +328,9 @@ function Row({ view, server }: { view: View; server: McphubServer }) {
             disabled={acting !== undefined}
             aria-busy={acting === server.name}
             title={t('action.hint')}
-            onClick={() => { view.act(server.name, 'toggle', server.status !== 'running') }}
+            onClick={() => { view.act(server.name, 'toggle', !server.enabled) }}
           >
-            {acting === server.name ? t('action.working') : server.status === 'running' ? t('action.stop') : t('action.start')}
+            {acting === server.name ? t('action.working') : server.enabled ? t('action.stop') : t('action.start')}
           </button>
           <button
             type="button"

@@ -22,37 +22,6 @@ const hub = createServer((req, res) => {
     res.end('{"status":"healthy"}');
     return;
   }
-  if (req.url === `${BASE_PATH}/api/integration/discovery`) {
-    if (req.headers.authorization === 'Bearer expired-token') {
-      res.writeHead(401, { 'content-type': 'application/json' });
-      res.end('{"success":false}');
-      return;
-    }
-    if (req.headers.authorization !== 'Bearer alice-token') {
-      res.writeHead(401, { 'content-type': 'application/json' });
-      res.end('{"success":false}');
-      return;
-    }
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({
-      success: true,
-      data: {
-        protocol: 'mcp',
-        transport: 'streamable-http',
-        mcp_path: `${BASE_PATH}/mcp`,
-        // The extra fields are what the panel must never see.
-        servers: [
-          {
-            name: 'amap', description: '高德地图', visibility: 'private', status: 'running',
-            mcp_path: `${BASE_PATH}/mcp/amap`, url: 'http://amap.internal', command: 'npx', env: { KEY: 'secret' },
-          },
-          { name: '', description: 'nameless', visibility: 'public', status: 'running' },
-          { name: 'shared', description: '', visibility: 'group', status: 'stopped' },
-        ],
-      },
-    }));
-    return;
-  }
   if (req.url === `${BASE_PATH}/mcp`) {
     req.resume();
     if (req.headers.authorization !== 'Bearer alice-token') {
@@ -81,9 +50,12 @@ const hub = createServer((req, res) => {
       data: [
         {
           name: 'amap',
-          status: 'running',
-          // The dashboard answer carries the whole configuration; the preview
+          visibility: 'private',
+          status: 'connected',
+          enabled: true,
+          // The dashboard answer carries the whole configuration; the rebuild
           // must keep only what a row shows.
+          config: { description: '高德地图', command: 'npx' },
           url: 'http://amap.internal',
           env: { KEY: 'secret' },
           tools: [
@@ -92,6 +64,8 @@ const hub = createServer((req, res) => {
             { name: 'amap-maps_weather', description: '天气', enabled: true, inputSchema: { secret: true } },
           ],
         },
+        // A disabled service stays listed: its row is where it starts again.
+        { name: 'shared', visibility: 'group', status: 'disconnected', enabled: false, config: {}, tools: [] },
         { name: '', tools: [] },
       ],
     }));
@@ -196,16 +170,18 @@ test('a reachable MCPHub mounts the panel and mints one capability', () => {
   assert.match(alice.VH_MCPHUB_KEY ?? '', /^[0-9a-f]{64}$/u);
 });
 
-test('discovery keeps its BASE_PATH and carries the tenant token', async () => {
+test('the service list keeps its BASE_PATH, carries the tenant token, and lists disabled services', async () => {
   seen.length = 0;
   const answer = await mcphubServices('alice');
   assert.equal(answer.available, true);
   assert.equal(answer.authorized, true);
+  // `connected` upstream is what a row calls running, and a disabled service
+  // stays in the list so its row can start it again.
   assert.deepEqual(answer.servers, [
-    { name: 'amap', description: '高德地图', visibility: 'private', status: 'running' },
-    { name: 'shared', description: '', visibility: 'group', status: 'stopped' },
+    { name: 'amap', description: '高德地图', visibility: 'private', status: 'running', enabled: true },
+    { name: 'shared', description: '', visibility: 'group', status: 'stopped', enabled: false },
   ]);
-  assert.equal(seen.at(-1).path, `${BASE_PATH}/api/integration/discovery`);
+  assert.equal(seen.at(-1).path, `${BASE_PATH}/api/servers`);
   assert.equal(seen.at(-1).authorization, 'Bearer alice-token');
 });
 
@@ -341,14 +317,17 @@ test('the tool preview keeps names and descriptions, never configuration', async
   const answer = await mcphubTools('alice');
   assert.equal(answer.available, true);
   assert.equal(answer.authorized, true);
-  assert.deepEqual(answer.servers, [{
-    name: 'amap',
-    tools: [
-      { name: 'amap-maps_geo', description: '地理编码', enabled: true },
-      { name: 'amap-maps_route', description: '路径规划', enabled: false },
-      { name: 'amap-maps_weather', description: '天气', enabled: true },
-    ],
-  }]);
+  assert.deepEqual(answer.servers, [
+    {
+      name: 'amap',
+      tools: [
+        { name: 'amap-maps_geo', description: '地理编码', enabled: true },
+        { name: 'amap-maps_route', description: '路径规划', enabled: false },
+        { name: 'amap-maps_weather', description: '天气', enabled: true },
+      ],
+    },
+    { name: 'shared', tools: [] },
+  ]);
   assert.equal(seen.at(-1).path, `${BASE_PATH}/api/servers`);
   assert.equal(seen.at(-1).authorization, 'Bearer alice-token');
   const body = JSON.stringify(answer);

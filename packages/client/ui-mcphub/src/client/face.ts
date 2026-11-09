@@ -11,8 +11,10 @@ export interface McphubServer {
   readonly description: string
   /** `private`, `public`, `group`, or a value a newer MCPHub introduced. */
   readonly visibility: string
-  /** `running`, `stopped`, `disconnected`, or a value a newer MCPHub introduced. */
+  /** `running`, `stopped`, `connecting`, or a value a newer MCPHub introduced. */
   readonly status: string
+  /** Whether the service is on. A stopped one stays listed so it can start. */
+  readonly enabled: boolean
 }
 
 /** One read of the service list, including why it may be empty. */
@@ -112,6 +114,7 @@ function isServer(value: unknown): value is McphubServer {
     && typeof entry.description === 'string'
     && typeof entry.visibility === 'string'
     && typeof entry.status === 'string'
+    && typeof entry.enabled === 'boolean'
 }
 
 /**

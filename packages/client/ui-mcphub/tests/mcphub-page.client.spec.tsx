@@ -37,8 +37,8 @@ const SNAPSHOT: McphubSnapshot = {
   authorized: true,
   routing: 'all',
   servers: [
-    { name: 'amap', description: '高德地图', visibility: 'private', status: 'running' },
-    { name: 'shared', description: '', visibility: 'group', status: 'stopped' },
+    { name: 'amap', description: '高德地图', visibility: 'private', status: 'running', enabled: true },
+    { name: 'shared', description: '', visibility: 'group', status: 'stopped', enabled: false },
   ],
 }
 

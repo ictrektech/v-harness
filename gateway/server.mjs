@@ -386,15 +386,25 @@ async function sha256Bytes(data){
   if(crypto.subtle) return new Uint8Array(await crypto.subtle.digest('SHA-256',data));
   return sha256(data);
 }
-async function bridge(){
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
+// The portal injects the identity bridge into this iframe from the outside, so
+// on a cold or busy portal it can lag well behind our own load. Waiting a few
+// seconds used to fail the whole sign-in; the wait is now the length of a slow
+// portal, with a message instead of a dead end.
+async function bridge(waitMs){
   const direct=window.vos_platform?.api?.v1000?.oauth2;
   if(direct)return direct;
   if(window.parent===window)return null;
   const t0=Date.now();
-  while(Date.now()-t0<4000){
-    await new Promise(r=>setTimeout(r,50));
+  let announced=false;
+  while(Date.now()-t0<waitMs){
+    await sleep(100);
     const found=window.vos_platform?.api?.v1000?.oauth2;
     if(found)return found;
+    if(!announced&&Date.now()-t0>1500){
+      document.getElementById('m').textContent='正在等待平台注入身份组件…';
+      announced=true;
+    }
   }
   return null;
 }
@@ -402,8 +412,8 @@ function fail(m){
   document.getElementById('m').textContent='无法进入 v-harness';
   document.getElementById('e').textContent=m;
 }
-async function authorize(cfg){
-  const oauth2=await bridge();
+async function authorize(cfg,waitMs){
+  const oauth2=await bridge(waitMs===undefined?25000:waitMs);
   if(!oauth2)throw new Error('当前 VOS 未提供 OIDC Fastpath，无法验证用户身份');
   const verifier=rand(),state=rand();
   const digest=await sha256Bytes(new TextEncoder().encode(verifier));
@@ -426,7 +436,7 @@ async function authorize(cfg){
   // the only way the next request can still identify itself.
   if(body.session)try{sessionStorage.setItem('vh_session',body.session);}catch{}
 }
-function showRenew(error){
+function showRenew(error,cfg){
   document.getElementById('m').textContent='登录状态已恢复，但能力授权已失效';
   const detail=document.getElementById('e');
   detail.textContent=(error?.message||String(error))+'。';
@@ -437,21 +447,87 @@ function showRenew(error){
   skip.textContent='仍然进入（部分能力不可用）';
   skip.onclick=()=>location.replace('/__vh/enter?to='+encodeURIComponent(location.pathname+location.search));
   detail.append(document.createElement('br'),renew,skip);
+  recoverInBackground(cfg);
+}
+function showFresh(error){
+  document.getElementById('m').textContent='无法完成平台登录';
+  const detail=document.getElementById('e');
+  detail.textContent=(error?.message||String(error))+'。';
+  const retry=document.createElement('button');
+  retry.textContent='手动重试';
+  retry.onclick=()=>location.reload();
+  detail.append(document.createElement('br'),retry);
+}
+// Shared by every dead end this page can reach, whatever the tenant asked for
+// next: while the prompt is up, the page keeps watching for the portal bridge
+// in the background; the moment the bridge appears the sign-in is retried and
+// the original navigation resumes on its own. Five minutes of watching, ten
+// seconds of backoff after each failed exchange, so a genuinely refusing VOS
+// is not hammered.
+function recoverInBackground(cfg){
+  const t0=Date.now();
+  const recover=async()=>{
+    while(Date.now()-t0<300000){
+      await sleep(3000);
+      const oauth2=await bridge(0);
+      if(!oauth2)continue;
+      try{await authorize(cfg,1000);}
+      catch(error){
+        // The bridge is there and the exchange still failed, which is VOS
+        // refusing rather than a slow portal: keep watching on a backoff
+        // instead of spending an exchange on every tick.
+        console.warn('vh bootstrap: background sign-in failed', error);
+        await sleep(10000);
+        continue;
+      }
+      location.reload();
+      return;
+    }
+  };
+  void recover();
+}
+// One failed exchange should not be the end: a busy portal recovers within
+// seconds, so the sign-in is retried before the renew prompt is shown. A
+// standalone tab (no portal around) can never gain the bridge, so it skips
+// the retries instead of making the user wait for nothing.
+async function authorizeWithRetry(cfg){
+  const attempts=window.parent===window?1:3;
+  let last;
+  for(let attempt=0;attempt<attempts;attempt++){
+    try{return await authorize(cfg,25000);}catch(error){last=error;}
+    if(attempt<attempts-1){
+      document.getElementById('m').textContent='平台身份验证失败，正在自动重试…';
+      await sleep(1500*(attempt+1));
+    }
+  }
+  throw last;
 }
 async function boot(){
   let saved='';
   try{saved=sessionStorage.getItem('vh_session')||'';}catch{}
-  const cfg=await(await fetch('/__vh/session',{
-    credentials:'include',cache:'no-store',
-    headers:saved?{'x-vh-session':saved}:{}})).json();
+  // A gateway hiccup (its own restart, a blip between containers) must not
+  // dead-end the page either: the session read is retried before giving up.
+  let cfg;
+  for(let attempt=0;;attempt++){
+    try{
+      cfg=await(await fetch('/__vh/session',{
+        credentials:'include',cache:'no-store',
+        headers:saved?{'x-vh-session':saved}:{}})).json();
+      break;
+    }catch(error){
+      if(attempt>=4){fail('无法连接 v-harness 网关，自动重试未恢复，请稍后手动刷新');return;}
+      document.getElementById('m').textContent='网关暂时不可达，正在自动重试…';
+      await sleep(2000);
+    }
+  }
   if(cfg.session)try{sessionStorage.setItem('vh_session',cfg.session);}catch{}
   // Re-prove the signed-in VOS account on every load. The cookie only names
   // the tenant served last, so trusting it here is how two accounts in one
   // browser ended up sharing an instance. VOS silent auth answers "who is
   // signed in now", and /__vh/auth re-issues the cookie for that account.
   if(cfg.authenticated){
-    try{await authorize(cfg);}
-    catch(error){showRenew(error);return;}
+    try{await authorizeWithRetry(cfg);}
+    catch(error){showRenew(error,cfg);return;}
     // Reload the page that asked, not the directory above it: the proof just
     // issued covers this navigation, and a deep link must survive the trip.
     // reload() keeps the whole URL (hash included) where replace(same url) can
@@ -459,7 +535,8 @@ async function boot(){
     location.reload();
     return;
   }
-  await authorize(cfg);
+  try{await authorizeWithRetry(cfg);}
+  catch(error){showFresh(error);recoverInBackground(cfg);return;}
   location.reload();
 }
 boot().catch(error=>fail(error?.message||String(error)));

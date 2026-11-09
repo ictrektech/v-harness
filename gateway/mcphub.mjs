@@ -153,27 +153,61 @@ function upstreamFailed() {
 }
 
 /**
- * One discovery entry, rebuilt from the fields the panel shows.
- * @param {unknown} entry - a raw entry from the upstream response.
- * @returns {{ name: string, description: string, visibility: string, status: string } | undefined}
- *   the displayable entry, or undefined when it has no usable name.
+ * The connection state a row shows, in the panel's own vocabulary.
+ *
+ * MCPHub speaks `connected / connecting / disconnected / oauth_required`; the
+ * panel's labels exist for a reader, so the mapping happens here once rather
+ * than in every renderer that would otherwise have to know the upstream words.
+ * @param {string} value - the upstream status.
+ * @returns {'running' | 'stopped' | 'connecting' | 'oauth-required' | 'unknown'}
+ *   the state a row renders.
+ */
+function displayStatus(value) {
+  switch (value) {
+    case 'connected': return 'running';
+    case 'disconnected': return 'stopped';
+    case 'connecting': return 'connecting';
+    case 'oauth_required': return 'oauth-required';
+    default: return 'unknown';
+  }
+}
+
+/**
+ * One dashboard entry, rebuilt from the fields the panel shows.
+ *
+ * The dashboard answer carries the whole configuration — command, url, env,
+ * tool schemas — and this rebuild is the boundary that keeps it out of the
+ * browser. `description` is the only field that moves out of `config`.
+ * @param {unknown} entry - a raw entry from `/api/servers`.
+ * @returns {{ name: string, description: string, visibility: string,
+ *   status: string, enabled: boolean } | undefined} the displayable entry, or
+ *   undefined when it has no usable name.
  */
 function displayEntry(entry) {
   if (entry === null || typeof entry !== 'object') return undefined;
   const record = /** @type {Record<string, unknown>} */ (entry);
   if (typeof record.name !== 'string' || record.name === '') return undefined;
+  const config = record.config !== null && typeof record.config === 'object'
+    ? /** @type {Record<string, unknown>} */ (record.config)
+    : {};
   const text = (value) => (typeof value === 'string' ? value : '');
   return {
     name: record.name,
-    description: text(record.description),
+    description: text(config.description),
     visibility: text(record.visibility) || 'private',
-    status: text(record.status) || 'unknown',
+    status: displayStatus(text(record.status)),
+    // A disabled service is still listed: the row is where it is turned back
+    // on, and discovery — which hides disabled services — cannot express that.
+    enabled: record.enabled !== false,
   };
 }
 
 /**
  * The services this tenant may use, as `GET /__vh/mcphub/services` answers.
  *
+ * Read from the dashboard's own list rather than `api/integration/discovery`:
+ * discovery only carries enabled services and omits the flag, so a panel built
+ * on it could offer "stop" but never "start" — the row would be gone by then.
  * `available: false` means the sibling application is not there; the panel is
  * normally not even mounted in that case, and the answer exists so a probe can
  * be inspected without guessing.
@@ -181,9 +215,10 @@ function displayEntry(entry) {
  * @returns {Promise<{
  *   available: boolean,
  *   authorized: boolean,
- *   servers: { name: string, description: string, visibility: string, status: string }[],
+ *   servers: { name: string, description: string, visibility: string,
+ *     status: string, enabled: boolean }[],
  *   error?: string,
- * }>} the discovery answer.
+ * }>} the service list.
  */
 export async function mcphubServices(namespace) {
   const target = await upstream(true);
@@ -197,12 +232,12 @@ export async function mcphubServices(namespace) {
   /** @type {Response} */
   let response;
   try {
-    response = await fetch(`${target}/api/integration/discovery`, {
+    response = await fetch(`${target}/api/servers`, {
       headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
       signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
     });
   } catch (error) {
-    console.error(`mcphub discovery unreachable (${namespace}):`, error?.message ?? error);
+    console.error(`mcphub service list unreachable (${namespace}):`, error?.message ?? error);
     upstreamFailed();
     return { available: true, authorized: true, servers: [], error: 'unreachable' };
   }
@@ -211,13 +246,13 @@ export async function mcphubServices(namespace) {
     return { available: true, authorized: false, servers: [] };
   }
   if (!response.ok) {
-    console.error(`mcphub discovery failed (${namespace}): HTTP ${String(response.status)}`);
+    console.error(`mcphub service list failed (${namespace}): HTTP ${String(response.status)}`);
     upstreamFailed();
     return { available: true, authorized: true, servers: [], error: `http-${String(response.status)}` };
   }
 
   const body = await response.json().catch(() => undefined);
-  const raw = body?.data?.servers;
+  const raw = body?.data;
   const servers = Array.isArray(raw)
     ? raw.map(displayEntry).filter((entry) => entry !== undefined)
     : [];
