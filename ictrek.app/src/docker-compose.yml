@@ -55,6 +55,13 @@ x-v-harness-base: &v-harness-base
   labels:
     - "traefik.enable=true"
     - "traefik.docker.network=vos_default"
+    # Both entrypoints are declared here rather than left to the provider's
+    # per-entry point derivation: the public HTTPS ingress (`web`) is how the VOS
+    # portal opens this application, and a route that only exists because a
+    # platform build derives it is a route nobody can see in the deployment.
+    - "traefik.http.routers.v-harness-app.entrypoints=web,web-internal"
+    - "traefik.http.routers.v-harness-api.entrypoints=web,web-internal"
+    - "traefik.http.routers.v-harness-ref.entrypoints=web,web-internal"
     # Application entry: strip the VOS prefix, hand the SPA shell to dsh.
     - "traefik.http.routers.v-harness-app.rule=PathPrefix(`/app/com.ictrek.v-harness`)"
     - "traefik.http.routers.v-harness-app.service=v-harness"
