@@ -57,6 +57,7 @@ const PROFILE_BUNDLES = [
   'dshmarket',
   'ds-bot',
   '@xmanrui/dsh-im',
+  'dsh-mcp-connector',
 ]
 
 /** Mirrors dsh's profile user-patch template. */
@@ -109,8 +110,9 @@ const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-sess
  * dependency. `@xmanrui/dsh-im` is the IM bridge (WeCom/Feishu/DingTalk/QQ/
  * Telegram/...), a third-party registry package staged like the market and the
  * bot: its version is read from the payload, never pinned here.
+ * `dsh-mcp-connector` is the MCP connection manager, staged the same way.
  */
-const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im']
+const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector']
 
 /**
  * The dependencies every tenant profile declares: the published payload

@@ -188,12 +188,16 @@ ARG DS_BOT_VERSION=0.2.5
 # package that ships to every tenant like the market and the bot. Its runtime
 # dependencies (IM SDKs, mail/IMAP clients) ride along with the closure below.
 ARG DSH_IM_VERSION=5.10.0
+# The MCP connection manager (authorization, tool governance, diagnostics),
+# also a registry package that ships to every tenant.
+ARG DSH_MCP_CONNECTOR_VERSION=0.2.97
 RUN mkdir -p /tmp/registry-plugins \
  && npm install --prefix /tmp/registry-plugins --no-save --ignore-scripts --legacy-peer-deps \
       "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" "@xmanrui/dsh-im@${DSH_IM_VERSION}" \
+      "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
- && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')"
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')"
 
 # ============================================================
 # Stage: runtime image
