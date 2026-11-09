@@ -68,6 +68,21 @@ describe('session store', () => {
     store.revokeSubject('sub-1');
     assert.equal(store.loadSession(kept, UA), undefined);
   });
+
+  it('records when a session proved its identity and forgets it on revoke', async () => {
+    const store = await openSessionStore(dbPath(), { ttlMs: TTL_MS });
+    const sid = store.createSession({ subject: 'sub-1', account: 'a', userAgent: UA });
+    // Creating a session issues a ticket; only the bootstrap page can prove
+    // which account holds it, so a fresh session has no proof yet.
+    assert.equal(store.proofAge(sid, 5_000), undefined);
+
+    store.prove(sid, 5_000);
+    assert.equal(store.proofAge(sid, 5_000), 0);
+    assert.equal(store.proofAge(sid, 9_000), 4_000);
+
+    store.revokeSession(sid);
+    assert.equal(store.proofAge(sid, 9_000), undefined, 'a revoked ticket carries no proof');
+  });
 });
 
 describe('cookie helpers', () => {

@@ -184,9 +184,15 @@ function authenticate(req) {
   const cookies = parseCookies(req.headers.cookie);
   const raw = req.headers['x-vh-session'];
   const header = typeof raw === 'string' && raw !== '' ? raw : undefined;
+  const userAgent = String(req.headers['user-agent'] ?? '');
   // The cookie is what the proxied UI relies on; the header is the fallback for
-  // the bootstrap page, which cannot count on a cookie having been stored.
-  return sessions.loadSession(cookies[SESSION_COOKIE] || header, String(req.headers['user-agent'] ?? ''));
+  // the bootstrap page, which cannot count on a cookie having been stored. A
+  // cookie naming a ticket already retired (the account that signed in before)
+  // must not shadow that fallback, or sign-in would loop on a browser that
+  // refused the new cookie.
+  const fromCookie = sessions.loadSession(cookies[SESSION_COOKIE], userAgent);
+  if (fromCookie) return fromCookie;
+  return header === undefined ? undefined : sessions.loadSession(header, userAgent);
 }
 
 /** Per-session VOS subject re-check results: sid → { subject, checkedAt }. */
@@ -213,7 +219,10 @@ async function subjectRecheck(session, record) {
   subChecks.set(session.sid, { subject: session.subject, checkedAt: now });
   if (AUTH_DISABLED) return true;
   const token = await accessTokenFor(record.namespace);
-  if (token === undefined) return true;
+  // No token means this process cannot say who the session belongs to — after a
+  // restart, or once VOS refused a refresh. Answering "allowed" here is what
+  // kept a stale session routing with nobody's identity behind it.
+  if (token === undefined) return false;
   try {
     const identity = await verifyVosToken(token);
     if (identity.subject !== session.subject) {
@@ -239,6 +248,27 @@ async function subjectRecheck(session, record) {
     console.warn(`sub recheck unavailable: ${error instanceof Error ? error.message : String(error)}`);
     return true;
   }
+}
+
+/** How long one navigation trusts the identity the bootstrap just proved. */
+const PROOF_WINDOW_MS = Number(process.env.SESSION_PROOF_MS ?? 20_000);
+
+/**
+ * Whether a navigation must go back through the bootstrap first.
+ *
+ * The session cookie names the tenant served last, not the account browsing
+ * now, and a browser that signs in as someone else keeps carrying it. Only the
+ * bootstrap page can ask the platform who is signed in, so a document loads
+ * only when that answer is recent: a reload straight after it passes, anything
+ * later asks again. This is the one gate every capability inherits, including
+ * the ones installed from the plugin market.
+ * @param {import('./session.mjs').Session} session
+ * @returns {boolean} whether the caller must re-prove identity.
+ */
+function needsProof(session) {
+  if (AUTH_DISABLED) return false;
+  const age = sessions.proofAge(session.sid);
+  return age === undefined || age > PROOF_WINDOW_MS;
 }
 
 /**
@@ -404,7 +434,7 @@ function showRenew(error){
   renew.onclick=async()=>{await fetch('/__vh/logout',{method:'POST'});location.reload();};
   const skip=document.createElement('button');
   skip.textContent='仍然进入（部分能力不可用）';
-  skip.onclick=()=>location.replace('./');
+  skip.onclick=()=>location.replace('/__vh/enter?to='+encodeURIComponent(location.pathname+location.search));
   detail.append(document.createElement('br'),renew,skip);
 }
 async function boot(){
@@ -421,11 +451,13 @@ async function boot(){
   if(cfg.authenticated){
     try{await authorize(cfg);}
     catch(error){showRenew(error);return;}
-    location.replace('./');
+    // Reload the page that asked, not the directory above it: the proof just
+    // issued covers this navigation, and a deep link must survive the trip.
+    location.replace(location.pathname+location.search);
     return;
   }
   await authorize(cfg);
-  location.replace('./');
+  location.replace(location.pathname+location.search);
 }
 boot().catch(error=>fail(error?.message||String(error)));
 </script></body></html>`;
@@ -476,7 +508,7 @@ function poll() {
   fetch('./__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
-      if (d && typeof d.boot === 'number' && d.boot > 0) { location.replace('./'); return; }
+      if (d && typeof d.boot === 'number' && d.boot > 0) { location.replace(location.pathname + location.search); return; }
       if (d && typeof d.error === 'string' && d.error !== '') {
         failed = d.error;
         hint.textContent = '启动失败：' + d.error;
@@ -1151,6 +1183,7 @@ async function handleControl(req, res, url) {
         account: record.account ?? record.linuxName,
         userAgent: String(req.headers['user-agent'] ?? ''),
       });
+      sessions.prove(sid);
       console.warn('VH_AUTH_DISABLED is set: signing in as the local dev user');
       json(res, 200, {
         authenticated: true,
@@ -1265,11 +1298,19 @@ async function handleControl(req, res, url) {
       return;
     }
 
+    // Whoever proved themselves here owns this browser from now on: the ticket
+    // it arrived with is retired, so the previous account cannot ride along in
+    // another tab that never navigates again.
+    const priorSid = cookies[SESSION_COOKIE]
+      ?? (typeof req.headers['x-vh-session'] === 'string' ? req.headers['x-vh-session'] : undefined);
+    if (priorSid !== undefined) sessions.revokeSession(priorSid);
+
     const sid = sessions.createSession({
       subject: record.subject,
       account: record.account ?? record.linuxName,
       userAgent: String(req.headers['user-agent'] ?? ''),
     });
+    sessions.prove(sid);
     json(res, 200, {
       authenticated: true,
       session: sid,
@@ -1280,6 +1321,27 @@ async function handleControl(req, res, url) {
         ...cookiePolicy(req),
       }),
     });
+    return;
+  }
+
+  // The renew prompt offers "仍然进入（部分能力不可用）": VOS refused the silent
+  // authorization, so the account behind the ticket is known but cannot be
+  // re-proved. Marking it proven here is what makes that choice usable —
+  // without it the document would bounce straight back to the page that just
+  // failed, forever.
+  if (url.pathname === '/__vh/enter' && req.method === 'GET') {
+    const session = authenticate(req);
+    if (!session) {
+      json(res, 401, { error: 'unauthenticated' });
+      return;
+    }
+    sessions.prove(session.sid);
+    const to = url.searchParams.get('to') ?? './';
+    // Only a same-origin path is a redirect target; a bare `//host` would hand
+    // the browser to another origin.
+    const target = /^\/(?!\/)[\x20-\x7e]*$/.test(to) ? to : './';
+    res.writeHead(302, { location: target, 'cache-control': 'no-store' });
+    res.end();
     return;
   }
 
@@ -1736,6 +1798,14 @@ async function proxyRequest(req, res) {
       return;
     }
     json(res, 401, { error: 'session revoked' });
+    return;
+  }
+
+  // Anyone signing in on this browser lands here, not only the account that
+  // owns the cookie: a navigation without a fresh proof goes back to the page
+  // that can ask the platform who is signed in now.
+  if (isDocumentRequest(req) && needsProof(session)) {
+    sendBootstrap(res);
     return;
   }
 

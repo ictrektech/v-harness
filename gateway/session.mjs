@@ -119,11 +119,34 @@ export async function openSessionStore(path, { ttlMs }) {
     return { sid: row.sid, subject: row.subject, account: row.account, expiresAt: Number(row.expires_at) };
   }
 
+  /**
+   * When each session last proved which platform account is signed in.
+   *
+   * The cookie names the tenant served last, not the account browsing now, so
+   * a browser that signs in as someone else keeps carrying the previous one
+   * until something re-proves. Only the bootstrap page can ask the platform
+   * that question, so this records its answer and lets navigation require it.
+   * @type {Map<string, number>}
+   */
+  const proved = new Map();
+
   return {
     createSession,
     loadSession,
-    revokeSession: (sid) => { revokeOne.run(sid); },
+    revokeSession: (sid) => { revokeOne.run(sid); proved.delete(sid); },
     revokeSubject: (subject) => { revokeSubject.run(subject); },
+    prove: (sid, now = Date.now()) => { proved.set(sid, now); },
+    /**
+     * How long ago this session proved its identity.
+     * @param {string} sid - the session id.
+     * @param {number} [now] - clock override for tests.
+     * @returns {number | undefined} milliseconds since the proof, or undefined
+     *   when this session never proved one in this process.
+     */
+    proofAge: (sid, now = Date.now()) => {
+      const at = proved.get(sid);
+      return at === undefined ? undefined : now - at;
+    },
     close: () => { db.close(); },
   };
 }
