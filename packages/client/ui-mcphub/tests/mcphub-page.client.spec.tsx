@@ -114,14 +114,14 @@ describe('the MCPHub service page', () => {
     await waitFor(() => { expect(view.getByText('amap')).toBeTruthy() })
     expect(loadTools).not.toHaveBeenCalled()
 
-    fireEvent.click(view.getAllByRole('button', { name: '工具' })[0])
+    fireEvent.click(view.getAllByRole('button', { name: '工具' })[0]!)
     await waitFor(() => { expect(view.getByText('amap-maps_geo')).toBeTruthy() })
     expect(view.getByText('地理编码')).toBeTruthy()
     expect(view.getByText('已停用')).toBeTruthy()
     expect(loadTools).toHaveBeenCalledTimes(1)
 
     // The second service reuses the read rather than paying for another one.
-    fireEvent.click(view.getAllByRole('button', { name: '工具' })[0])
+    fireEvent.click(view.getAllByRole('button', { name: '工具' })[0]!)
     await waitFor(() => { expect(view.getByText('该服务没有提供工具')).toBeTruthy() })
     expect(loadTools).toHaveBeenCalledTimes(1)
   })
@@ -132,7 +132,7 @@ describe('the MCPHub service page', () => {
     await waitFor(() => { expect(view.getByText('amap')).toBeTruthy() })
 
     fireEvent.click(view.getByRole('button', { name: '仅选中的服务' }))
-    fireEvent.click(view.getAllByRole('checkbox')[0])
+    fireEvent.click(view.getAllByRole('checkbox')[0]!)
     fireEvent.click(view.getByRole('button', { name: '保存选择' }))
 
     await waitFor(() => { expect(saveSelection).toHaveBeenCalledWith(['amap']) })
@@ -146,8 +146,8 @@ describe('the MCPHub service page', () => {
     )
     await waitFor(() => { expect(view.getByText('amap')).toBeTruthy() })
     const boxes = view.getAllByRole('checkbox') as HTMLInputElement[]
-    await waitFor(() => { expect(boxes[1].checked).toBe(true) })
-    expect(boxes[0].checked).toBe(false)
+    await waitFor(() => { expect(boxes[1]!.checked).toBe(true) })
+    expect(boxes[0]!.checked).toBe(false)
 
     fireEvent.click(view.getByRole('button', { name: '全部服务' }))
     fireEvent.click(view.getByRole('button', { name: '保存选择' }))
@@ -159,7 +159,7 @@ describe('the MCPHub service page', () => {
     const view = render(<McphubPage {...props(vi.fn(async () => SNAPSHOT), { saveSelection })} />)
     await waitFor(() => { expect(view.getByText('amap')).toBeTruthy() })
     fireEvent.click(view.getByRole('button', { name: '仅选中的服务' }))
-    fireEvent.click(view.getAllByRole('checkbox')[0])
+    fireEvent.click(view.getAllByRole('checkbox')[0]!)
     fireEvent.click(view.getByRole('button', { name: '保存选择' }))
     await waitFor(() => { expect(view.getByText('保存失败：HTTP 403')).toBeTruthy() })
   })
