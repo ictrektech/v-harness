@@ -56,7 +56,7 @@ async function tenant() {
 test('a new profile declares the published payload plugins as dependencies', async () => {
   const user = await tenant();
 
-  await syncPlugins(user);
+  assert.equal(await syncPlugins(user), true);
 
   const manifest = JSON.parse(await readFile(join(user.profile, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.dependencies, {
@@ -105,4 +105,21 @@ test('an existing profile keeps its DS Bot selection and receives the other bund
   assert.equal(disabled.dsh.profile.bundles.includes('ds-bot'), false);
   assert.equal(disabled.dependencies['ds-bot'], '0.3.2');
   await rm(user.home, { recursive: true, force: true });
+});
+
+test('a stage that failed inside the sync is reported, not swallowed', async () => {
+  const user = await tenant();
+  const manifestPath = join(agent, 'manifest.json');
+  const original = await readFile(manifestPath, 'utf8');
+  try {
+    const manifest = JSON.parse(original);
+    // The payload lacks this package: the per-package copy loop only walks
+    // packages that exist, so the missing name is the silent failure this flag
+    // exists to surface.
+    await writeFile(manifestPath, JSON.stringify({ plugins: [...manifest.plugins, 'vh-missing-plugin'] }));
+    assert.equal(await syncPlugins(user), false);
+  } finally {
+    await writeFile(manifestPath, original);
+    await rm(user.home, { recursive: true, force: true });
+  }
 });

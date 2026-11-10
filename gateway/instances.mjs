@@ -23,7 +23,14 @@ import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import { rememberProfile, restoreProfile } from './last-good.mjs';
-import { syncPlugins } from './plugins.mjs';
+import { capabilitiesPluginShipped, syncPlugins } from './plugins.mjs';
+import {
+  CAPABILITY_ENV,
+  rememberCapabilityContract,
+  removeCapabilityContract,
+  rolloutCapabilities,
+  writeCapabilityContract,
+} from './capability-registry.mjs';
 import {
   dropMcphubLaunchPatch, mcphubEnvironment, mcphubLaunchPatch, saveMcphubSelection,
 } from './mcphub.mjs';
@@ -670,14 +677,67 @@ async function launch(options) {
   // Update profile-local overrides before dsh snapshots its browser bundles,
   // then stage the agent-side tool plugins and their carrier: the loader reads
   // the carrier row list at this same boot. A refresh that fails leaves the
-  // profile the previous boot used, which is worth more than a dead workspace.
+  // profile the previous boot used, which is worth more than a dead workspace —
+  // but it also means this process cannot vouch for the capability plugin, so
+  // delegation is withheld below instead of handing the sockets to a listener
+  // that may not exist.
+  let pluginsReady = false;
   try {
-    await syncPlugins({ home: paths.home, linuxName: account, uid: record.uid });
+    pluginsReady = await syncPlugins({ home: paths.home, linuxName: account, uid: record.uid });
+    if (!pluginsReady) {
+      console.error(
+        `plugin sync incomplete for ${account}, launching with the profile already on disk and keeping gateway-owned capability sockets`,
+      );
+    }
   } catch (error) {
     console.error(
-      `plugin sync failed for ${account}, launching with the profile already on disk:`,
+      `plugin sync failed for ${account}, launching with the profile already on disk and keeping gateway-owned capability sockets:`,
       error instanceof Error ? error.message : error,
     );
+  }
+
+  // Hand this tenant's capability sockets to its own dsh when the image ships
+  // the plugin and this launch proved it is staged. The contract is the entire
+  // switch: the plugin listens only for the names it lists, the authoritative
+  // copy lives under STATE_ROOT, and the gateway reads that copy back on every
+  // boot instead of remembering what it decided here. A payload without the
+  // plugin, or a failed stage, keeps the gateway-owned sockets untouched and
+  // drops any contract an earlier image left behind.
+  if (pluginsReady && await capabilitiesPluginShipped()) {
+    try {
+      const contract = await writeCapabilityContract({
+        stateRoot,
+        home: paths.home,
+        subject: record.subject,
+        account,
+        uid: record.uid,
+        capabilities: rolloutCapabilities(CAPABILITY_ENV, record.namespace),
+      });
+      if (contract === undefined) {
+        await removeCapabilityContract({ stateRoot, home: paths.home, subject: record.subject });
+      } else {
+        rememberCapabilityContract(record.subject, {
+          home: paths.home,
+          namespace: record.namespace,
+          subject: record.subject,
+          account,
+          uid: record.uid,
+          ...contract,
+        });
+      }
+    } catch (error) {
+      // A contract that cannot be written must not be guessed at: the gateway
+      // keeps its own sockets rather than leaving the tenant with none.
+      console.error(
+        `capability contract write failed for ${account}, keeping gateway sockets:`,
+        error instanceof Error ? error.message : error,
+      );
+      await removeCapabilityContract({ stateRoot, home: paths.home, subject: record.subject })
+        .catch((cleanupError) => { console.error('capability contract cleanup failed:', cleanupError); });
+    }
+  } else {
+    await removeCapabilityContract({ stateRoot, home: paths.home, subject: record.subject })
+      .catch((error) => { console.error(`capability contract cleanup failed for ${account}:`, error); });
   }
 
   /**
@@ -774,7 +834,20 @@ async function launch(options) {
     throw new Error(`${failures.at(-1) ?? 'launch failed'} (log: ${paths.log})`);
   };
 
-  const { child, launchUrl } = await start();
+  /** @type {{ child: import('node:child_process').ChildProcess, launchUrl: string }} */
+  let started;
+  try {
+    started = await start();
+  } catch (error) {
+    // The contract was written before the spawn so the plugin could read it at
+    // boot. A launch that never produced a process leaves nobody listening: the
+    // next boot would skip this tenant's sockets and report a missing plugin
+    // for a capability this gateway can still serve itself.
+    await removeCapabilityContract({ stateRoot, home: paths.home, subject: record.subject })
+      .catch((cleanupError) => { console.error(`capability contract cleanup failed for ${account}:`, cleanupError); });
+    throw error;
+  }
+  const { child, launchUrl } = started;
 
   try {
     const { cookie, expiresAt } = await exchangeCookie(launchUrl, record.uid);
@@ -953,6 +1026,33 @@ export async function ensureInstance(options) {
  */
 export function liveInstance(subject) {
   return instances.get(subject);
+}
+
+/**
+ * Whether one tenant's dsh still answers HTTP.
+ *
+ * Used when a delegated capability socket does not respond: the gateway only
+ * takes the socket back from a tenant that is running, because an offline
+ * tenant cannot serve or call anything and deleting its contract would fight
+ * the next launch. The in-memory instance is the fast answer; a gateway that
+ * just restarted has to recover the same answer from the registry, which keeps
+ * the cookie the process signed.
+ * @param {{ subject: string, uid: number, port: number }} record - the tenant.
+ * @param {string} statePath - the instance registry file.
+ * @returns {Promise<boolean>} whether the recorded process answered.
+ */
+export async function instanceAnswers(record, statePath) {
+  const cached = instances.get(record.subject);
+  if (cached?.cookie !== undefined) return true;
+  let registry;
+  try {
+    registry = await readRegistry(statePath);
+  } catch {
+    return false;
+  }
+  const entry = registry[record.subject];
+  if (entry?.cookie === undefined) return false;
+  return probeInstance({ uid: record.uid, port: record.port, cookie: entry.cookie });
 }
 
 /**

@@ -25,14 +25,23 @@
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
+import { listenOnSocket } from './socket-path.mjs';
 
 
-const SOCKET_NAME = 'vh-services.sock';
+export const SOCKET_NAME = 'vh-services.sock';
 const STATE_FILE = 'services.json';
+/** Routes the capability serves; everything else is refused locally. */
+export const ROUTES = [
+  { method: 'GET', path: /^\/services$/ },
+  { method: 'POST', path: /^\/services$/ },
+  { method: 'POST', path: /^\/services\/\d+\/ping$/ },
+  { method: 'POST', path: /^\/services\/\d+$/ },
+  { method: 'DELETE', path: /^\/services\/\d+$/ },
+];
 /** A heartbeat older than this marks the service stopped in the UI. */
 export const STALE_MS = 30_000;
 /** CLI heartbeats every 10s; the staleness window tolerates two missed beats. */
@@ -677,6 +686,25 @@ async function handle(tenant, req, res) {
 }
 
 /**
+ * Serve one service request that arrived through `/__vh/egress/vh-services`.
+ *
+ * Only the listener moves: registrations, the registry and restart keep living
+ * in the gateway, and identity comes from the contract that authorized the
+ * request rather than from the socket that carried it.
+ * @param {TenantIdentity | undefined} tenant identity remembered with the contract
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+export async function handleServicesEgress(tenant, req, res) {
+  if (tenant === undefined) {
+    json(res, 500, { error: 'capability-identity-unavailable' });
+    return;
+  }
+  await handle(tenant, req, res);
+}
+
+/**
  * Start (once) the listening socket for one tenant.
  * @param {{ subject: string, account: string, uid: number, home: string, userHelper: string }} options
  * @returns {Promise<void>}
@@ -687,9 +715,6 @@ async function start(options) {
   // The gateway runs as root and the tenant home is 0700, so only root can
   // prepare the directory the socket lives in.
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 });
-  await unlink(socketPath).catch((error) => {
-    if (error?.code !== 'ENOENT') throw error;
-  });
 
   const server = createServer((req, res) => {
     void handle(tenant, req, res).catch((error) => {
@@ -700,16 +725,10 @@ async function start(options) {
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socketPath, () => {
-      server.off('error', reject);
-      // Shut the door before handing the key over: until `claim` runs, the
-      // socket belongs to root, and nobody may call the capability.
-      chmodSync(socketPath, 0o600);
-      resolve();
-    });
-  });
+  await listenOnSocket(server, socketPath);
+  // Shut the door before handing the key over: until `claim` runs, the socket
+  // belongs to root, and nobody may call the capability.
+  chmodSync(socketPath, 0o600);
 
   await runUserHelper(options.userHelper, ['claim', options.account, socketPath]);
   return server;
@@ -733,6 +752,23 @@ export async function ensureServicesCapability(options) {
   } catch (error) {
     capabilities.delete(options.subject);
     throw error;
+  }
+}
+
+/**
+ * Drop one tenant's cached listener so the next `ensure` binds a fresh inode.
+ * @param {string} subject immutable tenant subject
+ * @returns {Promise<void>}
+ */
+export async function forgetServicesCapability(subject) {
+  const existing = capabilities.get(subject);
+  capabilities.delete(subject);
+  if (existing === undefined) return;
+  try {
+    const server = await existing;
+    await new Promise((resolve) => { server.close(() => { resolve(); }); });
+  } catch {
+    // A capability that never started owns no socket.
   }
 }
 

@@ -22,11 +22,19 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
-import { connect } from 'node:net';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'node:zlib';
 
 import { IdentityGate, mayServe } from './identity-gate.mjs';
+import {
+  CAPABILITY_ENV,
+  readAuthoritativeContract,
+  rememberCapabilityContract,
+  removeCapabilityContract,
+} from './capability-registry.mjs';
+import { startOwnedCapabilities } from './capability-ownership.mjs';
+import { capabilitiesPluginShipped } from './plugins.mjs';
+import { EGRESS_PREFIX, handleEgress } from './egress.mjs';
 
 import {
   WorkspaceError,
@@ -37,6 +45,7 @@ import {
 } from './files.mjs';
 import {
   ensureInstance,
+  instanceAnswers,
   instanceBoot,
   launchFailure,
   liveInstance,
@@ -52,6 +61,8 @@ import {
   closeOfficeCapabilities,
   editorUrlFor,
   ensureOfficeCapability,
+  forgetOfficeCapability,
+  handleOfficeEgress,
   listDocuments,
   rememberOrigin,
 } from './office.mjs';
@@ -63,8 +74,18 @@ import {
   initTokenStore,
   rememberTokens,
 } from './vos-token-store.mjs';
-import { closeAlbumCapabilities, ensureAlbumCapability } from './album.mjs';
-import { closeImageStudioCapabilities, ensureImageStudioCapability } from './image-studio.mjs';
+import {
+  closeAlbumCapabilities,
+  ensureAlbumCapability,
+  forgetAlbumCapability,
+  handleAlbumEgress,
+} from './album.mjs';
+import {
+  closeImageStudioCapabilities,
+  ensureImageStudioCapability,
+  forgetImageStudioCapability,
+  handleImageStudioEgress,
+} from './image-studio.mjs';
 import {
   handleAgent as handleMcphubAgent,
   mcphubRouting,
@@ -75,7 +96,12 @@ import {
   restoreMcphubKey,
   saveMcphubSelection,
 } from './mcphub.mjs';
-import { closePhotocraftCapabilities, ensurePhotocraftCapability } from './photocraft.mjs';
+import {
+  closePhotocraftCapabilities,
+  ensurePhotocraftCapability,
+  forgetPhotocraftCapability,
+  handlePhotocraft,
+} from './photocraft.mjs';
 import {
   CSRF_COOKIE,
   SESSION_COOKIE,
@@ -91,11 +117,15 @@ import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
 import {
   closeWeknoraCapabilities,
   ensureWeknoraCapability,
+  forgetWeknoraCapability,
   handleWeknoraControl,
+  handleWeknoraEgress,
 } from './weknora.mjs';
 import {
   closeServicesCapabilities,
   ensureServicesCapability,
+  forgetServicesCapability,
+  handleServicesEgress,
   initServices,
   listServices,
   restartService,
@@ -170,6 +200,34 @@ const HOP_BY_HOP = new Set([
   'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
 ]);
 
+/**
+ * Tenant identity as the services registry needs it, recovered from the
+ * contract that authorized the request.
+ * @param {import('./capability-registry.mjs').CapabilityContractRecord} contract
+ * @returns {{ subject: string, account: string, uid: number } | undefined}
+ */
+function egressTenant(contract) {
+  const { subject, account, uid } = contract;
+  if (typeof subject !== 'string' || typeof account !== 'string' || !Number.isInteger(uid)) return undefined;
+  return { subject, account, uid };
+}
+
+/**
+ * Capability name → the gateway-side handler `/__vh/egress/*` dispatches to.
+ *
+ * Each module owns its route table and upstream; this table only decides which
+ * module a delegated capability reaches. A name without a handler is refused
+ * by the egress transport instead of guessed.
+ */
+const EGRESS_HANDLERS = {
+  voffice: handleOfficeEgress,
+  album: handleAlbumEgress,
+  photocraft: handlePhotocraft,
+  'image-studio': handleImageStudioEgress,
+  weknora: handleWeknoraEgress,
+  'vh-services': (_namespace, req, res, contract) => handleServicesEgress(egressTenant(contract), req, res),
+};
+
 const sessions = await openSessionStore(SESSION_DB_FILE, { ttlMs: SESSION_TTL_MS });
 // Recover the VOS credentials a previous gateway left. Without this the
 // capability endpoints answer 401 until every browser replays its own PKCE.
@@ -185,14 +243,46 @@ await initServices({ stateRoot: STATE_ROOT });
 // before the first request can ask for either.
 const instanceRegistry = await readRegistry(STATE_FILE);
 primeInstanceBoots(instanceRegistry);
+// Whether this image mounts the tenant capability transport at all. A payload
+// without it must neither honour a contract nor leave one behind: the gateway
+// owns the sockets, and a stale contract would keep a future plugin listening
+// on paths this gateway is bound to.
+const CAPABILITIES_SHIPPED = await capabilitiesPluginShipped();
 for (const record of await listUsers(USERS_FILE)) {
   const entry = instanceRegistry[record.subject];
   if (entry?.schedulerKey) restoreSchedulerKey(record.namespace, entry.schedulerKey);
   if (entry?.mcphubKey) restoreMcphubKey(record.namespace, entry.mcphubKey);
+  // A tenant whose dsh owns a capability socket proves it with the
+  // authoritative contract the previous gateway wrote under STATE_ROOT. The
+  // delivery copy in the tenant home carries no authority: rebuilding this
+  // index from it would let a tenant mint its own key.
+  const home = userPaths(STATE_ROOT, record.account ?? record.linuxName).home;
+  if (!CAPABILITIES_SHIPPED) {
+    await removeCapabilityContract({ stateRoot: STATE_ROOT, home, subject: record.subject })
+      .catch((error) => { console.error(`capability contract cleanup failed for ${record.namespace}:`, error); });
+  } else {
+    const contract = await readAuthoritativeContract(STATE_ROOT, record.subject);
+    if (contract !== undefined) {
+      rememberCapabilityContract(record.subject, {
+        home,
+        namespace: record.namespace,
+        subject: record.subject,
+        account: record.account ?? record.linuxName,
+        uid: record.uid,
+        ...contract,
+      });
+      console.log(
+        `capabilities delegated to the tenant plugin (${record.namespace}): ${contract.capabilities.join(', ')}`,
+      );
+    }
+  }
   // Rebuild capability sockets now, not on the first request: a dsh that
   // survived the previous gateway may already be running an agent turn, and
-  // its skill CLI would otherwise hit a stale socket during the restart.
-  void startCapabilities(record).catch((error) => {
+  // its skill CLI would otherwise hit a stale socket during the restart. A
+  // delegated socket is only taken back when the tenant is proven running:
+  // a tenant that never signed in since this boot cannot call it either, and
+  // taking it would fight the plugin its next launch starts.
+  void startCapabilities(record, { requireRunning: true }).catch((error) => {
     console.error(`capability warm-up failed for ${record.namespace}:`, error);
   });
 }
@@ -1131,6 +1221,15 @@ async function handleMarketRestart(req, res) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
+  // The tenant-owned capability transport. A local dsh plugin authenticates
+  // with its capability key, not with the browser session: the request never
+  // came from a browser, and the public `/__vh` prefix must not turn into a
+  // session-free proxy. Egress refuses browser-shaped requests itself.
+  if (url.pathname.startsWith(EGRESS_PREFIX)) {
+    await handleEgress(req, res, url, EGRESS_HANDLERS, CAPABILITY_ENV);
+    return;
+  }
+
   // The background identity check, served as its own file so it is written as
   // JavaScript rather than as an escaped template string, and so a deployment
   // can be reasoned about without re-reading the page that embeds it.
@@ -1239,7 +1338,39 @@ async function handleControl(req, res, url) {
     // The old account no longer owns this browser, so its durable credential
     // must not outlive the switch on disk.
     const previous = await findUser(USERS_FILE, session.subject);
-    if (previous) forgetTokens(previous.namespace);
+    if (previous) {
+      forgetTokens(previous.namespace);
+      // The capability key authorises session-free upstream calls. Dropping it
+      // with the browser session is what makes the sign-out complete rather
+      // than only hiding the door.
+      await removeCapabilityContract({
+        stateRoot: STATE_ROOT,
+        home: userPaths(STATE_ROOT, previous.account ?? previous.linuxName).home,
+        subject: previous.subject,
+      });
+      // The signature the plugin read at boot is now dead, and a running dsh
+      // cannot pick up a new one. Stop it here, as sign-out does: the next
+      // visit relaunches it, and the launch writes the contract the new plugin
+      // reads. Leaving it alive would restore the tenant with no key, no
+      // gateway socket, and no listener that could ever answer.
+      await stopInstance(previous.subject).catch((error) => {
+        console.error(
+          `could not stop ${previous.account ?? previous.linuxName} after the account switch:`,
+          error,
+        );
+      });
+      // The old tenant's sockets may have been the plugin's, and the stopped
+      // process will not bind again. Rebuild the gateway's own listeners now so
+      // the capability path is answered without waiting for the next sign-in or
+      // gateway restart; `stopInstance` having found nothing is not a reason to
+      // skip it, because the registry can outlive this process's instance map.
+      await startCapabilities(previous).catch((error) => {
+        console.error(
+          `could not rebuild capability sockets for ${previous.account ?? previous.linuxName} after the account switch:`,
+          error,
+        );
+      });
+    }
     rememberTokens(next.namespace, tokenSet);
     sessions.revokeSession(sid);
     identityGate.settle(sid, 'switched');
@@ -1601,33 +1732,6 @@ async function handleControl(req, res, url) {
     return;
   }
 
-  // Short editor link. The storage service's own URL embeds the WOPI source and
-  // a signed token, which runs to hundreds of characters; a chat client that
-  // wraps or truncates it drops the signature and the editor answers
-  // "unauthorized WOPI host". This path carries only the name and mints a fresh
-  // token on every click, so it stays short and never expires.
-  if (url.pathname === '/__vh/office/open' && req.method === 'GET') {
-    const record = await requireUser(req, res);
-    if (!record) return;
-    const name = (url.searchParams.get('name') ?? '').trim();
-    if (name === '') {
-      json(res, 400, { error: 'name-required' });
-      return;
-    }
-    try {
-      const link = await editorUrlFor(record.namespace, {
-        name,
-        edit: url.searchParams.get('readonly') !== '1',
-      });
-      res.writeHead(302, { location: link.editorUrl, 'cache-control': 'no-store' });
-      res.end();
-    } catch (error) {
-      console.error(`editor link failed (${record.namespace}):`, error?.message ?? error);
-      json(res, 502, { error: 'editor-unavailable', message: '编辑器地址暂时取不到，请稍后重试' });
-    }
-    return;
-  }
-
   // Session creation. `/__vh/session` is the documented endpoint; `/__vh/auth`
   // stays accepted so a bootstrap page from an older deployment still signs in.
   if ((url.pathname === '/__vh/session' || url.pathname === '/__vh/auth') && req.method === 'POST') {
@@ -1749,7 +1853,24 @@ async function handleControl(req, res, url) {
       sessions.revokeSession(session.sid);
       await stopInstance(session.subject);
       const record = await findUser(USERS_FILE, session.subject);
-      if (record) forgetTokens(record.namespace);
+      if (record) {
+        forgetTokens(record.namespace);
+        // Stopping the instance closes the tenant's world; the contract and
+        // its key go with it so a surviving process cannot keep signing
+        // upstream calls for an account that signed out.
+        await removeCapabilityContract({
+          stateRoot: STATE_ROOT,
+          home: userPaths(STATE_ROOT, record.account ?? record.linuxName).home,
+          subject: record.subject,
+        }).catch((error) => { console.error(`capability contract cleanup failed on logout:`, error); });
+        // The tenant may have been delegated, and the stopped plugin will not
+        // bind again. Bind the gateway's own listeners now: the contract is gone,
+        // so ownership recomputes to the gateway and the skill path keeps an
+        // answer without waiting for the next launch or gateway restart.
+        await startCapabilities(record).catch((error) => {
+          console.error(`could not rebuild capability sockets on logout:`, error);
+        });
+      }
     }
     json(res, 200, { authenticated: false }, {
       'set-cookie': cookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, ...cookiePolicy(req) }),
@@ -1804,10 +1925,19 @@ function upstreamHeaders(req, port, instanceCookie) {
 /**
  * Give one tenant its capability sockets. Idempotent; failures are logged
  * rather than fatal so a broken upstream never blocks sign-in.
+ *
+ * A socket the tenant's plugin owns must not be unlinked and rebound while the
+ * plugin lives: it would keep listening on a deleted inode, silently. But the
+ * contract only records an intention, so a delegated socket that does not
+ * answer is taken back — contract and key deleted, gateway listener bound —
+ * because a skill that dials a dead path has no recovery left.
  * @param {import('./users.mjs').UserRecord} record
+ * @param {{ requireRunning?: boolean }} [control] - whether a missing listener
+ *   only counts when the tenant's dsh is running; boot uses this so an offline
+ *   tenant keeps its contract instead of being taken over until the next boot.
  * @returns {Promise<void>}
  */
-async function startCapabilities(record) {
+async function startCapabilities(record, control = {}) {
   const options = {
     namespace: record.namespace,
     subject: record.subject,
@@ -1817,20 +1947,34 @@ async function startCapabilities(record) {
     home: userPaths(STATE_ROOT, record.account ?? record.linuxName).home,
     userHelper: USER_HELPER,
   };
-  const settled = await Promise.allSettled([
-    ensureOfficeCapability(options),
-    ensureWeknoraCapability(options),
-    ensureAlbumCapability(options),
-    ensureImageStudioCapability(options),
-    ensurePhotocraftCapability(options),
-    ensureServicesCapability(options),
-    ensureDockerCapability(options),
-  ]);
-  for (const result of settled) {
-    if (result.status === 'rejected') {
-      console.error(`capability for ${record.namespace} failed:`, result.reason);
-    }
-  }
+  await startOwnedCapabilities({
+    stateRoot: STATE_ROOT,
+    shipped: CAPABILITIES_SHIPPED,
+    env: CAPABILITY_ENV,
+    options,
+    bind: {
+      voffice: ensureOfficeCapability,
+      weknora: ensureWeknoraCapability,
+      album: ensureAlbumCapability,
+      'image-studio': ensureImageStudioCapability,
+      photocraft: ensurePhotocraftCapability,
+      // Kept here for symmetry; `vh-services` is not delegable, so this entry
+      // always binds and its egress path never honours a delegated key.
+      'vh-services': ensureServicesCapability,
+    },
+    bindDocker: ensureDockerCapability,
+    forget: {
+      voffice: forgetOfficeCapability,
+      weknora: forgetWeknoraCapability,
+      album: forgetAlbumCapability,
+      'image-studio': forgetImageStudioCapability,
+      photocraft: forgetPhotocraftCapability,
+      'vh-services': forgetServicesCapability,
+    },
+    tenantRunning: control.requireRunning === true
+      ? () => instanceAnswers(record, STATE_FILE)
+      : undefined,
+  });
 }
 
 /**

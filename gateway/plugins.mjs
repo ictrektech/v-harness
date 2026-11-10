@@ -41,6 +41,9 @@ const AGENT_BUNDLE_NAME = 'vh-agent-plugins'
 /** Registry packages installed at image build and declared in each Web profile. */
 const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']
 
+/** The plugin that serves tenant capability sockets inside dsh. */
+const CAPABILITIES_PLUGIN_NAME = '@deepseek-ai/dsh-host-vh-capabilities'
+
 /**
  * Pre-created profile manifest fields. dsh initializes the same content on
  * first use (packages/boot/app-boot profile.ts); creating it here lets the
@@ -166,6 +169,29 @@ async function ensureProfile(user) {
 }
 
 /**
+ * Whether this image ships the tenant capability transport plugin.
+ *
+ * Only an image that mounts the plugin may hand a tenant its capability
+ * sockets: without this check a gateway would stop binding `image-studio.sock`
+ * on a payload where nothing else binds it either.
+ * @returns {Promise<boolean>}
+ */
+export async function capabilitiesPluginShipped() {
+  try {
+    const carrier = JSON.parse(
+      await readFile(join(AGENT_PLUGIN_ROOT, 'node_modules', AGENT_BUNDLE_NAME, 'package.json'), 'utf8'),
+    )
+    if (typeof carrier.dependencies?.[CAPABILITIES_PLUGIN_NAME] !== 'string') return false
+    const plugin = JSON.parse(
+      await readFile(join(AGENT_PLUGIN_ROOT, 'node_modules', CAPABILITIES_PLUGIN_NAME, 'package.json'), 'utf8'),
+    )
+    return typeof plugin.version === 'string'
+  } catch (_error) {
+    return false
+  }
+}
+
+/**
  * One entry point for everything plugin-related a launch needs: pre-create
  * the profile, refresh the client bundles, stage the agent-side plugins, and
  * finish the bundle list. Called before spawn and again after a first launch
@@ -176,22 +202,51 @@ async function ensureProfile(user) {
  *   linuxName: string,
  *   uid: number,
  * }} user - the tenant whose profile to update.
- * @returns {Promise<void>} resolves once the profile was updated; a failure
- *   is logged and never breaks the launch.
+ * @returns {Promise<boolean>} whether every stage completed. A failure leaves
+ *   the previous profile in place and logs why; the launch continues but keeps
+ *   capability delegation off, because the plugin it would delegate to cannot
+ *   be vouched for. A thrown rejection covers the same case for a caller that
+ *   wants to add context.
  */
 export async function syncPlugins(user) {
+  let complete = true
   try {
     await ensureProfile(user)
   } catch (error) {
+    complete = false
     console.error(`profile pre-creation failed for ${user.linuxName}:`, error.message)
   }
-  await alignProfileStore(user)
-  await syncClientPlugins(user)
-  await syncAgentPlugins(user)
-  // A profile that predates a bundle must still receive it: pre-creation
-  // returns early for an existing manifest, so this is the only path that
-  // upgrades a tenant who already signed in.
-  await mountProfileBundles(user)
+  try {
+    await alignProfileStore(user)
+  } catch (error) {
+    complete = false
+    console.error(`profile store alignment failed for ${user.linuxName}:`, error.message)
+  }
+  try {
+    await syncClientPlugins(user)
+  } catch (error) {
+    complete = false
+    console.error(`client plugin sync failed for ${user.linuxName}:`, error.message)
+  }
+  try {
+    for (const failure of await syncAgentPlugins(user)) {
+      complete = false
+      console.error(failure)
+    }
+  } catch (error) {
+    complete = false
+    console.error(`agent plugin sync failed for ${user.linuxName}:`, error.message)
+  }
+  try {
+    // A profile that predates a bundle must still receive it: pre-creation
+    // returns early for an existing manifest, so this is the only path that
+    // upgrades a tenant who already signed in.
+    if (!(await mountProfileBundles(user))) complete = false
+  } catch (error) {
+    complete = false
+    console.error(`bundle mount failed for ${user.linuxName}:`, error.message)
+  }
+  return complete
 }
 
 /**
@@ -412,8 +467,9 @@ export async function syncClientPlugins(user) {
  *   linuxName: string,
  *   uid: number,
  * }} user - the tenant whose profile to update.
- * @returns {Promise<void>} resolves once the profile was updated; a failure
- *   is logged and never breaks the launch.
+ * @returns {Promise<string[]>} one message per stage that did not complete; an
+ *   empty list means every package the payload declares reached the profile.
+ *   The caller decides whether an incomplete stage withholds delegation.
  */
 async function syncAgentPlugins(user) {
   let manifest
@@ -421,10 +477,11 @@ async function syncAgentPlugins(user) {
     manifest = JSON.parse(await readFile(join(AGENT_PLUGIN_ROOT, 'manifest.json'), 'utf8'))
   } catch (error) {
     if (error?.code !== 'ENOENT') {
-      console.error('agent plugin sync skipped: cannot read manifest:', error.message)
+      return [`agent plugin sync skipped: cannot read manifest: ${String(error.message)}`]
     }
-    return
+    return []
   }
+  const failures = []
   const profile = join(user.home, '.dsh', 'profiles', 'web')
   const plugins = new Set(manifest.plugins ?? [])
   const payloadModules = join(AGENT_PLUGIN_ROOT, 'node_modules')
@@ -457,7 +514,7 @@ async function syncAgentPlugins(user) {
         stamps[relative] = stamp
         await writeFile(agentStampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
       } catch (error) {
-        console.error(`agent plugin sync failed for ${name} in ${user.linuxName}:`, error.message)
+        failures.push(`agent plugin sync failed for ${name} in ${user.linuxName}: ${String(error.message)}`)
       }
     }
     if (!declared) await clearLegacyCopy(profile, relative)
@@ -468,8 +525,9 @@ async function syncAgentPlugins(user) {
   // image whose payload was copied without these packages must say so.
   for (const name of plugins) {
     if (await exists(join(payloadModules, name))) continue
-    console.error(`agent plugin missing from payload: ${name} (tenant ${user.linuxName}, root ${AGENT_PLUGIN_ROOT})`)
+    failures.push(`agent plugin missing from payload: ${name} (tenant ${user.linuxName}, root ${AGENT_PLUGIN_ROOT})`)
   }
+  return failures
 }
 
 /**
@@ -526,14 +584,15 @@ function isPayloadLink(spec) {
  * @param {{ linuxName: string }} user - the tenant, for diagnostics.
  * @param {readonly string[]} names - bundle package names that must be listed.
  * @param {Record<string, string>} declared - dependencies that must be present.
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} whether the manifest already listed everything or
+ *   was written; `false` when it could not be read or updated.
  */
 async function mountBundles(profile, user, names, declared) {
   const manifestPath = join(profile, 'package.json')
   try {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     const bundles = manifest?.dsh?.profile?.bundles
-    if (!Array.isArray(bundles)) return
+    if (!Array.isArray(bundles)) return true
     let changed = false
     for (const name of names) {
       if (bundles.includes(name)) continue
@@ -551,11 +610,13 @@ async function mountBundles(profile, user, names, declared) {
       dependencies[name] = spec
       changed = true
     }
-    if (!changed) return
+    if (!changed) return true
     if (Object.keys(dependencies).length > 0) manifest.dependencies = dependencies
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    return true
   } catch (error) {
     console.error(`bundle mount failed for ${user.linuxName}:`, error.message)
+    return false
   }
 }
 
@@ -566,10 +627,10 @@ async function mountBundles(profile, user, names, declared) {
  *   linuxName: string,
  *   uid: number,
  * }} user - the tenant whose profile to update.
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} whether the profile lists them.
  */
 async function mountProfileBundles(user) {
-  await mountBundles(
+  return mountBundles(
     join(user.home, '.dsh', 'profiles', 'web'),
     user,
     PROFILE_BUNDLES,

@@ -12892,6 +12892,16 @@ importers:
         specifier: workspace:*
         version: link:../../telemetry/otel
 
+  packages/host/vh-capabilities:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:~
+        version: link:../../../vendor/cordis
+
   packages/host/webserver:
     dependencies:
       '@deepseek-ai/schemastery':

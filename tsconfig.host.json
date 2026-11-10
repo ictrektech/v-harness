@@ -586,6 +586,7 @@
     { "path": "./packages/boot/plugin-market" },
     { "path": "./packages/llm/plugin-package-inventory-deepseek" },
     { "path": "./packages/host/webserver" },
+    { "path": "./packages/host/vh-capabilities" },
     { "path": "./packages/sdk/client" },
     { "path": "./packages/sdk/protocol" },
     { "path": "./packages/lsp/lsp" },

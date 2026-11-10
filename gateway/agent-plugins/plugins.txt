@@ -1,3 +1,4 @@
 packages/skill/skill-image-studio
 packages/skill/skill-photocraft
 packages/mcp/mcp-client
+packages/host/vh-capabilities

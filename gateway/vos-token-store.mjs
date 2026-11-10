@@ -36,8 +36,19 @@ const REFRESH_TIMEOUT_MS = 8_000;
 /** @type {Map<string, TokenSet>} */
 const tokens = new Map();
 
+/**
+ * Outcome of one refresh attempt.
+ *
+ * `rejected` means VOS proved the grant dead (`invalid_grant`) or there is no
+ * refresh token at all, so the credential can never work again. `transient`
+ * covers everything else — 5xx, 429, timeouts, network errors, a malformed
+ * success payload — and must leave the stored credential in place: a single
+ * upstream hiccup is not a sign-out.
+ * @typedef {{ outcome: 'refreshed', tokens: TokenSet } | { outcome: 'rejected' } | { outcome: 'transient' }} RefreshResult
+ */
+
 /** Per-namespace refresh in flight, so a burst of calls refreshes once.
- * @type {Map<string, Promise<TokenSet | undefined>>}
+ * @type {Map<string, Promise<RefreshResult>>}
  */
 const refreshing = new Map();
 
@@ -174,7 +185,8 @@ export function rememberTokens(namespace, tokenSet) {
 }
 
 /**
- * Drop one user's credentials: sign-out, a refused refresh, or a VOS revocation.
+ * Drop one user's credentials: sign-out, an `invalid_grant` refresh, or a VOS
+ * revocation. Transient refresh failures never reach this function.
  * @param {string} namespace
  * @returns {void}
  */
@@ -200,10 +212,10 @@ export function hasUsableTokens(namespace) {
  * Exchange the stored refresh token for a new access token.
  * @param {string} namespace
  * @param {TokenSet} entry
- * @returns {Promise<TokenSet | undefined>}
+ * @returns {Promise<RefreshResult>}
  */
 async function refreshTokenSet(namespace, entry) {
-  if (!entry.refresh) return undefined;
+  if (!entry.refresh) return { outcome: 'rejected' };
   try {
     const response = await fetch(VOS_TOKEN_URL, {
       method: 'POST',
@@ -216,15 +228,17 @@ async function refreshTokenSet(namespace, entry) {
       signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
     });
     if (!response.ok) {
-      // invalid_grant means the user's VOS session was revoked or expired.
       const detail = await response.text().catch(() => '');
       console.warn(`v-office token refresh rejected for ${namespace}: HTTP ${String(response.status)} ${detail.slice(0, 200)}`);
-      return undefined;
+      // Only `invalid_grant` proves the refresh token itself is dead. An outage
+      // answered with 503 or 429 is indistinguishable from a network failure
+      // and must not erase every tenant's credential at rest.
+      return detail.includes('invalid_grant') ? { outcome: 'rejected' } : { outcome: 'transient' };
     }
     const payload = await response.json();
     if (typeof payload?.access_token !== 'string' || !payload.access_token) {
       console.warn(`v-office token refresh returned no access_token for ${namespace}`);
-      return undefined;
+      return { outcome: 'transient' };
     }
     const next = {
       access: payload.access_token,
@@ -234,10 +248,10 @@ async function refreshTokenSet(namespace, entry) {
       expiresAt: expiryFromToken(payload.access_token, Number(payload.expires_in)),
     };
     rememberTokens(namespace, next);
-    return next;
+    return { outcome: 'refreshed', tokens: next };
   } catch (error) {
     console.warn(`v-office token refresh failed for ${namespace}:`, error);
-    return undefined;
+    return { outcome: 'transient' };
   }
 }
 
@@ -257,19 +271,21 @@ export async function accessTokenFor(namespace) {
   const pending = refreshing.get(namespace);
   if (pending) {
     const settled = await pending;
-    return settled?.access;
+    return settled.outcome === 'refreshed' ? settled.tokens.access : undefined;
   }
   const attempt = refreshTokenSet(namespace, entry);
   refreshing.set(namespace, attempt);
   try {
-    const next = await attempt;
+    const result = await attempt;
     // A refused refresh means VOS revoked the session. Keeping the entry makes
     // `hasUsableTokens` keep answering "ready" while this function keeps
     // returning nothing, and every navigation then bounces between the app and
     // the bootstrap page — two requests every few hundred milliseconds, with no
-    // re-login ever offered. Dropping it lets the page ask for one.
-    if (next === undefined) forgetTokens(namespace);
-    return next?.access;
+    // re-login ever offered. Dropping it lets the page ask for one. Transient
+    // failures are not revocations: the credential stays so the next attempt can
+    // succeed once the upstream recovers.
+    if (result.outcome === 'rejected') forgetTokens(namespace);
+    return result.outcome === 'refreshed' ? result.tokens.access : undefined;
   } finally {
     refreshing.delete(namespace);
   }

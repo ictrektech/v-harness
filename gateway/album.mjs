@@ -18,20 +18,20 @@
 
 import { createServer, request as httpRequest } from 'node:http';
 import { chmodSync } from 'node:fs';
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { accessTokenFor } from './vos-token-store.mjs';
 import { runUserHelper } from './instances.mjs';
+import { listenOnSocket } from './socket-path.mjs';
 
 const DEFAULT_ALBUM_URL = 'http://172.17.0.1:1182/app/com.ictrek.ai-album/api';
 const ALBUM_URL = (process.env.VH_ALBUM_URL ?? DEFAULT_ALBUM_URL).replace(/\/+$/, '');
-const SOCKET_NAME = 'album.sock';
+export const SOCKET_NAME = 'album.sock';
 const EXCHANGE_TIMEOUT_MS = 15_000;
 const UPSTREAM_TIMEOUT_MS = 300_000;
 
 /** Routes the capability exposes; everything else is refused locally. */
-const ROUTES = [
+export const ROUTES = [
   { method: 'GET', path: /^\/server\/ping$/ },
   { method: 'GET', path: /^\/users\/me$/ },
   { method: 'POST', path: /^\/search\/smart$/ },
@@ -267,6 +267,17 @@ async function forward(namespace, req, res) {
 }
 
 /**
+ * Serve one request that arrived through `/__vh/egress/album`.
+ * @param {string} namespace
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+export async function handleAlbumEgress(namespace, req, res) {
+  await forward(namespace, req, res);
+}
+
+/**
  * Start (once) the listening socket for one tenant.
  * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
@@ -274,9 +285,6 @@ async function forward(namespace, req, res) {
 async function start(options) {
   const { namespace, linuxName, home, userHelper } = options;
   const socketPath = join(home, '.dsh', SOCKET_NAME);
-  await unlink(socketPath).catch((error) => {
-    if (error?.code !== 'ENOENT') throw error;
-  });
 
   const server = createServer((req, res) => {
     void forward(namespace, req, res).catch((error) => {
@@ -287,38 +295,50 @@ async function start(options) {
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socketPath, () => {
-      server.off('error', reject);
-      chmodSync(socketPath, 0o600);
-      resolve();
-    });
-  });
+  await listenOnSocket(server, socketPath);
+  chmodSync(socketPath, 0o600);
 
   // Same door-closing sequence as the office capability: root-owned until the
   // helper chowns it to the tenant user.
   await runUserHelper(userHelper, ['claim', linuxName, socketPath]);
+  return server;
 }
 
 /**
  * Make sure this tenant's album capability endpoint exists.
- * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
+ * @param {{ subject: string, namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
  */
 export async function ensureAlbumCapability(options) {
-  const existing = capabilities.get(options.namespace);
+  const existing = capabilities.get(options.subject);
   if (existing) {
     await existing;
     return;
   }
   const starting = start(options);
-  capabilities.set(options.namespace, starting);
+  capabilities.set(options.subject, starting);
   try {
     await starting;
   } catch (error) {
-    capabilities.delete(options.namespace);
+    capabilities.delete(options.subject);
     throw error;
+  }
+}
+
+/**
+ * Drop one tenant's cached listener so the next `ensure` binds a fresh inode.
+ * @param {string} subject immutable tenant subject
+ * @returns {Promise<void>}
+ */
+export async function forgetAlbumCapability(subject) {
+  const existing = capabilities.get(subject);
+  capabilities.delete(subject);
+  if (existing === undefined) return;
+  try {
+    const server = await existing;
+    await new Promise((resolve) => { server.close(() => { resolve(); }); });
+  } catch {
+    // A capability that never started owns no socket.
   }
 }
 

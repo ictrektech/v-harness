@@ -34,6 +34,7 @@ The packages play the host roles; each package README owns its contract and conf
 | [`directory-picker-auto/`](directory-picker-auto/README.md) | Host-adaptive chooser that mounts the matching backend at boot | mounts a backend |
 | [`open-in-app/`](open-in-app/README.md) | Application probe, icon, and launch routes opening the workspace directory in an installed application | consumes `ctx.webServer` |
 | [`plugin-inventory/`](plugin-inventory/README.md) | Read-only projection of current Loader entries | Remote `pluginInventory/list` |
+| [`vh-capabilities/`](vh-capabilities/README.md) | Tenant capability transport: serves the gateway-owned capability sockets inside a confined dsh and forwards them through capability egress | mounts tenant sockets |
 | [`product-telemetry-otel/`](product-telemetry-otel/README.md) | Explicit product usage events over OTLP/HTTP | `ctx.productTelemetry` |
 
 -----

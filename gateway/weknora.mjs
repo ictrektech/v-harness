@@ -20,13 +20,13 @@
 
 import { createServer, request as httpRequest } from 'node:http';
 import { chmodSync, readFileSync } from 'node:fs';
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
+import { listenOnSocket } from './socket-path.mjs';
 import { accessTokenFor } from './vos-token-store.mjs';
 
-const SOCKET_NAME = 'weknora.sock';
+export const SOCKET_NAME = 'weknora.sock';
 const UPSTREAM_TIMEOUT_MS = 300_000;
 const PROBE_TIMEOUT_MS = 2_000;
 /** Consecutive upstream failures before the resolved address is re-probed. */
@@ -80,7 +80,7 @@ function candidates() {
 }
 
 /** Routes the capability serves; everything else is refused locally. */
-const ROUTES = [
+export const ROUTES = [
   { method: 'GET', pattern: /^\/health$/ },
   { method: 'GET', pattern: /^\/api\/v1\/knowledge-bases$/ },
   { method: 'GET', pattern: /^\/api\/v1\/knowledge-bases\/[^/]+$/ },
@@ -317,9 +317,6 @@ async function forward(namespace, req, res, path = new URL(req.url ?? '/', 'http
 async function start(options) {
   const { namespace, linuxName, home, userHelper } = options;
   const socketPath = join(home, '.dsh', SOCKET_NAME);
-  await unlink(socketPath).catch((error) => {
-    if (error?.code !== 'ENOENT') throw error;
-  });
 
   const server = createServer((req, res) => {
     void forward(namespace, req, res).catch((error) => {
@@ -330,15 +327,9 @@ async function start(options) {
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socketPath, () => {
-      server.off('error', reject);
-      // The socket belongs to root until `claim` hands it to the tenant.
-      chmodSync(socketPath, 0o600);
-      resolve();
-    });
-  });
+  await listenOnSocket(server, socketPath);
+  // The socket belongs to root until `claim` hands it to the tenant.
+  chmodSync(socketPath, 0o600);
 
   await runUserHelper(userHelper, ['claim', linuxName, socketPath]);
   return server;
@@ -361,23 +352,51 @@ export async function handleWeknoraControl(namespace, req, res, rest) {
 }
 
 /**
+ * Serve one request that arrived through `/__vh/egress/weknora`.
+ * @param {string} namespace
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+export async function handleWeknoraEgress(namespace, req, res) {
+  await forward(namespace, req, res);
+}
+
+/**
  * Make sure this tenant's capability endpoint exists.
- * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
+ * @param {{ subject: string, namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
  */
 export async function ensureWeknoraCapability(options) {
-  const existing = capabilities.get(options.namespace);
+  const existing = capabilities.get(options.subject);
   if (existing) {
     await existing;
     return;
   }
   const starting = start(options);
-  capabilities.set(options.namespace, starting);
+  capabilities.set(options.subject, starting);
   try {
     await starting;
   } catch (error) {
-    capabilities.delete(options.namespace);
+    capabilities.delete(options.subject);
     throw error;
+  }
+}
+
+/**
+ * Drop one tenant's cached listener so the next `ensure` binds a fresh inode.
+ * @param {string} subject immutable tenant subject
+ * @returns {Promise<void>}
+ */
+export async function forgetWeknoraCapability(subject) {
+  const existing = capabilities.get(subject);
+  capabilities.delete(subject);
+  if (existing === undefined) return;
+  try {
+    const server = await existing;
+    await new Promise((resolve) => { server.close(() => { resolve(); }); });
+  } catch {
+    // A capability that never started owns no socket.
   }
 }
 

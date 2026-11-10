@@ -6,9 +6,10 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// A VOS token endpoint stand-in: `revoked` is an invalid_grant, everything
-// else rotates the whole set. It is installed before the store is imported,
-// because the store reads its endpoint once at module load.
+// A VOS token endpoint stand-in: `revoked` is an invalid_grant, `flaky` is an
+// outage, `malformed` is a 200 without a token, everything else rotates the
+// whole set. It is installed before the store is imported, because the store
+// reads its endpoint once at module load.
 const upstream = createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => { body += String(chunk); });
@@ -17,6 +18,16 @@ const upstream = createServer((req, res) => {
     if (params.get('refresh_token') === 'revoked') {
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end('{"error":"invalid_grant"}');
+      return;
+    }
+    if (params.get('refresh_token') === 'flaky') {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end('{"error":"temporarily_unavailable"}');
+      return;
+    }
+    if (params.get('refresh_token') === 'malformed') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -147,6 +158,26 @@ test('a refused refresh drops the credential everywhere', async () => {
     assert.equal(await store.accessTokenFor('revoked'), undefined);
     assert.equal(store.hasUsableTokens('revoked'), false);
     assert.equal(JSON.parse(await readFile(path, 'utf8')).revoked, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a transient refresh failure keeps the credential for the next attempt', async () => {
+  const { root, path } = await scratch();
+  try {
+    store.initTokenStore(path);
+    store.rememberTokens('outage', { access: 'old-access', refresh: 'flaky', expiresAt: Date.now() - 1_000 });
+    store.rememberTokens('malformed', { access: 'old-access', refresh: 'malformed', expiresAt: Date.now() - 1_000 });
+
+    assert.equal(await store.accessTokenFor('outage'), undefined);
+    assert.equal(store.hasUsableTokens('outage'), true, 'a 503 is not a revocation');
+    assert.equal(await store.accessTokenFor('malformed'), undefined);
+    assert.equal(store.hasUsableTokens('malformed'), true, 'a bad success payload is not a revocation');
+
+    const onDisk = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(onDisk.outage.refresh, 'flaky');
+    assert.equal(onDisk.malformed.refresh, 'malformed');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

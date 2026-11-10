@@ -1,0 +1,46 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/host/vh-capabilities/README.md
+/:
+  en: 367dfd3172aecb1a
+  zh: beb0c3e60b48948d
+/deepseek-ai-dsh-host-vh-capabilities:
+  en: 6aa9bb28b55753ec
+  zh: e3f4ae093a1b13ed
+/deepseek-ai-dsh-host-vh-capabilities/summary:
+  en: e33cd9cee439c7ff
+  zh: 090d883bf0aa3212
+/deepseek-ai-dsh-host-vh-capabilities/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: d152484eb41ac6b4
+/deepseek-ai-dsh-host-vh-capabilities/use-this-package:
+  en: 0500a2c7f6b5f7e2
+  zh: c517b89fecd9a7cd
+/deepseek-ai-dsh-host-vh-capabilities/use-this-package/what-the-contract-contains:
+  en: 3377ec5e6f90b74a
+  zh: e2513314dddcd5be
+/deepseek-ai-dsh-host-vh-capabilities/understand-the-implementation:
+  en: 42b15ac6321706aa
+  zh: 43b4d18b937590ca
+/deepseek-ai-dsh-host-vh-capabilities/understand-the-implementation/design-concept:
+  en: c700abcc92d2e97d
+  zh: ac661f7fe7d232ae
+/deepseek-ai-dsh-host-vh-capabilities/understand-the-implementation/source-map:
+  en: 0df13d71dacde5b6
+  zh: e12de8f8c2eca82b
+/deepseek-ai-dsh-host-vh-capabilities/further-exploration:
+  en: 61ab3c071c755778
+  zh: 2f3761ecc85da642
+/deepseek-ai-dsh-host-vh-capabilities/model-experience:
+  en: f8f967c2712fd82b
+  zh: 48a431436a049713
+/deepseek-ai-dsh-host-vh-capabilities/model-experience/kv-cache-effect:
+  en: ca75c51c89c2c9b0
+  zh: cb22a78664e4a0a5
+/deepseek-ai-dsh-host-vh-capabilities/known-limitations-and-deferred-work:
+  en: ec1684c585ce1958
+  zh: cce9bdd5c74bcc87
+/deepseek-ai-dsh-host-vh-capabilities/known-limitations-and-deferred-work/dev-note:
+  en: 2d5e3976198f8db2
+  zh: eeda06813cdc42f4

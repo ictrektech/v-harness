@@ -10,6 +10,13 @@
 # duplicates here so the plugins are not mounted twice.
 
 - insert:
+    # Tenant capability transport. The gateway writes `capabilities.json` into
+    # DSH_HOME only after this plugin is in the image and only for capabilities
+    # it has stopped serving itself; without that file the plugin mounts
+    # nothing, so an old gateway or a rollback keeps its own sockets.
+    - id: vh-capabilities
+      name: '@deepseek-ai/dsh-host-vh-capabilities'
+
     # Local generation service; off until a deployment names an endpoint
     # (the gateway forwards IMAGE_STUDIO_BASE_URL only when it is set).
     - id: skill-image-studio

@@ -17,19 +17,19 @@
 
 import { createServer, request as httpRequest } from 'node:http';
 import { chmodSync } from 'node:fs';
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
+import { listenOnSocket } from './socket-path.mjs';
 
 const DEFAULT_IMAGE_STUDIO_URL = 'http://image-studio-backend:5000';
 const IMAGE_STUDIO_URL = (process.env.VH_IMAGE_STUDIO_URL ?? DEFAULT_IMAGE_STUDIO_URL).replace(/\/+$/, '');
-const SOCKET_NAME = 'image-studio.sock';
+export const SOCKET_NAME = 'image-studio.sock';
 /** Generous: a video job download can legitimately run for minutes. */
 const UPSTREAM_TIMEOUT_MS = 600_000;
 
 /** Routes the capability exposes; everything else is refused locally. */
-const ROUTES = [
+export const ROUTES = [
   { method: 'GET', path: /^\/health$/ },
   { method: 'GET', path: /^\/api\/v1\/about$/ },
   { method: 'GET', path: /^\/api\/v1\/me$/ },
@@ -142,6 +142,20 @@ async function forward(req, res) {
 }
 
 /**
+ * Serve one request that arrived through `/__vh/egress/image-studio`.
+ *
+ * The route table and upstream are the same as the gateway socket's: the
+ * plugin owns the socket, not the semantics.
+ * @param {string} _namespace unused; Image Studio is per-deployment, not per-tenant.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+export async function handleImageStudioEgress(_namespace, req, res) {
+  await forward(req, res);
+}
+
+/**
  * Start (once) the listening socket for one tenant.
  * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
@@ -149,9 +163,6 @@ async function forward(req, res) {
 async function start(options) {
   const { linuxName, home, userHelper } = options;
   const socketPath = join(home, '.dsh', SOCKET_NAME);
-  await unlink(socketPath).catch((error) => {
-    if (error?.code !== 'ENOENT') throw error;
-  });
 
   const server = createServer((req, res) => {
     void forward(req, res).catch((error) => {
@@ -162,38 +173,50 @@ async function start(options) {
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socketPath, () => {
-      server.off('error', reject);
-      chmodSync(socketPath, 0o600);
-      resolve();
-    });
-  });
+  await listenOnSocket(server, socketPath);
+  chmodSync(socketPath, 0o600);
 
   // Same door-closing sequence as the album capability: root-owned until the
   // helper chowns it to the tenant user.
   await runUserHelper(userHelper, ['claim', linuxName, socketPath]);
+  return server;
 }
 
 /**
  * Make sure this tenant's Image Studio capability endpoint exists.
- * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
+ * @param {{ subject: string, namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
  */
 export async function ensureImageStudioCapability(options) {
-  const existing = capabilities.get(options.namespace);
+  const existing = capabilities.get(options.subject);
   if (existing) {
     await existing;
     return;
   }
   const starting = start(options);
-  capabilities.set(options.namespace, starting);
+  capabilities.set(options.subject, starting);
   try {
     await starting;
   } catch (error) {
-    capabilities.delete(options.namespace);
+    capabilities.delete(options.subject);
     throw error;
+  }
+}
+
+/**
+ * Drop one tenant's cached listener so the next `ensure` binds a fresh inode.
+ * @param {string} subject immutable tenant subject
+ * @returns {Promise<void>}
+ */
+export async function forgetImageStudioCapability(subject) {
+  const existing = capabilities.get(subject);
+  capabilities.delete(subject);
+  if (existing === undefined) return;
+  try {
+    const server = await existing;
+    await new Promise((resolve) => { server.close(() => { resolve(); }); });
+  } catch {
+    // A capability that never started owns no socket.
   }
 }
 

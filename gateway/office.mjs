@@ -20,11 +20,11 @@
 
 import { createServer, request as httpRequest } from 'node:http';
 import { chmodSync } from 'node:fs';
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Transform } from 'node:stream';
 
 import { runUserHelper } from './instances.mjs';
+import { listenOnSocket } from './socket-path.mjs';
 import { accessTokenFor } from './vos-token-store.mjs';
 
 // The developer machine has its own LAN address here, but a deployed host does
@@ -33,14 +33,14 @@ import { accessTokenFor } from './vos-token-store.mjs';
 const DEFAULT_BASE = 'http://172.17.0.1:1182/api/com.ictrek.v-office';
 const OFFICE_BASE = new URL((process.env.VH_OFFICE_BASE ?? DEFAULT_BASE).replace(/\/+$/, ''));
 const OFFICE_PREFIX = OFFICE_BASE.pathname.replace(/\/+$/, '');
-const SOCKET_NAME = 'voffice.sock';
+export const SOCKET_NAME = 'voffice.sock';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 300_000;
 /** Collabora cold starts answer slowly; a session request must not hang a tab. */
 const SESSION_TIMEOUT_MS = 30_000;
 
 /** Routes the capability exposes; everything else is refused locally. */
-const ROUTES = [
+export const ROUTES = [
   { method: 'GET', pattern: /^\/api\/v1\/health$/ },
   { method: 'GET', pattern: /^\/api\/v1\/me$/ },
   { method: 'GET', pattern: /^\/api\/v1\/files$/ },
@@ -404,6 +404,24 @@ export async function editorUrlFor(namespace, options) {
 }
 
 /**
+ * Serve one request that arrived through `/__vh/egress/voffice`.
+ *
+ * The origin route stays a gateway answer: it is derived from the navigation
+ * the gateway saw, not from anything the plugin knows.
+ * @param {string} namespace
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {Promise<void>}
+ */
+export async function handleOfficeEgress(namespace, req, res) {
+  if (req.url === '/__vh/origin') {
+    json(res, 200, { origin: publicOrigins.get(namespace) ?? '' });
+    return;
+  }
+  await forward(namespace, req, res);
+}
+
+/**
  * Start (once) the listening socket for one tenant.
  * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
@@ -411,9 +429,6 @@ export async function editorUrlFor(namespace, options) {
 async function start(options) {
   const { namespace, linuxName, home, userHelper } = options;
   const socketPath = join(home, '.dsh', SOCKET_NAME);
-  await unlink(socketPath).catch((error) => {
-    if (error?.code !== 'ENOENT') throw error;
-  });
 
   const server = createServer((req, res) => {
     // Local-only route: the portal origin, so the agent can hand the user an
@@ -430,40 +445,57 @@ async function start(options) {
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socketPath, () => {
-      server.off('error', reject);
-      // Shut the door before handing the key over: until `claim` runs, the
-      // socket belongs to root, and nobody may call the capability.
-      chmodSync(socketPath, 0o600);
-      resolve();
-    });
-  });
+  await listenOnSocket(server, socketPath);
+  // Shut the door before handing the key over: until `claim` runs, the socket
+  // belongs to root, and nobody may call the capability.
+  chmodSync(socketPath, 0o600);
 
   // The account owner must be the only caller: 0600 on the socket itself plus
   // the 0700 `.dsh` directory. The helper owns every user-owned chmod/chown.
   await runUserHelper(userHelper, ['claim', linuxName, socketPath]);
+  return server;
 }
 
 /**
  * Make sure this tenant's capability endpoint exists.
- * @param {{ namespace: string, linuxName: string, home: string, userHelper: string }} options
+ * @param {{ subject: string, namespace: string, linuxName: string, home: string, userHelper: string }} options
  * @returns {Promise<void>}
  */
 export async function ensureOfficeCapability(options) {
-  const existing = capabilities.get(options.namespace);
+  const existing = capabilities.get(options.subject);
   if (existing) {
     await existing;
     return;
   }
   const starting = start(options);
-  capabilities.set(options.namespace, starting);
+  capabilities.set(options.subject, starting);
   try {
     await starting;
   } catch (error) {
-    capabilities.delete(options.namespace);
+    capabilities.delete(options.subject);
     throw error;
+  }
+}
+
+/**
+ * Drop one tenant's cached listener so the next `ensure` binds a fresh inode.
+ *
+ * Cached on the subject, not the namespace: two subjects can share a namespace
+ * after an account switch, and each has its own home and socket. Closing here
+ * matters when the gateway took the capability back — the old listener may
+ * already have been replaced by the plugin's, and `ensure` must not reuse it.
+ * @param {string} subject immutable tenant subject
+ * @returns {Promise<void>}
+ */
+export async function forgetOfficeCapability(subject) {
+  const existing = capabilities.get(subject);
+  capabilities.delete(subject);
+  if (existing === undefined) return;
+  try {
+    const server = await existing;
+    await new Promise((resolve) => { server.close(() => { resolve(); }); });
+  } catch {
+    // A capability that never started owns no socket.
   }
 }
 

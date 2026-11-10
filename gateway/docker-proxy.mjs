@@ -1697,6 +1697,23 @@ export async function ensureDockerCapability(options) {
 }
 
 /**
+ * Drop one tenant's cached listener so the next `ensure` binds a fresh inode.
+ * @param {string} subject immutable tenant subject
+ * @returns {Promise<void>}
+ */
+export async function forgetDockerCapability(subject) {
+  const existing = capabilities.get(subject);
+  capabilities.delete(subject);
+  if (existing === undefined) return;
+  try {
+    const server = await existing;
+    await new Promise((resolve) => { server.close(() => { resolve(); }); });
+  } catch {
+    // A capability that never started owns no socket.
+  }
+}
+
+/**
  * Drop every capability socket; the gateway calls this as it shuts down.
  * @returns {Promise<void>}
  */
