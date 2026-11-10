@@ -25,6 +25,13 @@
 /** Restart endpoint the injected button calls; the gateway answers it. */
 export const RESTART_PATH = '/__vh/restart';
 
+/**
+ * The background identity check. It is loaded by every proxied document, and it
+ * asks the gateway whether this navigation still owes an answer before it does
+ * anything, so a load costs one cheap request in the common case.
+ */
+export const VERIFY_SCRIPT_SRC = '/__vh/verify.js';
+
 /** Boot identity of the instance serving this document; polled by the script. */
 export const BOOT_PATH = '/__vh/boot';
 
@@ -52,15 +59,35 @@ const COPY = {
  *   the application path the ingress mounts this gateway under.
  * @returns {string} the document with the host scripts in its head.
  */
-export function injectShell(html, { locale, basePath = '' }) {
+export function injectShell(html, { locale, basePath = '', shell = true }) {
   const copy = COPY[locale === 'en' ? 'en' : 'zh'];
-  const scripts = `${localeScript(locale)}${runtimeScript(copy, basePath)}`;
+  // A plugin's own document (a panel served at `/mcp-connector/ui/`) gets the
+  // URL bridge and nothing else. The identity check, the language entry, the
+  // restart button and the boot watcher belong to the workspace shell: planting
+  // them in someone else's page made that page reload itself, and a 240 KB panel
+  // reloading two seconds after it opened is exactly what the user sees as
+  // "refreshing every few seconds".
+  const scripts = shell
+    ? `${verifyScript()}${localeScript(locale)}${runtimeScript(copy, basePath, true)}`
+    : runtimeScript(copy, basePath, false);
   const head = /<head[^>]*>/iu.exec(html);
   // A document without a head still gets the scripts: prepending keeps the rest
   // of the markup untouched, and the browser hoists them either way.
   if (head === null) return `${scripts}${html}`;
   const at = head.index + head[0].length;
   return `${html.slice(0, at)}${scripts}${html.slice(at)}`;
+}
+
+/**
+ * Load the background identity check.
+ *
+ * `defer` matters: the check must not delay the first paint, and it is the
+ * thing that releases the gateway's data gate. A navigation that has nothing to
+ * prove returns from it immediately.
+ * @returns {string} the script tag.
+ */
+function verifyScript() {
+  return `<script defer src="${VERIFY_SCRIPT_SRC}"></script>`;
 }
 
 /**
@@ -86,8 +113,8 @@ function localeScript(locale) {
  * @param {string} basePath
  * @returns {string} the bridge script tag.
  */
-function runtimeScript(copy, basePath) {
-  const config = JSON.stringify({ base: basePath, path: RESTART_PATH, boot: BOOT_PATH, copy });
+function runtimeScript(copy, basePath, shell) {
+  const config = JSON.stringify({ base: basePath, path: RESTART_PATH, boot: BOOT_PATH, copy, shell });
   return `<script>(function(){try{var vh=${config};${BRIDGE}}catch(e){}})();</script>`;
 }
 
@@ -178,6 +205,10 @@ function wrapSocket(native) {
 if (typeof window.WebSocket === "function") window.WebSocket = wrapSocket(window.WebSocket);
 if (typeof window.EventSource === "function") window.EventSource = wrapSocket(window.EventSource);
 
+// Everything below belongs to the workspace shell. A plugin's document only
+// needs the URL rewriting above; the restart affordance and the boot watcher
+// would act on a page this gateway never launched.
+if (vh.shell === true) {
 function requestRestart() {
   return fetch(vh.path, { method: "POST", credentials: "same-origin", cache: "no-store", body: "" });
 }
@@ -247,4 +278,5 @@ try {
   setTimeout(watchBoot, 1500);
   setInterval(watchBoot, 2000);
 } catch (e) {}
+}
 `;

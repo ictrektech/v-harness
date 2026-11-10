@@ -2,23 +2,31 @@
  * v-harness gateway: VOS SSO front door and per-user dsh reverse proxy.
  *
  * Request flow:
- *   1. An unauthenticated document request receives a bootstrap page that runs
- *      the VOS Fastpath exchange and posts the access token to `/__vh/auth`.
- *   2. `/__vh/auth` verifies the token through VOS userinfo, ensures the user's
- *      instance exists, and mints a signed `vh_session` cookie.
+ *   1. A request with no session at all receives the bootstrap page, which runs
+ *      the VOS Fastpath exchange and posts the access token to `/__vh/session`.
+ *   2. `/__vh/session` verifies that token through VOS userinfo, ensures the
+ *      user's instance exists, and mints a signed `vh_session` cookie.
  *   3. Every later request is forwarded to that user's instance over the
  *      address its network namespace is published on, with the browser Cookie
  *      replaced by the instance's own dsh cookie and Host rewritten to
  *      `127.0.0.1:<port>` (the authority dsh signed that cookie for).
+ *   4. A shell navigation is served first and asks the platform second: it arms
+ *      `identityGate`, the injected `/__vh/verify.js` fetches the answer in the
+ *      background, and the navigation's data requests wait for it rather than
+ *      being served from an answer nobody has confirmed. A different account is
+ *      terminal — the page reloads into the tenant it now belongs to.
  *
  * @module v-harness/gateway/server
  */
 
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'node:zlib';
+
+import { IdentityGate, mayServe } from './identity-gate.mjs';
 
 import {
   WorkspaceError,
@@ -114,6 +122,38 @@ const AUTH_DISABLED = /^(1|true|yes)$/i.test(process.env.VH_AUTH_DISABLED ?? '')
 const DEV_SUBJECT = 'local-dev';
 const DEV_NAMESPACE = createHash('sha256').update(`vos-oidc\0${DEV_SUBJECT}`).digest('hex').slice(0, 40);
 
+/**
+ * How long one navigation's data requests wait for the background identity
+ * answer. The answer is two platform round trips when it arrives at all; past
+ * this the request proceeds on the session it already has, because a platform
+ * that cannot answer must not cost the user their workspace.
+ */
+const IDENTITY_WAIT_MS = Number(process.env.IDENTITY_WAIT_MS ?? 1_500);
+
+/** How long a navigation stays armed with no answer at all. */
+const IDENTITY_ARM_MS = Number(process.env.IDENTITY_ARM_MS ?? 6_000);
+
+/** The background check every proxied HTML document loads. */
+const VERIFY_SCRIPT_PATH = '/__vh/verify.js';
+
+/**
+ * One navigation, one background answer about who is signed in. The shell is
+ * served without asking; the page settles this gate afterwards, and data
+ * requests wait here rather than being served from an unconfirmed answer.
+ */
+const identityGate = new IdentityGate({ waitMs: IDENTITY_WAIT_MS, armMs: IDENTITY_ARM_MS });
+
+/**
+ * The check itself, read once. A deployment missing the file degrades to the
+ * previous behaviour — no answer, and the gate times out — instead of failing
+ * every navigation.
+ */
+const VERIFY_SCRIPT = await readFile(new URL('./pages/verify.js', import.meta.url), 'utf8')
+  .catch((error) => {
+    console.error('identity check script unavailable:', error instanceof Error ? error.message : String(error));
+    return '';
+  });
+
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding',
   'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
@@ -207,31 +247,37 @@ const subChecks = new Map();
  * VOS side must not keep routing. Throttled: one userinfo round trip per
  * session per window. A down endpoint fails open (throttled by the same
  * window); a subject mismatch revokes the session and fails closed.
+ *
+ * `no-token` is deliberately *not* a refusal any more. It is the state of every
+ * process that has just started, and answering it as "unauthenticated" is what
+ * turned a restart into a sign-in wall for every tenant. The session still names
+ * a tenant, the shell carries no data, and the background check repopulates the
+ * token on the very navigation that would have been refused.
+ *
  * @param {import('./session.mjs').Session} session
  * @param {import('./users.mjs').UserRecord} record
- * @returns {Promise<boolean>} whether the request may proceed.
+ * @returns {Promise<'ok' | 'no-token' | 'drift'>} how far the check got.
  */
 async function subjectRecheck(session, record) {
   const now = Date.now();
   const cached = subChecks.get(session.sid);
   if (cached && cached.subject === session.subject && now - cached.checkedAt < SUB_RECHECK_MS) {
-    return true;
+    return 'ok';
   }
   subChecks.set(session.sid, { subject: session.subject, checkedAt: now });
-  if (AUTH_DISABLED) return true;
+  if (AUTH_DISABLED) return 'ok';
   const token = await accessTokenFor(record.namespace);
-  // No token means this process cannot say who the session belongs to — after a
-  // restart, or once VOS refused a refresh. Answering "allowed" here is what
-  // kept a stale session routing with nobody's identity behind it.
-  if (token === undefined) return false;
+  // This process holds no token for the tenant: after a restart, or once VOS
+  // refused a refresh. It cannot prove the session wrong, so it does not.
+  if (token === undefined) return 'no-token';
   try {
     const identity = await verifyVosToken(token);
     if (identity.subject !== session.subject) {
       sessions.revokeSession(session.sid);
       console.warn(`sub recheck: session drift for ${record.account ?? record.linuxName}, revoked`);
-      return false;
+      return 'drift';
     }
-    return true;
+    return 'ok';
   } catch (error) {
     // VOS answered and refused this identity (rejected token, 401/403 from
     // userinfo): the session's subject is gone. Fail closed for this session
@@ -241,35 +287,14 @@ async function subjectRecheck(session, record) {
         || (error.code === 'vos-userinfo-status' && (error.status === 401 || error.status === 403)))) {
       sessions.revokeSession(session.sid);
       console.warn(`sub recheck: token refused for ${record.account ?? record.linuxName} (${error.code}), session revoked`);
-      return false;
+      return 'drift';
     }
     // Everything else — unreachable endpoint, 5xx, malformed payload — is a
     // VOS outage, not an identity verdict. A hiccup must not sign every
     // tenant out, so fail open; the recheck window throttles the retry.
     console.warn(`sub recheck unavailable: ${error instanceof Error ? error.message : String(error)}`);
-    return true;
+    return 'ok';
   }
-}
-
-/** How long one navigation trusts the identity the bootstrap just proved. */
-const PROOF_WINDOW_MS = Number(process.env.SESSION_PROOF_MS ?? 20_000);
-
-/**
- * Whether a navigation must go back through the bootstrap first.
- *
- * The session cookie names the tenant served last, not the account browsing
- * now, and a browser that signs in as someone else keeps carrying it. Only the
- * bootstrap page can ask the platform who is signed in, so a document loads
- * only when that answer is recent: a reload straight after it passes, anything
- * later asks again. This is the one gate every capability inherits, including
- * the ones installed from the plugin market.
- * @param {import('./session.mjs').Session} session
- * @returns {boolean} whether the caller must re-prove identity.
- */
-function needsProof(session) {
-  if (AUTH_DISABLED) return false;
-  const age = sessions.proofAge(session.sid);
-  return age === undefined || age > PROOF_WINDOW_MS;
 }
 
 /**
@@ -412,21 +437,30 @@ function fail(m){
   document.getElementById('m').textContent='无法进入 v-harness';
   document.getElementById('e').textContent=m;
 }
+// The platform SDK's fetches carry no timeout of their own; a portal that
+// answers slowly or not at all used to hold the page on its first line for
+// minutes. Every leg of the exchange now races a clock instead.
+function withTimeout(promise,ms,tag){
+  return Promise.race([
+    promise,
+    new Promise((_,reject)=>setTimeout(()=>reject(new Error(tag+'超时，平台未响应')),ms)),
+  ]);
+}
 async function authorize(cfg,waitMs){
   const oauth2=await bridge(waitMs===undefined?25000:waitMs);
   if(!oauth2)throw new Error('当前 VOS 未提供 OIDC Fastpath，无法验证用户身份');
   const verifier=rand(),state=rand();
   const digest=await sha256Bytes(new TextEncoder().encode(verifier));
-  const authorized=await oauth2.authorize({
+  const authorized=await withTimeout(oauth2.authorize({
     client_id:cfg.clientId,response_type:'code',scope:cfg.scope,
-    state,nonce:rand(),code_challenge:b64(digest),code_challenge_method:'S256'});
+    state,nonce:rand(),code_challenge:b64(digest),code_challenge_method:'S256'}),12000,'平台授权');
   if(authorized.state!==state)throw new Error('VOS OIDC state mismatch');
-  const tokens=await oauth2.token({
+  const tokens=await withTimeout(oauth2.token({
     grant_type:'authorization_code',code:authorized.code,
-    code_verifier:verifier,client_id:cfg.clientId});
+    code_verifier:verifier,client_id:cfg.clientId}),12000,'平台令牌交换');
   if(!tokens.access_token)throw new Error('VOS OIDC 未返回 access token');
   const res=await fetch('/__vh/auth',{
-    method:'POST',credentials:'include',
+    method:'POST',credentials:'include',signal:AbortSignal.timeout(15000),
     headers:{'content-type':'application/json','x-vh-csrf':cfg.csrf||''},
     body:JSON.stringify({access_token:tokens.access_token,
       refresh_token:tokens.refresh_token,expires_in:tokens.expires_in})});
@@ -437,26 +471,60 @@ async function authorize(cfg,waitMs){
   if(body.session)try{sessionStorage.setItem('vh_session',body.session);}catch{}
 }
 function showRenew(error,cfg){
-  document.getElementById('m').textContent='登录状态已恢复，但能力授权已失效';
+  const expired=isPortalExpired(error);
+  document.getElementById('m').textContent=expired?'平台登录状态已过期':'登录状态已恢复，但能力授权已失效';
   const detail=document.getElementById('e');
   detail.textContent=(error?.message||String(error))+'。';
-  const renew=document.createElement('button');
-  renew.textContent='重新登录';
-  renew.onclick=async()=>{await fetch('/__vh/logout',{method:'POST'});location.reload();};
-  const skip=document.createElement('button');
-  skip.textContent='仍然进入（部分能力不可用）';
-  skip.onclick=()=>location.replace('/__vh/enter?to='+encodeURIComponent(location.pathname+location.search));
-  detail.append(document.createElement('br'),renew,skip);
+  detail.append(document.createElement('br'));
+  if(expired){
+    // The exchange is refused by the portal itself (无效的授权): waiting cannot
+    // fix it, only a portal sign-in can. The button refreshes the portal page —
+    // same origin, so the top reload is ours to make — and the background
+    // watcher below still self-heals the moment the user signs in elsewhere.
+    const hint=document.createElement('span');
+    hint.textContent='需要在门户重新登录；登录后本页会自动恢复，无需手动刷新。';
+    detail.append(hint,document.createElement('br'));
+    const top=document.createElement('button');
+    top.textContent='刷新门户并重试';
+    top.onclick=()=>window.top.location.reload();
+    detail.append(top);
+  }else{
+    const renew=document.createElement('button');
+    renew.textContent='重新登录';
+    renew.onclick=async()=>{await fetch('/__vh/logout',{method:'POST'});location.reload();};
+    const skip=document.createElement('button');
+    skip.textContent='仍然进入（部分能力不可用）';
+    skip.onclick=()=>location.replace('/__vh/enter?to='+encodeURIComponent(location.pathname+location.search));
+    detail.append(renew,skip);
+  }
   recoverInBackground(cfg);
 }
+// The portal answers authorize/confirm with 无效的授权 (code 10001) when its
+// own sign-in has lapsed. No amount of retrying fixes that here, so those
+// failures skip the retry loop and get their own message and action. Plain
+// substring checks, not a regex literal: this script lives inside a template
+// literal, where an escape like \/ loses its backslash and a lone / would
+// end the pattern early — a SyntaxError that killed the whole page.
+function isPortalExpired(error){
+  const message=error?.message||String(error);
+  return message.includes('无效的授权')||message.includes('10001')||message.includes('/confirm');
+}
 function showFresh(error){
-  document.getElementById('m').textContent='无法完成平台登录';
+  const expired=isPortalExpired(error);
+  document.getElementById('m').textContent=expired?'平台登录状态已过期':'无法完成平台登录';
   const detail=document.getElementById('e');
   detail.textContent=(error?.message||String(error))+'。';
+  detail.append(document.createElement('br'));
+  if(expired){
+    const top=document.createElement('button');
+    top.textContent='刷新门户并重试';
+    top.onclick=()=>window.top.location.reload();
+    detail.append(top);
+  }
   const retry=document.createElement('button');
   retry.textContent='手动重试';
   retry.onclick=()=>location.reload();
-  detail.append(document.createElement('br'),retry);
+  detail.append(retry);
 }
 // Shared by every dead end this page can reach, whatever the tenant asked for
 // next: while the prompt is up, the page keeps watching for the portal bridge
@@ -492,10 +560,16 @@ function recoverInBackground(cfg){
 // the retries instead of making the user wait for nothing.
 async function authorizeWithRetry(cfg){
   const attempts=window.parent===window?1:3;
+  const t0=Date.now();
   let last;
   for(let attempt=0;attempt<attempts;attempt++){
     try{return await authorize(cfg,25000);}catch(error){last=error;}
-    if(attempt<attempts-1){
+    // An expired portal sign-in survives every retry until the user signs in
+    // again; fail fast into the prompt that says so instead of spinning.
+    if(isPortalExpired(error))break;
+    // A whole-exchange budget: with every leg clocked, the worst case still
+    // lands on the actionable prompt inside a minute instead of spinning.
+    if(attempt<attempts-1&&Date.now()-t0<60000){
       document.getElementById('m').textContent='平台身份验证失败，正在自动重试…';
       await sleep(1500*(attempt+1));
     }
@@ -511,7 +585,7 @@ async function boot(){
   for(let attempt=0;;attempt++){
     try{
       cfg=await(await fetch('/__vh/session',{
-        credentials:'include',cache:'no-store',
+        credentials:'include',cache:'no-store',signal:AbortSignal.timeout(8000),
         headers:saved?{'x-vh-session':saved}:{}})).json();
       break;
     }catch(error){
@@ -633,6 +707,26 @@ function isDocumentRequest(req) {
 }
 
 /**
+ * Whether the request is the workspace shell itself — the document at the app
+ * root — rather than a document the tenant's dsh or one of its plugins serves.
+ *
+ * Only the shell carries the identity re-proof: it is the one document whose
+ * answer decides which tenant the browser is inside. A plugin's own panel
+ * (`/mcp-connector/ui/`) is rendered *inside* a tenant the session already
+ * named, so sending it through the bootstrap page would replace the panel with
+ * a login screen for no gain — and it is the reason a plugin panel used to
+ * break every five minutes.
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {boolean}
+ */
+function isShellDocument(req) {
+  if (!isDocumentRequest(req)) return false;
+  const path = stripPrefix(String(req.url ?? '/')).split('?')[0];
+  return path === '/' || path === '/index.html';
+}
+
+
+/**
  * Resolve the caller's user record, or reply and return undefined.
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
@@ -649,7 +743,10 @@ async function requireUser(req, res) {
     json(res, 401, { error: 'unknown user' });
     return undefined;
   }
-  if (!(await subjectRecheck(session, record))) {
+  // A missing token is not a verdict: the control endpoints answer with what the
+  // tenant already has, and refusing them after a restart would take the
+  // workspace down with the process.
+  if (await subjectRecheck(session, record) === 'drift') {
     json(res, 401, { error: 'session revoked' });
     return undefined;
   }
@@ -1004,6 +1101,133 @@ async function handleMarketRestart(req, res) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
+  // The background identity check, served as its own file so it is written as
+  // JavaScript rather than as an escaped template string, and so a deployment
+  // can be reasoned about without re-reading the page that embeds it.
+  if (url.pathname === VERIFY_SCRIPT_PATH && req.method === 'GET') {
+    const body = Buffer.from(VERIFY_SCRIPT, 'utf8');
+    res.writeHead(200, {
+      'content-type': 'text/javascript; charset=utf-8',
+      'content-length': String(body.byteLength),
+      // The check speaks the gateway's own protocol; a cached copy would keep
+      // calling endpoints the next release changed.
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+    return;
+  }
+
+  // The answer for one navigation: the same account, a different account, or
+  // "the platform could not say". Every data request of that navigation is
+  // waiting on this line, so every path settles it — including the failures.
+  if (url.pathname === '/__vh/verify' && req.method === 'POST') {
+    const session = authenticate(req);
+    if (!session) {
+      json(res, 401, { error: 'unauthenticated' });
+      return;
+    }
+    const sid = session.sid;
+    // Local debugging has no platform to ask; the check is not part of it.
+    if (AUTH_DISABLED) {
+      identityGate.settle(sid, 'skipped');
+      json(res, 200, { same: true, verified: false, reason: 'auth-disabled' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      identityGate.settle(sid, 'skipped');
+      json(res, 400, { same: true, verified: false, reason: 'invalid-body' });
+      return;
+    }
+    // Same double-submit guard as the sign-in endpoint: this request can hand
+    // out a session for an arbitrary account, so it must come from our page.
+    const cookies = parseCookies(req.headers.cookie);
+    if (!csrfMatches(String(req.headers['x-vh-csrf'] ?? ''), cookies[CSRF_COOKIE] ?? '')) {
+      identityGate.settle(sid, 'skipped');
+      json(res, 403, { same: true, verified: false, reason: 'csrf' });
+      return;
+    }
+    if (body.skipped === true) {
+      identityGate.settle(sid, 'skipped');
+      console.warn(`identity check skipped (${String(body.reason ?? 'unknown')}) for ${session.account}`);
+      json(res, 200, { same: true, verified: false, reason: String(body.reason ?? 'skipped') });
+      return;
+    }
+
+    let identity;
+    try {
+      identity = await verifyVosToken(body.access_token, {
+        acceptLanguage: String(req.headers['accept-language'] ?? ''),
+      });
+    } catch (error) {
+      // The platform refused or could not answer. That is not a verdict about
+      // the account in front of the browser, so the navigation keeps the session
+      // it already had — visibly, in the log, so the degradation is not silent.
+      const code = error instanceof VosAuthError ? error.code : 'auth-failed';
+      console.warn(`identity check unavailable for ${session.account}: ${code}`);
+      identityGate.settle(sid, 'skipped');
+      json(res, 200, { same: true, verified: false, reason: code });
+      return;
+    }
+
+    const tokenSet = {
+      access: String(body.access_token),
+      ...typeof body.refresh_token === 'string' && body.refresh_token ? { refresh: body.refresh_token } : {},
+      expiresAt: expiryFromToken(String(body.access_token), Number(body.expires_in)),
+    };
+
+    if (identity.subject === session.subject) {
+      const record = await findUser(USERS_FILE, session.subject);
+      if (record) {
+        rememberTokens(record.namespace, tokenSet);
+        sessions.prove(sid);
+        void ensureInstance({
+          record,
+          stateRoot: STATE_ROOT,
+          dshBin: DSH_BIN,
+          nodeBin: NODE_BIN,
+          statePath: STATE_FILE,
+          userHelper: USER_HELPER,
+        })
+          .then(() => startCapabilities(record))
+          .catch((error) => {
+            console.error(`identity recheck could not start ${record.account ?? record.linuxName}:`, error?.message ?? error);
+          });
+      }
+      identityGate.settle(sid, 'same');
+      json(res, 200, { same: true, verified: true });
+      return;
+    }
+
+    // A different account is signed in on this browser. The old session cannot
+    // route anywhere any more, and the page that asked is holding the previous
+    // tenant's document — the client reloads on `same: false`.
+    const upserted = await upsertUser(USERS_FILE, identity);
+    const next = upserted.record;
+    rememberTokens(next.namespace, tokenSet);
+    sessions.revokeSession(sid);
+    identityGate.settle(sid, 'switched');
+    const nextSid = sessions.createSession({
+      subject: next.subject,
+      account: next.account ?? next.linuxName,
+      userAgent: String(req.headers['user-agent'] ?? ''),
+    });
+    sessions.prove(nextSid);
+    console.log(`identity switched: ${session.account} -> ${next.account ?? next.linuxName}`);
+    json(res, 200, {
+      same: false,
+      user: { username: next.username, namespace: next.namespace },
+    }, {
+      'set-cookie': cookie(SESSION_COOKIE, nextSid, {
+        maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1_000),
+        ...cookiePolicy(req),
+      }),
+    });
+    return;
+  }
+
   // The document a tab holds belongs to the process that served it. After a
   // restart that process is gone, and every bundle URL in the document carries
   // a revision the new one never had — the tab dies on the first plugin it has
@@ -1285,6 +1509,11 @@ async function handleControl(req, res, url) {
         const csrf = newCsrfToken();
         json(res, 200, {
           authenticated: true,
+          // Whether this navigation still owes the gateway an answer about who
+          // is signed in. The injected check reads it and does nothing at all
+          // when the answer is already in hand, so a page load costs one cheap
+          // request instead of a platform round trip.
+          check: identityGate.armed(session.sid),
           // Handed back so the bootstrap page can keep the session even when
           // the browser refuses to store the cookie (cross-site iframe).
           session: session.sid,
@@ -1922,7 +2151,29 @@ async function proxyRequest(req, res) {
     json(res, 401, { error: 'unknown user' });
     return;
   }
-  if (!(await subjectRecheck(session, record))) {
+  // Identity is answered *after* the document is on screen, never before it.
+  // The shell is generic code with no tenant data in it, and blocking a
+  // navigation on a six-leg asynchronous chain is what made every entry cost a
+  // platform round trip plus a full reload. Arming the gate here is the whole
+  // hand-off: the page answers it in the background, and data waits below.
+  if (!AUTH_DISABLED && isShellDocument(req)) identityGate.arm(session.sid);
+
+  // Data never rides on an unanswered navigation. While this session's gate is
+  // armed the request waits — bounded — for the answer; a switched account is
+  // terminal, because the document in the tab belongs to whoever was signed in
+  // before and no amount of proxying turns it into the new tenant's page.
+  // This runs before the token recheck so that a check which just landed has
+  // already repopulated the tenant's token for it to look at.
+  if (!isDocumentRequest(req) && identityGate.armed(session.sid)) {
+    const outcome = await identityGate.wait(session.sid);
+    if (!mayServe(outcome)) {
+      json(res, 401, { error: 'identity-changed', same: false });
+      return;
+    }
+  }
+
+  const verdict = await subjectRecheck(session, record);
+  if (verdict === 'drift') {
     // The VOS subject drifted (account kicked / switched): send the browser
     // back through bootstrap, which re-proves identity and re-issues a session.
     if (isDocumentRequest(req)) {
@@ -1932,25 +2183,10 @@ async function proxyRequest(req, res) {
     json(res, 401, { error: 'session revoked' });
     return;
   }
-
-  // Anyone signing in on this browser lands here, not only the account that
-  // owns the cookie: a navigation without a fresh proof goes back to the page
-  // that can ask the platform who is signed in now.
-  if (isDocumentRequest(req) && needsProof(session)) {
-    sendBootstrap(res);
-    return;
-  }
-
-  // The cookie outlives the gateway's in-memory VOS token, so a reload after a
-  // restart would otherwise enter the app with every capability endpoint
-  // unauthorized and no way back. A navigation goes through the bootstrap page
-  // instead, which replays the VOS login and then returns here. Resolving the
-  // token here — not just checking for one — also covers a refresh token VOS no
-  // longer accepts: the page then re-authorizes instead of entering dead.
-  if (!AUTH_DISABLED && isDocumentRequest(req) && await accessTokenFor(record.namespace) === undefined) {
-    sendBootstrap(res);
-    return;
-  }
+  // `no-token` falls through: nothing in this process can say the session is
+  // wrong, the shell carries no data, and the background check refills the token
+  // on this very navigation. Refusing here is what turned every restart into a
+  // sign-in wall.
 
   // This is the browser itself, not the instance behind it: its headers carry
   // the domain this tenant is actually on.
@@ -2047,6 +2283,17 @@ async function proxyRequest(req, res) {
         && String(upstreamRes.headers['content-type'] ?? '').startsWith('text/html')
         && (encoding === '' || DECODABLE_ENCODINGS.has(encoding));
       if (!injectable) {
+        // Bundle URLs carry the graph revision they were built for (`&rev=`),
+        // and dsh answers 404 to every stamp but the current one — same rev,
+        // same bytes. Assets are content-hashed filenames. The upstream sends
+        // no cache headers of its own, so every portal round-trip re-downloaded
+        // the whole client graph, which read as a full reload on each entry.
+        // A new graph moves the rev and misses the cache by itself, so these
+        // answers may be kept forever; documents stay no-store above.
+        if ((upstreamRes.statusCode ?? 0) === 200
+          && (path.includes('&rev=') || /^\/assets\/[\w.-]+-[A-Za-z0-9_-]{6,}\.\w{2,4}$/.test(path))) {
+          responseHeaders['cache-control'] = 'public, max-age=31536000, immutable';
+        }
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
         upstreamRes.pipe(res);
         upstreamRes.on('end', resolve);
@@ -2074,7 +2321,13 @@ async function proxyRequest(req, res) {
           resolve();
           return;
         }
-        const html = injectShell(source.toString('utf8'), { locale, basePath: APP_BASE_PATH });
+        const html = injectShell(source.toString('utf8'), {
+          locale,
+          basePath: APP_BASE_PATH,
+          // Only the workspace shell is ours to decorate. A plugin's own panel
+          // document gets the URL bridge and nothing else.
+          shell: isShellDocument(req),
+        });
         // Give the entire module graph a fresh URL after older gateways served
         // incompatible responses at the shared asset URLs. Relative imports
         // stay in this directory, so the entry and vendor modules move together.
@@ -2112,6 +2365,17 @@ async function proxyUpgrade(req, socket, head) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
+  }
+  // An upgrade carries the same session a navigation just armed. A browser
+  // cannot set a header on this handshake, so the cookie is the whole credential
+  // — and it must not become a way around the answer the page is fetching.
+  if (!AUTH_DISABLED && identityGate.armed(session.sid)) {
+    const outcome = await identityGate.wait(session.sid);
+    if (!mayServe(outcome)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
   }
   const instance = await instanceFor(session);
   if (!instance?.cookie) {

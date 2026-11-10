@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 
-import { RESTART_PATH, injectShell } from './shell-inject.mjs';
+import { RESTART_PATH, VERIFY_SCRIPT_SRC, injectShell } from './shell-inject.mjs';
 
 const SHELL = '<html><head><meta charset="utf-8"><script type="module" src="./assets/entry.js"></script></head><body></body></html>';
 
@@ -30,7 +30,65 @@ test('the host scripts land in the head, before the entry module', () => {
 test('the rewrite inserts and never edits', () => {
   const html = injectShell(SHELL, { locale: 'en', basePath: '' });
   // Removing what was injected gives back exactly the document dsh served.
-  assert.equal(html.replace(/<script>[\s\S]*?<\/script>/gu, ''), SHELL);
+  const stripped = html
+    .replace(/<script>[\s\S]*?<\/script>/gu, '')
+    .replace(new RegExp(`<script defer src="${VERIFY_SCRIPT_SRC}"></script>`, 'u'), '');
+  assert.equal(stripped, SHELL);
+});
+
+test('every document loads the background identity check', () => {
+  const html = injectShell(SHELL, { locale: 'zh', basePath: '/app/x' });
+  assert.ok(html.includes(`<script defer src="${VERIFY_SCRIPT_SRC}"></script>`));
+  // It has to land before the entry module: the check releases the gateway's
+  // data gate, and the graph starts issuing requests as soon as it parses.
+  assert.ok(html.indexOf(VERIFY_SCRIPT_SRC) < html.indexOf('assets/entry.js'));
+});
+
+test('a plugin document gets the URL bridge and nothing else', () => {
+  const html = injectShell(SHELL, { locale: 'zh', basePath: '/app/x', shell: false });
+  // Assets and API calls in a plugin panel are root-absolute; the bridge is what
+  // moves them under the application path.
+  assert.ok(html.includes('fixUrl'));
+  // The rest belongs to the workspace shell. Planting the boot watcher in
+  // someone else's page reloaded it a couple of seconds after it opened.
+  assert.ok(!html.includes(VERIFY_SCRIPT_SRC));
+  assert.ok(!html.includes('preferences-locale'));
+  assert.equal(scriptsOf(html).length, 1);
+});
+
+test('a plugin document schedules no timers and mounts no controls', () => {
+  const html = injectShell('<html><head></head><body></body></html>', {
+    locale: 'zh',
+    basePath: '/app/x',
+    shell: false,
+  });
+  const bridge = scriptsOf(html)[0];
+  assert.ok(bridge !== undefined);
+  /** @type {number[]} */
+  const timers = [];
+  /** @type {Record<string, any>} */
+  const sandbox = {
+    XMLHttpRequest: class { open() {} },
+    navigator: {},
+    location: new URL('https://vos.example/app/x/mcp-connector/ui/'),
+    document: {
+      readyState: 'complete',
+      getElementById: () => null,
+      createElement: () => ({ style: {}, addEventListener() {}, appendChild() {} }),
+      documentElement: { appendChild() {} },
+      body: null,
+    },
+    URL,
+    Request,
+    console,
+    setTimeout: (_fn, ms) => { timers.push(ms); return 0; },
+    setInterval: (_fn, ms) => { timers.push(ms); return 0; },
+    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+  };
+  sandbox.window = sandbox;
+  vm.runInNewContext(bridge, sandbox);
+  // No boot poll, no restart poll: a plugin page must not reload itself.
+  assert.deepEqual(timers, []);
 });
 
 test('the language entry carries the tenant language and nothing else', () => {
