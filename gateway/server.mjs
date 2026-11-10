@@ -22,6 +22,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'node:zlib';
 
