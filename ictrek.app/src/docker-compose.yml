@@ -63,30 +63,25 @@ x-v-harness-base: &v-harness-base
     # portal opens this application, and a route that only exists because a
     # platform build derives it is a route nobody can see in the deployment.
     - "traefik.http.routers.v-harness-app.entrypoints=web,web-internal"
-    - "traefik.http.routers.v-harness-any.entrypoints=web,web-internal"
     - "traefik.http.routers.v-harness-control.entrypoints=web,web-internal"
     # Application entry: strip the VOS prefix, hand the SPA shell to dsh.
     - "traefik.http.routers.v-harness-app.rule=PathPrefix(`/app/com.ictrek.v-harness`)"
     - "traefik.http.routers.v-harness-app.service=v-harness"
     - "traefik.http.routers.v-harness-app.middlewares=v-harness-strip"
     - "traefik.http.middlewares.v-harness-strip.stripprefix.prefixes=/app/com.ictrek.v-harness"
-    # 全放行。dsh 和它装的每个插件都按 origin 根发请求：`/api`、`/plugins`、
-    # `/assets`，以及插件自己注册的任意路径（`/mcp-connector/ui/`、
-    # `/mcp-connector/api`、`/mcp-connector/events`……）。平台的入口只认
-    # `/app/<id>` 和 `/api/<id>`，这些请求本来会落到门户的 404。
-    # 这里不列插件名单、不看 Referer：带本应用会话 cookie 的请求，凡是没被其它
-    # 路由认领的根路径都进本容器，网关再按 cookie 转给该租户的 dsh。装任何插件
-    # 都不用再改部署。
-    # priority 16：压在门户 SPA(15) 之上，低于所有应用路由(33+)与平台后端(130)，
-    # 因此别的应用和平台自己的路径一条都不会被动到。
-    - "traefik.http.routers.v-harness-any.rule=PathPrefix(`/`) && HeaderRegexp(`Cookie`, `vh_session`) && !Path(`/`) && !Path(`/favicon.ico`) && !Path(`/_app.config.js`) && !PathPrefix(`/jse`) && !PathPrefix(`/css`) && !PathPrefix(`/img`)"
-    - "traefik.http.routers.v-harness-any.priority=16"
-    - "traefik.http.routers.v-harness-any.service=v-harness"
     # 登录前浏览器还没有会话 cookie，`/__vh` 必须无条件可达；这是本应用自己的
     # 命名空间，与别的应用不冲突。
     - "traefik.http.routers.v-harness-control.rule=PathPrefix(`/__vh`)"
     - "traefik.http.routers.v-harness-control.priority=1400"
     - "traefik.http.routers.v-harness-control.service=v-harness"
+    # 这里曾经有一条 `PathPrefix(`/`) && Cookie(vh_session)`（priority 16）的兜底
+    # 路由，用来接住插件注册的根路径。它压过了门户的 SPA 路由（`frontend@file`
+    # 的 `PathPrefix("/")`，priority 15），于是已登录用户访问平台的任何路径式
+    # 路由都会被本容器截走并返回 404/401 —— 2026-11-10 这条规则把整个平台打挂，
+    # 多个部署同时受影响，容器被紧急停掉。
+    # 结论：这个 host 上没有"无人认领的路径空间"，门户的 PathPrefix(`/`) 覆盖
+    # 全部；任何优先级介于门户与应用之间的根路径规则，抢的都是平台自己的空间。
+    # 插件根路径的路由问题必须另想办法，不能靠入口兜底。
     - "traefik.http.services.v-harness.loadbalancer.server.port=8080"
   healthcheck:
     test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/__vh/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
