@@ -75,7 +75,7 @@ dsh 实例 × N　（runuser -u vh-xxxxxxxx）
 
 skill 需要以用户身份调 v-office，但 agent 又不该拿到 VOS access token（那等于全平台身份）。做法是**能力而非凭证**：
 
-- 登录时网关把 VOS `access_token` / `refresh_token` 收在**内存**里（`/__vh/auth`），不落盘。
+- 登录时网关把 VOS `access_token` / `refresh_token` 收在内存里（`/__vh/auth`），并持久化到网关私有的 `$STATE_ROOT/vos-tokens.json`（`0600`，目录 `0700 root`），供网关重启后继续代签；从不落进租户 home、浏览器或 dsh 环境。
 - 网关在每个租户的 `$HOME/.dsh/voffice.sock` 上起一个只讲 `/api/v1/*` 的端点，socket 由 `vh-userctl claim` 交给该租户（0600，目录 0700）。**只有这个租户能连**，代理补 `Authorization` 后转发。
 - skill 只按 `/api/v1/...` 调用这个 socket，拿不到 token；能做的也只有该用户名下的文档。
 - 访问令牌临期时网关直接用 refresh_token 向 VOS 续期（public client，无需 secret，已用 `invalid_grant` 探测确认端点接受 grant）。续期也失败（用户被登出/撤销）才返回 401 + 稳定错误码，skill 直接告诉用户重新登录，不空转重试。

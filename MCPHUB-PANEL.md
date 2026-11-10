@@ -65,7 +65,7 @@
 
 ## 1.5 关键约束
 
-- **凭据边界**：VOS token 只存在网关内存（`office.mjs`），不写盘、不下发租户、不进浏览器。面板与 agent 都只认「网关自己的入口」。
+- **凭据边界**：VOS token 由网关的 `vos-token-store` 持有（内存 + root-only `0600` 状态文件），不下发租户、不进浏览器、不进 dsh 环境。面板与 agent 都只认「网关自己的入口」，能力请求由网关代签。
 - **不读应用 context 令牌**：`/var/lib/vos-context/access-token` 是应用身份，MCPHub 会把它降级为 public-only，等于屏蔽用户私有服务。本方案不挂该目录。
 - **隔离**：每个租户一个 dsh 进程、一个 Linux 账号；能力键按 namespace 生成，网关按 key 定位用户，跨租户不可复用。
 - **工具命名**：MCPHub 默认用 `-` 连接 server 与 tool，dsh 再加 `mcp__<serverName>__` 前缀；最终名如 `mcp__mcphub__amap-xxx`，超过 64 字符时 dsh 追加 12 位哈希，不影响调用。
