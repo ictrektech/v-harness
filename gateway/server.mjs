@@ -15,7 +15,6 @@
  */
 
 import { createHash } from 'node:crypto';
-import { serveApiGuide } from './api-guide.mjs';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
@@ -1005,7 +1004,6 @@ async function handleMarketRestart(req, res) {
  * @returns {Promise<void>}
  */
 async function handleControl(req, res, url) {
-  if (await serveApiGuide(req, res, url.pathname)) return;
   // The document a tab holds belongs to the process that served it. After a
   // restart that process is gone, and every bundle URL in the document carries
   // a revision the new one never had — the tab dies on the first plugin it has

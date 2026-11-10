@@ -68,9 +68,3 @@ V_HARNESS_SOURCE_REVISION=<本地提交完整 SHA> ./build_image.sh --target arm
 
 - 模型统一在 V-Scheduler 中管理；设置页通过 VOS 应用抽屉跳转，保留平台身份上下文，并提供刷新及默认模型下拉框。推理沿用当前 VOS 用户身份。纯文本补全模型不支持工具调用。
 - 默认 profile 使用共享安装的内置插件；用户另行安装的插件才写入用户级 pnpm store 与 `node_modules`。
-
-## API 文档 / API reference
-
-VOS 侧栏 → API 文档提供会话/CSRF、文件、用户服务、应用对接和 Scheduler 模型访问说明：[中文](docs/api-reference.zh.md)、[English](docs/api-reference.en.md)。原生 DSH Remote/SDK 的字段仍由对应生成文档维护。本轮只更新文档源码，随下次 v-harness 发版交付，不发布镜像。
-
-The sidebar API guide covers sessions/CSRF, files, user services, application integrations and Scheduler model access. Native DSH Remote/SDK types remain with their generated references. This documentation ships with the next v-harness release; no image is published in this task.
