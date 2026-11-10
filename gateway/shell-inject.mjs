@@ -139,7 +139,15 @@ const BRIDGE = `
 var hasBase = typeof vh.base === "string" && vh.base.length > 0;
 // The root paths the ingress already routes to this gateway: they need no
 // help, and prefixing them would move them out of the control router.
-var ROOT_ROUTES = ["/__vh", "/api", "/plugins", "/assets", "/favicon.ico", "/app"];
+// Paths that stay at the origin root. The first group is this deployment's own
+// namespace; the second is the platform's (portal bundle, backend API, other
+// applications). A rewrite must never move a platform path under our prefix, so
+// the list errs towards leaving a URL alone.
+var ROOT_ROUTES = [
+  "/__vh", "/api", "/plugins", "/assets", "/favicon.ico", "/app",
+  "/jse", "/css", "/img", "/_app.config.js",
+  "/v1000", "/vms", "/vst", "/vos", "/app_store"
+];
 function routesAtRoot(path) {
   for (var i = 0; i < ROOT_ROUTES.length; i += 1) {
     if (path === ROOT_ROUTES[i] || path.indexOf(ROOT_ROUTES[i] + "/") === 0 || path.indexOf(ROOT_ROUTES[i] + "?") === 0) return true;
@@ -193,6 +201,43 @@ if (typeof nativeBeacon === "function") {
     try { moved = fixUrl(url); } catch (e) {}
     return nativeBeacon.call(navigator, moved, data);
   };
+}
+// An iframe address is a document request, so it never passes through fetch or
+// XHR: a plugin opening its panel at the origin root asks the ingress for a path
+// this deployment cannot claim. Moving that request under the application prefix
+// keeps it inside a route we already own, and the panel resolves its own assets
+// from there.
+function moveFrameSource(value) {
+  try {
+    if (typeof value !== "string") return value;
+    return fixUrl(value);
+  } catch (e) {
+    return value;
+  }
+}
+if (typeof HTMLIFrameElement === "function" && HTMLIFrameElement.prototype) {
+  var frameSrcDef = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "src");
+  if (frameSrcDef && typeof frameSrcDef.set === "function" && frameSrcDef.configurable === true) {
+    try {
+      Object.defineProperty(HTMLIFrameElement.prototype, "src", {
+        configurable: true,
+        enumerable: frameSrcDef.enumerable,
+        get: frameSrcDef.get,
+        set: function (value) { frameSrcDef.set.call(this, moveFrameSource(value)); }
+      });
+    } catch (e) {}
+  }
+  var nativeSetAttribute = Element.prototype.setAttribute;
+  if (typeof nativeSetAttribute === "function") {
+    Element.prototype.setAttribute = function (name, value) {
+      try {
+        if (this && this.tagName === "IFRAME" && String(name).toLowerCase() === "src") {
+          return nativeSetAttribute.call(this, name, moveFrameSource(value));
+        }
+      } catch (e) {}
+      return nativeSetAttribute.call(this, name, value);
+    };
+  }
 }
 function wrapSocket(native) {
   if (typeof native !== "function") return native;
