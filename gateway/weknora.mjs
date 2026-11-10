@@ -24,7 +24,7 @@ import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
-import { accessTokenFor } from './office.mjs';
+import { accessTokenFor } from './vos-token-store.mjs';
 
 const SOCKET_NAME = 'weknora.sock';
 const UPSTREAM_TIMEOUT_MS = 300_000;

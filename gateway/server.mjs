@@ -41,22 +41,28 @@ import {
   launchFailure,
   liveInstance,
   migrateInstanceStateKeys,
+  primeInstanceBoots,
   stopAll,
   stopInstance,
   userPaths,
+  waitForFreePort,
 } from './instances.mjs';
 import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import {
-  accessTokenFor,
   closeOfficeCapabilities,
   editorUrlFor,
   ensureOfficeCapability,
-  expiryFromToken,
-  hasUsableTokens,
   listDocuments,
   rememberOrigin,
-  rememberTokens,
 } from './office.mjs';
+import {
+  accessTokenFor,
+  expiryFromToken,
+  forgetTokens,
+  hasUsableTokens,
+  initTokenStore,
+  rememberTokens,
+} from './vos-token-store.mjs';
 import { closeAlbumCapabilities, ensureAlbumCapability } from './album.mjs';
 import { closeImageStudioCapabilities, ensureImageStudioCapability } from './image-studio.mjs';
 import {
@@ -66,6 +72,7 @@ import {
   mcphubServerAction,
   mcphubServices,
   mcphubTools,
+  restoreMcphubKey,
   saveMcphubSelection,
 } from './mcphub.mjs';
 import { closePhotocraftCapabilities, ensurePhotocraftCapability } from './photocraft.mjs';
@@ -79,7 +86,7 @@ import {
   parseCookies,
 } from './session.mjs';
 import { DECODABLE_ENCODINGS, injectShell } from './shell-inject.mjs';
-import { findUser, upsertUser } from './users.mjs';
+import { findUser, listUsers, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
 import {
   closeWeknoraCapabilities,
@@ -96,7 +103,8 @@ import {
   stopService,
 } from './services.mjs';
 import { closeDockerCapabilities, ensureDockerCapability, resolveContainerPort } from './docker-proxy.mjs';
-import { handleScheduler } from './scheduler.mjs';
+import { handleScheduler, restoreSchedulerKey } from './scheduler.mjs';
+import { readRegistry } from './instance-state.mjs';
 
 // Tenant homes live in <DATA_ROOT>/<account>, and nothing else does: the gateway's
 // own state (user table, instance cookies, logs, capability sockets) sits in
@@ -108,6 +116,9 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const USERS_FILE = process.env.USERS_FILE ?? join(STATE_ROOT, 'users.json');
 const STATE_FILE = process.env.STATE_FILE ?? join(STATE_ROOT, 'state-instances.json');
 const SESSION_DB_FILE = process.env.SESSION_DB_FILE ?? join(STATE_ROOT, 'sessions.db');
+// VOS credentials live beside the session DB in the root-only state directory,
+// never in a tenant home; the store itself enforces 0600.
+const VOS_TOKENS_FILE = process.env.VOS_TOKENS_FILE ?? join(STATE_ROOT, 'vos-tokens.json');
 const DSH_BIN = process.env.DSH_BIN ?? '/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js';
 const NODE_BIN = process.env.NODE_BIN ?? process.execPath;
 const USER_HELPER = process.env.USER_HELPER ?? '/opt/v-harness/bin/vh-userctl';
@@ -160,12 +171,25 @@ const HOP_BY_HOP = new Set([
 ]);
 
 const sessions = await openSessionStore(SESSION_DB_FILE, { ttlMs: SESSION_TTL_MS });
+// Recover the VOS credentials a previous gateway left. Without this the
+// capability endpoints answer 401 until every browser replays its own PKCE.
+initTokenStore(VOS_TOKENS_FILE);
 // One boot finishes the persistent-state key migration (namespace → subject);
 // later boots find nothing to move and leave the file alone.
 await migrateInstanceStateKeys(STATE_FILE, USERS_FILE);
 // Tenant service registrations survive a gateway restart; a stopped service
 // stays listed so the UI can offer restart.
 await initServices({ stateRoot: STATE_ROOT });
+// A previous gateway may have left healthy tenant processes behind. Recover
+// their boot identities and the capability keys already baked into their env
+// before the first request can ask for either.
+const instanceRegistry = await readRegistry(STATE_FILE);
+primeInstanceBoots(instanceRegistry);
+for (const record of await listUsers(USERS_FILE)) {
+  const entry = instanceRegistry[record.subject];
+  if (entry?.schedulerKey) restoreSchedulerKey(record.namespace, entry.schedulerKey);
+  if (entry?.mcphubKey) restoreMcphubKey(record.namespace, entry.mcphubKey);
+}
 
 /**
  * Whether the browser reached us over HTTPS (terminated by the VOS ingress).
@@ -1206,6 +1230,10 @@ async function handleControl(req, res, url) {
     // tenant's document — the client reloads on `same: false`.
     const upserted = await upsertUser(USERS_FILE, identity);
     const next = upserted.record;
+    // The old account no longer owns this browser, so its durable credential
+    // must not outlive the switch on disk.
+    const previous = await findUser(USERS_FILE, session.subject);
+    if (previous) forgetTokens(previous.namespace);
     rememberTokens(next.namespace, tokenSet);
     sessions.revokeSession(sid);
     identityGate.settle(sid, 'switched');
@@ -1714,6 +1742,8 @@ async function handleControl(req, res, url) {
       // instance closes the tenant's whole world, not just the browser door.
       sessions.revokeSession(session.sid);
       stopInstance(session.subject);
+      const record = await findUser(USERS_FILE, session.subject);
+      if (record) forgetTokens(record.namespace);
     }
     json(res, 200, { authenticated: false }, {
       'set-cookie': cookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, ...cookiePolicy(req) }),
@@ -1804,7 +1834,9 @@ async function startCapabilities(record) {
  */
 async function instanceFor(session) {
   const cached = liveInstance(session.subject);
-  if (cached?.cookie) return cached;
+  // A child we spawned is alive as long as its handle says so. An adopted
+  // process has no handle: let ensureInstance re-prove it on its cadence.
+  if (cached?.cookie && !cached.adopted) return cached;
   const record = await findUser(USERS_FILE, session.subject);
   if (!record) return undefined;
   const instance = await ensureInstance({
@@ -1815,7 +1847,7 @@ async function instanceFor(session) {
     statePath: STATE_FILE,
     userHelper: USER_HELPER,
   });
-  await startCapabilities(record);
+  if (!cached?.cookie) await startCapabilities(record);
   return instance;
 }
 
@@ -1887,30 +1919,17 @@ async function restartInstance(record) {
   if (inflight !== undefined) return inflight;
   const run = (async () => {
   console.log(`restart requested: ${order}`);
-  const previous = liveInstance(key);
   // Let what was already forwarded finish on the process that owns it. Without
   // this the signal lands under in-flight asset requests, the gateway reports
   // the hang-up as 502, and the tab that asked for the restart gets a shell
   // whose modules never load.
   await drainRequests(key);
   stopInstance(key);
-  // The port has to be free before the next bind. Waiting for the exit here is
-  // cheaper than letting the launch discover a draining process and reclaim
-  // the port from it, which is where most of a restart's wall time went: a
-  // second click used to start a second launch that fought the first one.
-  if (previous?.child) {
-    await new Promise((resolve) => {
-      if (previous.child.exitCode !== null) {
-        resolve();
-        return;
-      }
-      const timer = setTimeout(resolve, 3000);
-      previous.child.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  }
+  // The port has to be free before the next bind. An adopted process has no
+  // child handle to wait on, and a stale one may still be draining; checking
+  // the port itself covers both and keeps a second click from starting a
+  // second launch that fights the first one.
+  await waitForFreePort(record.port, 30);
   const instance = await ensureInstance({
     record,
     stateRoot: STATE_ROOT,

@@ -17,7 +17,7 @@
 
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createWriteStream, readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile, rename, access, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access, readdir, rm, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
@@ -29,6 +29,10 @@ import {
 } from './mcphub.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
 import { listUsers } from './users.mjs';
+import {
+  COOKIE_MAX_AGE_MS, adoptable, backfillInstanceState, probeInstance,
+  readRegistry, writeRegistry,
+} from './instance-state.mjs';
 
 // A cold dsh boot spends tens of seconds on plugin and session setup before it
 // announces its listener. A tight budget turns a merely slow boot into a
@@ -47,7 +51,8 @@ const EXCHANGE_RETRY_MS = 250;
 const RETRYABLE_EXCHANGE_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ETIMEDOUT',
 ]);
-const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
+/** An adopted process has no child handle, so re-prove it on this cadence. */
+const ADOPT_RECHECK_MS = 30_000;
 const LOG_DIR_NAME = 'logs';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
 const BUNDLED_SKILL_DIR = process.env.BUNDLED_SKILL_DIR ?? '/opt/v-harness/skills';
@@ -71,10 +76,25 @@ const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
  * @property {string | undefined} cookie - dsh `dsh-auth-*` value.
  * @property {number} cookieExpiresAt
  * @property {Promise<void> | undefined} starting
+ * @property {number} bootedAt - real process start time, persisted in the registry.
+ * @property {number} [pid] - host-side jail pid, for stopping an adopted instance.
+ * @property {boolean} [adopted] - the process predates this gateway process.
+ * @property {number} [checkedAt] - last successful probe of an adopted process.
  */
 
 /** @type {Map<string, Instance>} */
 const instances = new Map();
+
+/** Boot identity survives a gateway restart even before the first adoption.
+ * @type {Map<string, number>}
+ */
+const bootStamps = new Map();
+
+/** Subjects the owner just stopped: their old process must not be adopted
+ * back before a fresh launch replaces it.
+ * @type {Set<string>}
+ */
+const retired = new Set();
 
 /** @type {Map<string, Promise<unknown>>} */
 const launchChains = new Map();
@@ -109,37 +129,9 @@ export function userPaths(stateRoot, account) {
 }
 
 /**
- * Persistent instance state (cookie only); process handles are process-local.
- * @typedef {{ cookie?: string, cookieExpiresAt?: number }} InstanceState
- */
-
-/**
- * @param {string} path
- * @returns {Promise<Record<string, InstanceState>>}
- */
-async function readState(path) {
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf8'));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return parsed;
-  } catch (error) {
-    if (error?.code === 'ENOENT') return {};
-    return {};
-  }
-}
-
-/**
- * @param {string} path
- * @param {Record<string, InstanceState>} state
- */
-async function writeState(path, state) {
-  const temporary = `${path}.tmp-${String(process.pid)}`;
-  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, path);
-}
-
-/**
- * Convert the persistent instance state from namespace keys to subject keys.
+ * Convert the persistent instance state from namespace keys to subject keys,
+ * then give cookie-only entries the fields adoption needs. One boot finishes
+ * both migrations; later boots find nothing to move and leave the file alone.
  *
  * Instances used to be addressed by the tenant's internal namespace; sessions
  * and routing now key on the immutable subject. The cookie each entry holds
@@ -150,9 +142,10 @@ async function writeState(path, state) {
  * @returns {Promise<void>}
  */
 export async function migrateInstanceStateKeys(statePath, usersPath) {
-  const state = await readState(statePath);
+  const state = await readRegistry(statePath);
+  const users = await listUsers(usersPath);
   let changed = false;
-  for (const record of await listUsers(usersPath)) {
+  for (const record of users) {
     if (record.namespace === record.subject) continue;
     const legacy = state[record.namespace];
     if (legacy === undefined) continue;
@@ -162,7 +155,22 @@ export async function migrateInstanceStateKeys(statePath, usersPath) {
     delete state[record.namespace];
     changed = true;
   }
-  if (changed) await writeState(statePath, state);
+  if (backfillInstanceState(state, users)) changed = true;
+  if (changed) await writeRegistry(statePath, state);
+}
+
+/**
+ * Publish the persisted boot identities before the first request is served,
+ * so `/__vh/boot` answers with the same value the previous gateway did.
+ * @param {Record<string, import('./instance-state.mjs').InstanceState>} registry
+ * @returns {void}
+ */
+export function primeInstanceBoots(registry) {
+  for (const [subject, entry] of Object.entries(registry)) {
+    if (typeof entry?.bootedAt === 'number' && entry.bootedAt > 0) {
+      bootStamps.set(subject, entry.bootedAt);
+    }
+  }
 }
 
 /**
@@ -497,7 +505,7 @@ async function reclaimPort(port, uid, account) {
  * @param {number} attempts - times to look, 100ms apart.
  * @returns {Promise<boolean>} whether the port came free.
  */
-async function waitForFreePort(port, attempts) {
+export async function waitForFreePort(port, attempts) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     if (listenerIn(port) === undefined) return true;
@@ -522,7 +530,7 @@ async function launch(options) {
   const paths = userPaths(stateRoot, account);
   await mkdir(join(stateRoot, LOG_DIR_NAME), { recursive: true, mode: 0o700 });
 
-  const state = await readState(statePath);
+  const state = await readRegistry(statePath);
   await adoptTenantRoots(paths.home, paths.dshHome, record.uid, account);
   await rewriteJailPaths(paths.dshHome, record.namespace, account);
 
@@ -737,12 +745,25 @@ async function launch(options) {
 
   try {
     const { cookie, expiresAt } = await exchangeCookie(launchUrl, record.uid);
-    // Instances are keyed by the immutable subject. Drop the legacy namespace
-    // key the same time the subject key is written, so one launch finishes
-    // the persistent-state migration for its tenant.
+    const bootedAt = Date.now();
+    // Everything a later gateway needs to adopt this process: the cookie it
+    // forwards with, the address and boot identity it must not change, the pid
+    // it may have to stop, and the capability keys already baked into this
+    // process's environment (a running process cannot be given new env).
     if (record.namespace !== record.subject) delete state[record.namespace];
-    state[record.subject] = { cookie, cookieExpiresAt: expiresAt };
-    await writeState(statePath, state);
+    state[record.subject] = {
+      cookie,
+      cookieExpiresAt: expiresAt,
+      port: record.port,
+      uid: record.uid,
+      bootedAt,
+      ...(child.pid === undefined ? {} : { pid: child.pid }),
+      ...(typeof launchOptions.env.VH_SCHEDULER_KEY === 'string'
+        ? { schedulerKey: launchOptions.env.VH_SCHEDULER_KEY } : {}),
+      ...(typeof launchOptions.env.VH_MCPHUB_KEY === 'string'
+        ? { mcphubKey: launchOptions.env.VH_MCPHUB_KEY } : {}),
+    };
+    await writeRegistry(statePath, state);
     // Only a boot that answered becomes the fallback: a snapshot of anything
     // else would restore the reason the next launch fails.
     await rememberProfile({ home: paths.home, stateRoot, account }).catch((error) => {
@@ -757,7 +778,8 @@ async function launch(options) {
       child,
       cookie,
       cookieExpiresAt: expiresAt,
-      launchedAt: Date.now(),
+      bootedAt,
+      pid: child.pid,
       starting: undefined,
     };
   } catch (error) {
@@ -793,8 +815,48 @@ export async function ensureInstance(options) {
     await existing.starting;
     return instances.get(record.subject) ?? existing;
   }
-  if (existing?.child && existing.child.exitCode === null && !existing.child.killed) {
+  if (existing?.adopted) {
+    if (Date.now() - (existing.checkedAt ?? 0) < ADOPT_RECHECK_MS) return existing;
+    if (existing.cookie !== undefined && await probeInstance({
+      uid: record.uid, port: record.port, cookie: existing.cookie,
+    })) {
+      existing.checkedAt = Date.now();
+      return existing;
+    }
+    instances.delete(record.subject);
+    bootStamps.delete(record.subject);
+  } else if (existing?.child && existing.child.exitCode === null && !existing.child.killed) {
     return existing;
+  }
+
+  // A process launched by a previous gateway is still healthy: adopt it rather
+  // than spawning a replacement that would reclaim its port from a live dsh.
+  // An owner-requested stop is different: that same process is the one being
+  // retired, and adopting it would undo the restart (or the logout).
+  const state = await readRegistry(options.statePath);
+  const entry = state[record.subject];
+  if (!retired.has(record.subject) && adoptable(record, entry) && await probeInstance({
+    uid: record.uid, port: record.port, cookie: /** @type {string} */ (entry.cookie),
+  })) {
+    /** @type {Instance} */
+    const adopted = {
+      subject: record.subject,
+      linuxName: account,
+      uid: record.uid,
+      port: record.port,
+      child: undefined,
+      cookie: entry.cookie,
+      cookieExpiresAt: /** @type {number} */ (entry.cookieExpiresAt),
+      bootedAt: /** @type {number} */ (entry.bootedAt),
+      pid: entry.pid,
+      adopted: true,
+      checkedAt: Date.now(),
+      starting: undefined,
+    };
+    instances.set(record.subject, adopted);
+    bootStamps.set(record.subject, adopted.bootedAt);
+    console.log(`instance adopted: ${account} port=${String(record.port)} boot=${String(adopted.bootedAt)}`);
+    return adopted;
   }
 
   /** @type {Instance} */
@@ -806,6 +868,7 @@ export async function ensureInstance(options) {
     child: undefined,
     cookie: undefined,
     cookieExpiresAt: 0,
+    bootedAt: 0,
     starting: undefined,
   };
   // Claim the slot before the first await. The helper call below outlasts a
@@ -837,6 +900,8 @@ export async function ensureInstance(options) {
       if (current?.child === launched.child) instances.delete(record.subject);
     });
     instances.set(record.subject, launched);
+    bootStamps.set(record.subject, launched.bootedAt);
+    retired.delete(record.subject);
   });
 
   try {
@@ -880,34 +945,52 @@ export function launchFailure(subject) {
  * the new process for the old graph and dies on the first plugin it still has
  * to mount.
  * @param {string} subject
- * @returns {number} launch time, or 0 when nothing is running.
+ * @returns {number} the process's real start time, or 0 when it never booted.
  */
 export function instanceBoot(subject) {
-  return instances.get(subject)?.launchedAt ?? 0;
+  return instances.get(subject)?.bootedAt ?? bootStamps.get(subject) ?? 0;
 }
 
 /**
- * Stop one instance; the next request starts it again.
+ * Stop one instance at the owner's request; the next request starts it again.
+ * An adopted instance has no child handle, so stop it by the pid the previous
+ * gateway recorded.
  * @param {string} subject
  * @returns {boolean} whether an instance was running.
  */
 export function stopInstance(subject) {
   const instance = instances.get(subject);
-  if (!instance?.child) return false;
-  instance.child.kill('SIGTERM');
+  if (instance === undefined) return false;
   instances.delete(subject);
-  return true;
+  bootStamps.delete(subject);
+  retired.add(subject);
+  if (instance.child) {
+    instance.child.kill('SIGTERM');
+    return true;
+  }
+  if (instance.pid === undefined) return false;
+  try {
+    process.kill(instance.pid, 'SIGTERM');
+    return true;
+  } catch (error) {
+    // The process already exited; the port check in the next launch decides.
+    void error;
+    return false;
+  }
 }
 
 /**
- * Stop every instance on shutdown.
+ * Drop this process's handles on shutdown without stopping tenant instances:
+ * they are independent pid-namespace inits, and the next gateway adopts them.
+ * A container teardown still reclaims every process through the kernel.
  * @returns {Promise<void>}
  */
-export async function stopAll() {
-  await Promise.all([...instances.values()].map(async (instance) => {
-    instance.child?.kill('SIGTERM');
-  }));
+export function stopAll() {
   instances.clear();
+  launchChains.clear();
+  launchFailures.clear();
+  retired.clear();
+  return Promise.resolve();
 }
 
 /**

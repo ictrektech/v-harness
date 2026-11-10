@@ -27,7 +27,7 @@ import { request as httpRequest } from 'node:http';
 import { dirname, join } from 'node:path';
 
 import { GATEWAY_IP } from './addressing.mjs';
-import { accessTokenFor } from './office.mjs';
+import { accessTokenFor } from './vos-token-store.mjs';
 
 /**
  * Where MCPHub listens inside the container network.
@@ -687,6 +687,24 @@ function issueKey(namespace) {
   keys.set(namespace, key);
   tenants.set(key, namespace);
   return key;
+}
+
+/**
+ * Reinstall the key a surviving dsh process already carries in its env.
+ *
+ * A running process cannot be given a new variable, so a fresh gateway must
+ * recover the old one instead of minting a replacement. Retiring any previous
+ * reverse mapping keeps one namespace to exactly one live key.
+ * @param {string} namespace
+ * @param {string} key
+ * @returns {void}
+ */
+export function restoreMcphubKey(namespace, key) {
+  if (typeof key !== 'string' || key === '') return;
+  const previous = keys.get(namespace);
+  if (previous !== undefined) tenants.delete(previous);
+  keys.set(namespace, key);
+  tenants.set(key, namespace);
 }
 
 /**

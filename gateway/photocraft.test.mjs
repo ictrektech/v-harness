@@ -36,7 +36,7 @@ upstream.listen(0, '127.0.0.1');
 await once(upstream, 'listening');
 process.env.VH_PHOTOCRAFT_URL = `http://127.0.0.1:${upstream.address().port}/storage`;
 
-const { rememberTokens } = await import('./office.mjs');
+const { rememberTokens } = await import('./vos-token-store.mjs');
 const { handlePhotocraft } = await import('./photocraft.mjs');
 const gateway = createServer((req, res) => {
   handlePhotocraft('alice', req, res).catch((error) => {

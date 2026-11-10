@@ -15,8 +15,27 @@
  */
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { chmod, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+
+/**
+ * A session id is a bearer credential. SQLite creates the database and its
+ * WAL siblings with the process umask (0644 on the deployed host); the 0700
+ * state directory hides them from tenants, but one stray chmod on the volume
+ * would expose every live session. Pin the whole set to the owner alone.
+ * @param {string} path - database path.
+ * @returns {Promise<void>}
+ */
+async function restrictSessionFiles(path) {
+  await Promise.all([path, `${path}-wal`, `${path}-shm`].map(async (file) => {
+    try {
+      await chmod(file, 0o600);
+    } catch (error) {
+      // WAL siblings exist only while a connection holds them open.
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }));
+}
 
 export const SESSION_COOKIE = 'vh_session';
 export const CSRF_COOKIE = 'vh_csrf';
@@ -69,6 +88,7 @@ export async function openSessionStore(path, { ttlMs }) {
   // socket upgrade outright.
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec(SCHEMA);
+  await restrictSessionFiles(path);
 
   const insert = db.prepare(
     'INSERT INTO sessions (sid, subject, account, ua_hash, created_at, last_seen, expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',

@@ -30,7 +30,7 @@ const upstream = createServer(async (req, res) => {
 upstream.listen(0, '127.0.0.1');
 await once(upstream, 'listening');
 process.env.V_SCHEDULER_URL = `http://127.0.0.1:${upstream.address().port}`;
-const { rememberTokens } = await import('./office.mjs');
+const { rememberTokens } = await import('./vos-token-store.mjs');
 const { schedulerModels, schedulerEnvironment, handleScheduler } = await import('./scheduler.mjs');
 const gateway = createServer((req, res) => {
   handleScheduler(req, res, req.url).catch(error => { res.writeHead(502); res.end(JSON.stringify({ error: error.message, cause: error.cause?.message })); });

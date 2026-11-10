@@ -6,7 +6,7 @@
  * @module v-harness/gateway/session.test
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -35,6 +35,17 @@ describe('session store', () => {
     const sid = store.createSession({ subject: 'sub-1', account: 'tieniu', userAgent: UA }, 1_000);
     const session = store.loadSession(sid, UA, 2_000);
     assert.deepEqual(session, { sid, subject: 'sub-1', account: 'tieniu', expiresAt: 1_000 + TTL_MS });
+  });
+
+  it('keeps the database and its WAL siblings owner-only', async () => {
+    const path = dbPath();
+    const store = await openSessionStore(path, { ttlMs: TTL_MS });
+    store.createSession({ subject: 'sub-1', account: 'tieniu', userAgent: UA }, 1_000);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    for (const suffix of ['-wal', '-shm']) {
+      const sibling = `${path}${suffix}`;
+      if (existsSync(sibling)) assert.equal(statSync(sibling).mode & 0o777, 0o600);
+    }
   });
 
   it('refuses a session replayed from another browser (UA mismatch)', async () => {

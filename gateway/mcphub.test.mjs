@@ -124,7 +124,7 @@ delete process.env.MCPHUB_ROUTING;
 const selectionRoot = await mkdtemp(join(tmpdir(), 'vh-mcphub-'));
 process.env.MCPHUB_SELECTION_FILE = join(selectionRoot, 'selection.json');
 
-const { rememberTokens } = await import('./office.mjs');
+const { rememberTokens } = await import('./vos-token-store.mjs');
 const {
   dropMcphubLaunchPatch,
   handleAgent,

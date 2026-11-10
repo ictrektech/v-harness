@@ -4,8 +4,9 @@
  * The agent runs as the tenant's dsh process and cannot hold a VOS access
  * token: dsh scrubs credential-shaped variables from every child process, and
  * dropping the token into the tenant's home would hand a full platform
- * identity to a sandboxed agent. So the gateway keeps the token in memory and
- * listens on a Unix socket inside that tenant's own 0700 directory. Kernel
+ * identity to a sandboxed agent. So the gateway signs upstream requests from
+ * the private `vos-token-store` and listens on a Unix socket inside that
+ * tenant's own 0700 directory. Kernel
  * permissions decide who may call it, and the only thing reachable through it
  * is that user's own V-Office document directory.
  *
@@ -24,6 +25,7 @@ import { join } from 'node:path';
 import { Transform } from 'node:stream';
 
 import { runUserHelper } from './instances.mjs';
+import { accessTokenFor } from './vos-token-store.mjs';
 
 // The developer machine has its own LAN address here, but a deployed host does
 // not. Default to the docker bridge gateway like every other capability, and
@@ -33,17 +35,9 @@ const OFFICE_BASE = new URL((process.env.VH_OFFICE_BASE ?? DEFAULT_BASE).replace
 const OFFICE_PREFIX = OFFICE_BASE.pathname.replace(/\/+$/, '');
 const SOCKET_NAME = 'voffice.sock';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1_000;
-const TOKEN_EXPIRY_MARGIN_MS = 30 * 1_000;
 const UPSTREAM_TIMEOUT_MS = 300_000;
 /** Collabora cold starts answer slowly; a session request must not hang a tab. */
 const SESSION_TIMEOUT_MS = 30_000;
-// VOS accepts a public-client refresh grant (no secret) against this endpoint,
-// which is what keeps the capability alive past the access token's TTL without
-// asking the user to sign in again.
-const VOS_TOKEN_URL = process.env.VOS_TOKEN_URL ?? 'http://172.17.0.1:8105/v1000/oauth2/token';
-const VOS_CLIENT_ID = process.env.VOS_OIDC_CLIENT_ID ?? 'com.ictrek.v-harness';
-const REFRESH_TIMEOUT_MS = 8_000;
 
 /** Routes the capability exposes; everything else is refused locally. */
 const ROUTES = [
@@ -63,16 +57,6 @@ const RESPONSE_HEADERS = new Set([
   'content-type', 'content-length', 'content-disposition',
   'last-modified', 'etag', 'x-voffice-token',
 ]);
-
-/**
- * @typedef {object} TokenSet
- * @property {string} access
- * @property {string} [refresh]
- * @property {number} expiresAt - epoch milliseconds.
- */
-
-/** @type {Map<string, TokenSet>} */
-const tokens = new Map();
 
 /**
  * The origin the browser used to reach the portal, learned from its own
@@ -135,146 +119,6 @@ export function rememberOrigin(headers, namespace) {
 
 /** @type {Map<string, Promise<import('node:http').Server>>} */
 const capabilities = new Map();
-
-/**
- * Read the `exp` claim of a JWT without verifying it. The token is only ever
- * forwarded to VOS, which is the authority; this is a local freshness check.
- * @param {string} token
- * @returns {number | undefined} epoch milliseconds.
- */
-function jwtExpiry(token) {
-  const encoded = token.split('.')[1];
-  if (!encoded) return undefined;
-  try {
-    const claims = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-    return typeof claims.exp === 'number' ? claims.exp * 1_000 : undefined;
-  } catch {
-    // Opaque tokens are legal; the caller falls back to expires_in/default.
-    return undefined;
-  }
-}
-
-/**
- * Compute when one access token stops being usable.
- * @param {string} accessToken
- * @param {number} [expiresInSeconds]
- * @returns {number} epoch milliseconds.
- */
-export function expiryFromToken(accessToken, expiresInSeconds) {
-  if (typeof expiresInSeconds === 'number' && Number.isFinite(expiresInSeconds) && expiresInSeconds > 0) {
-    return Date.now() + expiresInSeconds * 1_000;
-  }
-  return jwtExpiry(accessToken) ?? Date.now() + DEFAULT_TOKEN_TTL_MS;
-}
-
-/**
- * Remember one user's token. Kept in memory only: a gateway restart drops it
- * and the next page load replays it, so no platform identity is ever at rest.
- * @param {string} namespace
- * @param {{ access: string, refresh?: string, expiresAt: number }} tokenSet
- */
-export function rememberTokens(namespace, tokenSet) {
-  tokens.set(namespace, tokenSet);
-}
-
-/**
- * Per-namespace refresh in flight, so a burst of calls refreshes once.
- * @type {Map<string, Promise<TokenSet | undefined>>}
- */
-const refreshing = new Map();
-
-/**
- * Exchange the stored refresh token for a new access token.
- * @param {string} namespace
- * @param {TokenSet} entry
- * @returns {Promise<TokenSet | undefined>}
- */
-async function refreshTokenSet(namespace, entry) {
-  if (!entry.refresh) return undefined;
-  try {
-    const response = await fetch(VOS_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: entry.refresh,
-        client_id: VOS_CLIENT_ID,
-      }),
-      signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      // invalid_grant means the user's VOS session was revoked or expired.
-      const detail = await response.text().catch(() => '');
-      console.warn(`v-office token refresh rejected for ${namespace}: HTTP ${String(response.status)} ${detail.slice(0, 200)}`);
-      return undefined;
-    }
-    const payload = await response.json();
-    if (typeof payload?.access_token !== 'string' || !payload.access_token) {
-      console.warn(`v-office token refresh returned no access_token for ${namespace}`);
-      return undefined;
-    }
-    const next = {
-      access: payload.access_token,
-      ...typeof payload.refresh_token === 'string' && payload.refresh_token
-        ? { refresh: payload.refresh_token }
-        : { refresh: entry.refresh },
-      expiresAt: expiryFromToken(payload.access_token, Number(payload.expires_in)),
-    };
-    tokens.set(namespace, next);
-    return next;
-  } catch (error) {
-    console.warn(`v-office token refresh failed for ${namespace}:`, error);
-    return undefined;
-  }
-}
-
-/**
- * Whether one user still has a token the capability endpoints can use.
- *
- * The access token may have expired; a refresh token keeps the capability
- * alive, so either counts as ready.
- * @param {string} namespace
- * @returns {boolean}
- */
-export function hasUsableTokens(namespace) {
-  const entry = tokens.get(namespace);
-  if (!entry) return false;
-  return entry.expiresAt > Date.now() || Boolean(entry.refresh);
-}
-
-/**
- * Current usable access token, refreshing it first when it is near expiry.
- *
- * Exported because every capability endpoint authenticates upstream calls with
- * the same VOS token.
- * @param {string} namespace
- * @returns {Promise<string | undefined>}
- */
-export async function accessTokenFor(namespace) {
-  const entry = tokens.get(namespace);
-  if (!entry) return undefined;
-  if (entry.expiresAt - TOKEN_EXPIRY_MARGIN_MS > Date.now()) return entry.access;
-
-  const pending = refreshing.get(namespace);
-  if (pending) {
-    const settled = await pending;
-    return settled?.access;
-  }
-  const attempt = refreshTokenSet(namespace, entry);
-  refreshing.set(namespace, attempt);
-  try {
-    const next = await attempt;
-    // A refused refresh means VOS revoked the session. Keeping the entry makes
-    // `hasUsableTokens` keep answering "ready" while this function keeps
-    // returning nothing, and every navigation then bounces between the app and
-    // the bootstrap page — two requests every few hundred milliseconds, with no
-    // re-login ever offered. Dropping it lets the page ask for one.
-    if (next === undefined) tokens.delete(namespace);
-    return next?.access;
-  } finally {
-    refreshing.delete(namespace);
-  }
-}
 
 /**
  * @param {string} method
@@ -625,20 +469,20 @@ export async function ensureOfficeCapability(options) {
 
 /**
  * Close every capability socket; called on gateway shutdown. Socket files are
- * removed so a restart does not inherit a stale inode.
+ * removed so a restart does not inherit a stale inode. VOS credentials are
+ * deliberately not cleared: they live in `vos-token-store` so the next gateway
+ * can serve the same tenants without waiting for a browser replay.
  * @returns {Promise<void>}
  */
 export async function closeOfficeCapabilities() {
   const entries = [...capabilities.entries()];
   capabilities.clear();
-  refreshing.clear();
-  await Promise.all(entries.map(async ([namespace, starting]) => {
+  await Promise.all(entries.map(async ([, starting]) => {
     try {
       const server = await starting;
       await new Promise((resolve) => { server.close(() => { resolve(); }); });
     } catch {
       // A capability that never started owns no socket; nothing to close.
     }
-    tokens.delete(namespace);
   }));
 }

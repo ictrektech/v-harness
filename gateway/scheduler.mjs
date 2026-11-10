@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { GATEWAY_IP } from './addressing.mjs';
-import { accessTokenFor } from './office.mjs';
+import { accessTokenFor } from './vos-token-store.mjs';
 
 const ORIGIN = process.env.V_SCHEDULER_URL ?? 'http://v-scheduler:8080';
 const keys = new Map();
@@ -22,6 +22,20 @@ export function schedulerEnvironment(namespace) {
     VH_SCHEDULER_URL: `http://${GATEWAY_IP}:${process.env.PORT ?? 8080}/__vh/scheduler`,
     VH_SCHEDULER_KEY: key,
   };
+}
+
+/**
+ * Reinstall the key a surviving dsh process already carries in its env.
+ *
+ * A running process cannot be given a new variable, so a fresh gateway must
+ * recover the old one instead of minting a replacement.
+ * @param {string} namespace
+ * @param {string} key
+ * @returns {void}
+ */
+export function restoreSchedulerKey(namespace, key) {
+  if (typeof key !== 'string' || key === '') return;
+  keys.set(namespace, key);
 }
 
 const normalized = value => String(value).trim().toLowerCase().replace(/^\/?(?:v1\/)?/, '').replaceAll('-', '_');

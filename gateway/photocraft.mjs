@@ -27,7 +27,7 @@ import { chmodSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { accessTokenFor } from './office.mjs';
+import { accessTokenFor } from './vos-token-store.mjs';
 import { runUserHelper } from './instances.mjs';
 
 const DEFAULT_PHOTOCRAFT_URL = 'http://172.17.0.1:1182/app/com.ictrek.photocraft/storage';
