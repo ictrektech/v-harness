@@ -16,8 +16,8 @@
  */
 
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { createWriteStream, readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile, access, readdir, rm, stat } from 'node:fs/promises';
+import { closeSync, fchmodSync, fstatSync, openSync, readFileSync } from 'node:fs';
+import { mkdir, readFile, writeFile, access, open, readdir, rm, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
@@ -199,40 +199,51 @@ export async function runUserHelper(helper, args) {
 
 /**
  * Extract the launch URL dsh prints once its listener is up.
+ *
+ * The process writes straight to a log file instead of a gateway-owned pipe:
+ * when the gateway exits, a pipe's read end closes and dsh's next write would
+ * hit EPIPE. dsh is the init of its own pid namespace, so losing it takes the
+ * whole tenant down — exactly what a gateway restart must not do. Only bytes
+ * appended by this attempt are scanned, so a URL from an earlier boot cannot
+ * be replayed as a single-use launch token.
  * @param {import('node:child_process').ChildProcess} child
+ * @param {string} logPath
+ * @param {number} fromOffset - log size before this attempt started.
  * @param {number} timeoutMs
  * @returns {Promise<string>}
  */
-function waitForLaunchUrl(child, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let buffer = '';
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error('timed out waiting for the dsh launch URL'));
-    }, timeoutMs);
-
-    /** @param {Buffer} chunk */
-    const onData = (chunk) => {
-      buffer += chunk.toString('utf8');
-      const match = buffer.match(/dsh web: (https?:\/\/[^\s"'<>]+)/);
-      if (match) {
-        cleanup();
-        resolve(match[1]);
+export async function waitForLaunchUrl(child, logPath, fromOffset, timeoutMs) {
+  const pattern = /dsh web: (https?:\/\/[^\s"'<>]+)/;
+  const deadline = Date.now() + timeoutMs;
+  let scanned = fromOffset;
+  let carry = '';
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error('dsh exited before announcing its URL');
+    }
+    /** @type {import('node:fs/promises').FileHandle | undefined} */
+    let handle;
+    try {
+      handle = await open(logPath, 'r');
+      const { size } = await handle.stat();
+      if (size > scanned) {
+        const buffer = Buffer.alloc(size - scanned);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, scanned);
+        const text = carry + buffer.subarray(0, bytesRead).toString('utf8');
+        const match = text.match(pattern);
+        if (match) return match[1];
+        // A line may straddle two polls; keep its tail for the next read.
+        carry = text.slice(-512);
+        scanned += bytesRead;
       }
-    };
-    const onExit = (code) => {
-      cleanup();
-      reject(new Error(`dsh exited before announcing its URL (code ${String(code)})`));
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      child.stdout?.off('data', onData);
-      child.off('exit', onExit);
-    };
-
-    child.stdout?.on('data', onData);
-    child.once('exit', onExit);
-  });
+    } catch (error) {
+      if (/** @type {{ code?: string }} */ (error)?.code !== 'ENOENT') throw error;
+    } finally {
+      await handle?.close();
+    }
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+  }
+  throw new Error('timed out waiting for the dsh launch URL');
 }
 
 /**
@@ -476,6 +487,26 @@ function listenerIn(port) {
  * @param {string} account
  * @returns {Promise<void>}
  */
+/**
+ * Signal whoever holds a tenant port until the port is actually free.
+ *
+ * dsh is the init of its own pid namespace, so SIGTERM may never reach a
+ * handler; SIGKILL from this namespace always lands. A stop that leaves the
+ * port held lets the next request adopt the very process the owner just
+ * stopped.
+ * @param {{ pid: number, uid: number }} owner
+ * @param {number} port
+ * @param {string} account
+ * @returns {Promise<boolean>} whether the port came free.
+ */
+async function stopListener(owner, port, account) {
+  process.kill(owner.pid, 'SIGTERM');
+  if (await waitForFreePort(port, 50)) return true;
+  console.warn(`SIGKILL pid ${String(owner.pid)} (${account}) kept its port through SIGTERM`);
+  process.kill(owner.pid, 'SIGKILL');
+  return waitForFreePort(port, 30);
+}
+
 async function reclaimPort(port, uid, account) {
   const owner = listenerIn(port);
   if (owner === undefined) return;
@@ -487,15 +518,7 @@ async function reclaimPort(port, uid, account) {
     );
   }
   console.warn(`instance launch: reclaiming port ${String(port)} from pid ${String(owner.pid)} (${account})`);
-  process.kill(owner.pid, 'SIGTERM');
-  if (await waitForFreePort(port, 50)) return;
-  // An instance is init of its own pid namespace, and such a process only takes
-  // the signals it handles: a wedged one can keep its port through SIGTERM. A
-  // SIGKILL from this namespace always lands, and a workspace that cannot be
-  // started is far worse than one that was not shut down politely.
-  console.warn(`instance launch: SIGKILL pid ${String(owner.pid)} (${account}) kept its port through SIGTERM`);
-  process.kill(owner.pid, 'SIGKILL');
-  if (await waitForFreePort(port, 30)) return;
+  if (await stopListener(owner, port, account)) return;
   throw new Error(`port ${String(port)} is still held after reclaiming it from pid ${String(owner.pid)}`);
 }
 
@@ -643,7 +666,6 @@ async function launch(options) {
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
   };
   // Update profile-local overrides before dsh snapshots its browser bundles,
   // then stage the agent-side tool plugins and their carrier: the loader reads
@@ -666,12 +688,23 @@ async function launch(options) {
    */
   const startOnce = async (argv) => {
     await reclaimPort(record.port, record.uid, account);
-    const child = spawn(JAIL_BIN, argv, launchOptions);
-    const log = createWriteStream(paths.log, { flags: 'a', mode: 0o600 });
-    child.stdout?.pipe(log, { end: false });
-    child.stderr?.pipe(log, { end: false });
+    // The child keeps its own fd to the log file; the gateway closes its copy
+    // right after spawn. A plain file cannot break when this gateway exits,
+    // which is what lets dsh survive a gateway restart. The launch URL carries
+    // a single-use token, so the log stays 0600.
+    const logFd = openSync(paths.log, 'a', 0o600);
+    fchmodSync(logFd, 0o600);
+    const fromOffset = fstatSync(logFd).size;
+    /** @type {import('node:child_process').ChildProcess} */
+    let child;
     try {
-      return { child, launchUrl: await waitForLaunchUrl(child, LAUNCH_TIMEOUT_MS) };
+      child = spawn(JAIL_BIN, argv, { ...launchOptions, stdio: ['ignore', logFd, logFd] });
+    } finally {
+      closeSync(logFd);
+    }
+    try {
+      const launchUrl = await waitForLaunchUrl(child, paths.log, fromOffset, LAUNCH_TIMEOUT_MS);
+      return { child, launchUrl };
     } catch (error) {
       child.kill('SIGTERM');
       throw error;
@@ -952,31 +985,65 @@ export function instanceBoot(subject) {
 }
 
 /**
- * Stop one instance at the owner's request; the next request starts it again.
- * An adopted instance has no child handle, so stop it by the pid the previous
- * gateway recorded.
- * @param {string} subject
- * @returns {boolean} whether an instance was running.
+ * Whether a recorded pid still belongs to this tenant's `vh-jail` wrapper.
+ *
+ * A pid written by a previous gateway can be stale and reused. Signalling it
+ * blindly could take down an unrelated process, so require both the owner uid
+ * and the wrapper's own command line first.
+ * @param {number} pid
+ * @returns {boolean}
  */
-export function stopInstance(subject) {
+function isJailWrapper(pid) {
+  try {
+    const status = readFileSync(`/proc/${String(pid)}/status`, 'utf8');
+    const uid = Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]);
+    const ownUid = typeof process.getuid === 'function' ? process.getuid() : 0;
+    if (uid !== 0 && uid !== ownUid) return false;
+    const cmdline = readFileSync(`/proc/${String(pid)}/cmdline`, 'utf8');
+    return cmdline.includes('vh-jail');
+  } catch (error) {
+    // The wrapper already followed its child out, or /proc is unavailable.
+    void error;
+    return false;
+  }
+}
+
+/**
+ * Stop one instance at the owner's request; the next request starts it again.
+ *
+ * Signalling the `vh-jail` wrapper is not enough: it does not forward signals,
+ * and the real dsh is a grandchild that has dropped to the tenant uid. The
+ * authoritative target is whoever holds the tenant's fixed port. Both that
+ * owner and the wrapper are checked before being signalled, because a pid
+ * restored from the registry may point at a reused, unrelated process.
+ * @param {string} subject
+ * @returns {Promise<boolean>} whether an instance was being tracked.
+ */
+export async function stopInstance(subject) {
   const instance = instances.get(subject);
   if (instance === undefined) return false;
   instances.delete(subject);
   bootStamps.delete(subject);
   retired.add(subject);
-  if (instance.child) {
-    instance.child.kill('SIGTERM');
-    return true;
+
+  const owner = listenerIn(instance.port);
+  if (owner !== undefined) {
+    if (owner.uid === instance.uid) {
+      await stopListener(owner, instance.port, instance.linuxName);
+    } else {
+      console.warn(`stop ${instance.linuxName}: port ${String(instance.port)} held by uid ${String(owner.uid)}, not the tenant`);
+    }
   }
-  if (instance.pid === undefined) return false;
-  try {
-    process.kill(instance.pid, 'SIGTERM');
-    return true;
-  } catch (error) {
-    // The process already exited; the port check in the next launch decides.
-    void error;
-    return false;
+  const wrapper = instance.child?.pid ?? instance.pid;
+  if (wrapper !== undefined && isJailWrapper(wrapper)) {
+    try {
+      process.kill(wrapper, 'SIGTERM');
+    } catch (error) {
+      // The wrapper exited with its child; nothing left to stop.
+      void error;
+    }
   }
+  return true;
 }
 
 /**

@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { exchangeCookie } from './instances.mjs';
+import { appendFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { exchangeCookie, waitForLaunchUrl } from './instances.mjs';
 
 /**
  * Reserve a loopback port and hand it back unused, so a test can listen on it
@@ -30,6 +34,65 @@ function launchServer(status, cookie) {
     res.end();
   });
 }
+
+/**
+ * A stand-in dsh that stays alive while the log scanner waits.
+ * @returns {import('node:child_process').ChildProcess}
+ */
+function aliveProcess() {
+  return spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+}
+
+test('reads only the launch URL appended by the current attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-launch-log-'));
+  const path = join(root, 'instance.log');
+  const child = aliveProcess();
+  try {
+    await writeFile(path, 'dsh web: http://127.0.0.1:3101/?token=STALE\n', 'utf8');
+    const fromOffset = (await stat(path)).size;
+    const pending = waitForLaunchUrl(child, path, fromOffset, 3_000);
+    await appendFile(path, 'loading plugins\ndsh web: http://127.0.0.1:3101/?token=FRESH\n', 'utf8');
+    assert.equal(await pending, 'http://127.0.0.1:3101/?token=FRESH');
+  } finally {
+    child.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('waits for a log file that appears after the process starts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-launch-late-'));
+  const path = join(root, 'instance.log');
+  const child = aliveProcess();
+  try {
+    const pending = waitForLaunchUrl(child, path, 0, 3_000);
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+    await writeFile(path, 'dsh web: http://127.0.0.1:3102/?token=LATE\n', 'utf8');
+    assert.equal(await pending, 'http://127.0.0.1:3102/?token=LATE');
+  } finally {
+    child.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('fails fast when dsh exits and times out when no URL arrives', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-launch-fail-'));
+  const path = join(root, 'instance.log');
+  try {
+    await writeFile(path, 'booting\n', 'utf8');
+    const exited = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    await once(exited, 'exit');
+    await assert.rejects(waitForLaunchUrl(exited, path, 0, 500), /exited before announcing/);
+
+    const alive = aliveProcess();
+    try {
+      await assert.rejects(waitForLaunchUrl(alive, path, 0, 250), /timed out/);
+    } finally {
+      alive.kill('SIGKILL');
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('retries a refused dial until the freshly printed listener answers', async () => {
   const port = await freePort();

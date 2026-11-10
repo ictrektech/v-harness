@@ -47,8 +47,24 @@ for container in "${containers[@]}"; do
     console.log(fixed.length === 0 ? "没有残留的 link 依赖" : `已清除依赖 — ${fixed.join("; ")}`);
   '
 
-  docker restart "$container" >/dev/null
-  echo '-- 容器已重启'
+  # Restart only the gateway process: the supervisor (PID 1) brings it back,
+  # while tenant dsh processes stay alive and the new gateway adopts them.
+  # The pid file is briefly absent during the supervisor's restart backoff;
+  # falling back to `docker restart` there would disconnect every tenant, so
+  # wait for the new pid. Only an old container with no supervisor needs the
+  # container restart.
+  restarted=0
+  for (( attempt = 0; attempt < 60; attempt += 1 )); do
+    if docker exec "$container" sh -c 'kill -TERM "$(cat "${STATE_ROOT:-/data/.vh}/gateway.pid" 2>/dev/null)"' 2>/dev/null; then
+      restarted=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$restarted" -eq 0 ]]; then
+    docker restart "$container" >/dev/null
+  fi
+  echo '-- 网关已重启（租户实例保持在线）'
 done
 
 cat <<'TIP'

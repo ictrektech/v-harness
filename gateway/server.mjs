@@ -189,6 +189,12 @@ for (const record of await listUsers(USERS_FILE)) {
   const entry = instanceRegistry[record.subject];
   if (entry?.schedulerKey) restoreSchedulerKey(record.namespace, entry.schedulerKey);
   if (entry?.mcphubKey) restoreMcphubKey(record.namespace, entry.mcphubKey);
+  // Rebuild capability sockets now, not on the first request: a dsh that
+  // survived the previous gateway may already be running an agent turn, and
+  // its skill CLI would otherwise hit a stale socket during the restart.
+  void startCapabilities(record).catch((error) => {
+    console.error(`capability warm-up failed for ${record.namespace}:`, error);
+  });
 }
 
 /**
@@ -1741,7 +1747,7 @@ async function handleControl(req, res, url) {
       // running for whoever holds the instance cookie next; stopping the
       // instance closes the tenant's whole world, not just the browser door.
       sessions.revokeSession(session.sid);
-      stopInstance(session.subject);
+      await stopInstance(session.subject);
       const record = await findUser(USERS_FILE, session.subject);
       if (record) forgetTokens(record.namespace);
     }
@@ -1924,7 +1930,7 @@ async function restartInstance(record) {
   // the hang-up as 502, and the tab that asked for the restart gets a shell
   // whose modules never load.
   await drainRequests(key);
-  stopInstance(key);
+  await stopInstance(key);
   // The port has to be free before the next bind. An adopted process has no
   // child handle to wait on, and a stale one may still be draining; checking
   // the port itself covers both and keeps a second click from starting a

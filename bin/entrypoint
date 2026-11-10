@@ -18,6 +18,11 @@ if [[ -f "${DATA_ROOT}/users.json" && ! -f "${STATE_ROOT}/users.json" ]]; then
 fi
 chmod 0600 "${STATE_ROOT}/users.json" 2>/dev/null || true
 
+# A gateway killed mid-write leaves zero-length *.tmp snapshots behind. They
+# are never read again, and no writer exists this early in the boot, so clearing
+# them here keeps the state directory from accumulating garbage.
+find "${STATE_ROOT}" -maxdepth 1 -type f \( -name '*.tmp' -o -name '*.tmp-*' \) -size 0 -delete 2>/dev/null || true
+
 # Tenants share the container network, so there is no namespace to rebuild.
 # The probe stays: a container whose loopback does not accept a connection
 # cannot run an instance, and that is worth failing at startup.
@@ -59,4 +64,8 @@ SQLITE_FLAGS=()
 if ! node -e "import('node:sqlite').then(() => process.exit(0), () => process.exit(1))" 2>/dev/null; then
   SQLITE_FLAGS=(--experimental-sqlite)
 fi
-exec node "${SQLITE_FLAGS[@]}" /opt/v-harness/gateway/server.mjs
+# The supervisor is PID 1 and restarts the gateway itself. Making the gateway a
+# child is what lets tenant dsh processes survive a gateway restart; a direct
+# exec here would make PID 1's exit tear the whole container down.
+export VH_SQLITE_FLAGS="${SQLITE_FLAGS[*]}"
+exec /opt/v-harness/bin/vh-supervisor.sh

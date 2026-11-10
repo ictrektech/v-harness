@@ -314,7 +314,7 @@ test('stopAll drops gateway handles without stopping tenant processes', async ()
   }
 });
 
-test('stopInstance stops an adopted process by its recorded pid', async () => {
+test('stopInstance refuses a stale pid that belongs to an unrelated process', async () => {
   const root = await mkdtemp(join(tmpdir(), 'vh-stopone-'));
   let server;
   let child;
@@ -340,13 +340,72 @@ test('stopInstance stops an adopted process by its recorded pid', async () => {
     });
     assert.equal(adopted.adopted, true);
 
-    assert.equal(stopInstance(subject), true);
-    await once(child, 'exit');
-    assert.equal(stopInstance(subject), false);
+    assert.equal(await stopInstance(subject), true);
+    assert.equal(child.exitCode, null, 'a reused pid is not signalled without proof of ownership');
+    assert.equal(await stopInstance(subject), false);
     assert.equal(instanceBoot(subject), 0);
   } finally {
     if (child?.exitCode === null) child.kill('SIGKILL');
     if (server) await closeServer(server);
+    await stopAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('stopInstance stops whoever holds the tenant port, not the jail wrapper', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-stoplistener-'));
+  let child;
+  try {
+    await stopAll();
+    const subject = 'subject-g';
+    const portFile = join(root, 'port');
+    // A real listener owned by this test's uid: `listenerIn` resolves its pid
+    // from ss, so the uid check can pass and the signal lands on the process
+    // that actually holds the port.
+    child = spawn(process.execPath, ['-e', `
+      const http = require('node:http');
+      const fs = require('node:fs');
+      const server = http.createServer((_req, res) => { res.writeHead(200); res.end('ok'); });
+      server.listen(0, '0.0.0.0', () => {
+        fs.writeFileSync(process.env.VH_PORT_FILE, String(server.address().port));
+      });
+      setInterval(() => {}, 1000);
+    `], { env: { ...process.env, VH_PORT_FILE: portFile }, stdio: 'ignore' });
+    let port = 0;
+    const deadline = Date.now() + 5_000;
+    while (port === 0 && Date.now() < deadline) {
+      try {
+        port = Number(await readFile(portFile, 'utf8'));
+      } catch (error) {
+        // The listener has not published its port yet.
+        void error;
+      }
+      if (port === 0) await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    assert.ok(port > 0);
+
+    const record = user(subject, process.getuid(), port);
+    const cookie = 'dsh-auth-g=v1';
+    const { statePath } = await registryWithInstance(root, subject, record, port, cookie);
+    const adopted = await ensureInstance({
+      record,
+      stateRoot: root,
+      dshBin: join(root, 'no-dsh'),
+      nodeBin: process.execPath,
+      statePath,
+      userHelper: join(root, 'no-userctl'),
+    });
+    assert.equal(adopted.adopted, true);
+
+    assert.equal(await stopInstance(subject), true);
+    const stopDeadline = Date.now() + 8_000;
+    while (child.exitCode === null && child.signalCode === null && Date.now() < stopDeadline) {
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    assert.notEqual(child.exitCode === null && child.signalCode === null, true, 'the port holder is gone');
+    assert.equal(instanceBoot(subject), 0);
+  } finally {
+    if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await stopAll();
     await rm(root, { recursive: true, force: true });
   }
