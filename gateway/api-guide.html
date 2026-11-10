@@ -1,0 +1,85 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>v-harness API</title><style>body{font:16px/1.65 system-ui,sans-serif;color:#233247;background:#fff;max-width:1100px;margin:auto;padding:24px}nav{position:sticky;top:0;background:#fff;padding:12px 0;border-bottom:1px solid #ddd}nav a{margin-right:10px}a{color:#086a81}pre{overflow:auto;background:#f4f6f8;padding:16px;border-radius:8px}code{overflow-wrap:anywhere}table{display:block;overflow:auto;border-collapse:collapse}td,th{padding:8px;border:1px solid #ddd;text-align:left}h2,h3{scroll-margin-top:85px}#zh-doc{display:none}body:has(#zh:target) #en-doc,body:has(#zh-doc :target) #en-doc{display:none}body:has(#zh:target) #zh-doc,body:has(#zh-doc :target) #zh-doc{display:block}</style><span id="zh"></span><span id="en"></span><nav><strong>v-harness API</strong> · <a href="#zh">简体中文</a> · <a href="#en">English</a></nav><main><article id="zh-doc" lang="zh-CN"><details open><summary>快速跳转</summary><a href="#zh-section-1">摘要</a> · <a href="#zh-section-2">目录</a> · <a href="#zh-section-3">开发说明</a></details><h1>v-harness VOS API</h1>
+<h2 id="zh-section-1">摘要</h2>
+<p>通过核验后的 VOS 会话管理自己的文件、运行服务和 Agent 工作区；模型调用由 V-Scheduler 按该用户身份鉴权。本参考覆盖 VOS 网关，原生 DSH RPC/SDK 字段由其各自生成文档维护。</p>
+<h2 id="zh-section-2">目录</h2>
+<ul>
+<li><a href="#zh-addresses">地址</a> · <a href="#zh-identity">身份和密钥</a> · <a href="#zh-sessions">会话 API</a> · <a href="#zh-files">文件</a> · <a href="#zh-services">服务</a> · <a href="#zh-models">模型</a> · <a href="#zh-rpc">原生 RPC</a> · <a href="#zh-errors">错误和停止</a></li>
+</ul>
+<h2 id="zh-addresses">地址</h2>
+
+<p>容器别名 <code>v-harness:8080</code>；没有独立业务宿主端口映射。VOS 页面 <code>/app/com.ictrek.v-harness/</code>；网关控制 API 在同一 VOS 域名的 <code>/__vh/*</code>。使用容器地址时直接追加 <code>/__vh/*</code>，不要假设都在 <code>/api/v1</code>。侧栏 API 文档可直接查看本页。</p>
+<h2 id="zh-identity">身份和密钥</h2>
+
+<p>VOS token 用于核验身份和续期；<code>vh_session</code> 是本应用会话，默认12小时滑动过期，并绑定 User-Agent。Cookie 与 <code>x-vh-session</code> 都是受保护的会话凭证，不能放进日志。每个 subject 拥有私有 OS 用户、工作区和 DSH 实例。</p>
+<p>本应用没有个人访问 API Key 的创建/修改接口。V-Scheduler 个人 Key、模型专用 Key 和上游厂商 Key 不是网关管理凭证；不能用它们列其他用户文件。Agent 使用的 Scheduler/MCPHub 等 capability 由网关按用户生成，不向页面暴露上游 VOS token，不作为通用管理 Key。</p>
+<h2 id="zh-sessions">会话 API</h2>
+
+<p><code>GET /__vh/session</code>：未登录仍返回200 <code>{authenticated:false,clientId,scope,csrf}</code> 并设置CSRF cookie；已登录返回 authenticated、用户信息和 tokenReady。<code>POST /__vh/session</code>（兼容 <code>/__vh/auth</code>）带 JSON <code>{access_token,refresh_token?,expires_in?}</code>、同一次GET的cookie和 <code>x-vh-csrf</code>；200返回 <code>{authenticated:true,session,user:{username,namespace}}</code> 并设置会话。保持相同User-Agent。身份失败401，VOS服务不可达502，CSRF失败403；登录成功不代表用户进程已经启动。</p>
+<p><code>GET /__vh/whoami</code>：当前用户 subject/account/username/locale。<code>POST /__vh/logout</code> 撤销会话并停止该用户实例；返回 <code>{authenticated:false}</code>，并清除cookie。<code>GET /__vh/boot</code> 返回 <code>{boot,error?}</code>；<code>POST /__vh/restart</code> 接受后202 <code>{ok:true}</code>，后台排空并重启，需后续查状态，不能把202当作已恢复。<code>GET /__vh/enter?to=/PATH</code> 是会话已知但身份续期失败时的受限进入，目标只允许同源路径，不能恢复缺失的上游凭证。</p>
+<h2 id="zh-files">文件 API</h2>
+
+<p><code>GET /__vh/files?dir=RELATIVE_DIR</code>：200 <code>{path,entries:[{name,type,size?,mtime}]}</code>，仅当前用户 workspace。<code>GET /__vh/files/raw?path=RELATIVE_FILE</code> 返回附件二进制，不是JSON；缺path400、不是文件400、不可访问/不存在404。<code>POST /__vh/files/upload?dir=RELATIVE_DIR&amp;name=FILENAME</code> 上传原始字节，不是multipart；响应为文件辅助进程的原生JSON（无法解析时回退 <code>{ok:true}</code>），非法路径/名称400。编码URL查询参数，禁止跨用户/目录穿越；不要将容器绝对路径当作 workspace 相对路径。</p>
+<h2 id="zh-services">服务与应用对接 API</h2>
+
+<p><code>GET /__vh/services</code> 列出该用户登记的服务；<code>POST /__vh/services/:port/restart</code> 和 <code>/stop</code> 只操作所属服务。请求体不用于指定任意进程；错误返回 <code>{error,message}</code>。<code>/__vh/svc/:port/*</code> 仅代理该用户已登记或所属容器已发布的端口，支持原生HTTP和WebSocket，不是全网开放代理。服务注册/心跳由用户内部服务通道管理，不等于向V-Scheduler注册推理模型。</p>
+<p><code>GET /__vh/mcphub/services</code> 返回服务与routing；<code>GET /__vh/mcphub/tools</code> 返回可预览的工具；<code>GET/PUT /__vh/mcphub/selection</code> 使用 <code>{names:string[]|null}</code> 保存下次启动的选择，返回selected/restartRequired。<code>POST /__vh/mcphub/servers/:name/toggle|reload</code> 只允许白名单操作，MCPHub仍按当前用户判权。<code>/__vh/mcphub/agent/*</code> 是进程capability代理，不可用普通模型Key替代。</p>
+<p><code>GET /__vh/office/list</code>：200 <code>{ok,total,files}</code>。<code>GET /__vh/office/session?name=FILE&amp;edit=1&amp;lang=en&amp;v=0</code> 返回用户编辑器会话，<code>/open</code> 返回302重定向；name不能为空或包含目录分隔符，edit=0只读，v改变可强制新编辑器会话。<code>/__vh/weknora/*</code> 及相册、Image Studio、PhotoCraft等内部capability保留各应用协议和权限，原始文件内容不由网关统一改写为JSON。</p>
+<h2 id="zh-models">模型与 V-Scheduler</h2>
+
+<p>网关用当前用户的VOS身份从 V-Scheduler <code>/api/v1/models</code> 发现可见模型，优先使用 qualified 模型ID，按原生 endpoints/capabilities 选择 OpenAI、Responses、Anthropic 或文本补全转换；vision模型声明图像输入。模型权限和预算仍由调度器检查，不能只因列表存在就绕过。</p>
+<p><code>/__vh/scheduler/v1/models</code> 和对应 chat/completions、responses、messages 是Agent内部进程capability入口，只代理发现与推理，不能修改Scheduler模型、public/private、调度策略或Key。需要外部Agent直连模型时，在V-Scheduler创建所属用户的Key，然后调用调度器地址；不要从Harness会话中提取内部Key。</p>
+<h2 id="zh-rpc">原生 DSH RPC / SDK</h2>
+
+<p>用户DSH实例的 <code>/api</code> 是生成的Remote方法和精确路由，不是 <code>/v1/chat/completions</code>。一元调用用HTTP POST，流通过 <code>/api/remote.mux</code> WebSocket；请求参数/返回类型以生成的SDK和对应服务为准，不能对任意内部方法做通用调用。网关保持用户隔离并替换内部实例cookie，外部Key不等于实例owner身份。原生订阅、工具调用和会话流应使用SDK，不能把单次HTTP成功当作完整Agent运行结束。</p>
+<ul>
+<li><a href="https://github.com/ictrektech/v-harness/blob/main/packages/client/connection/README.md">原生传输与身份</a> · <a href="https://github.com/ictrektech/v-harness/blob/main/packages/api/gateway/README.md">Remote参数/结果/流</a> · <a href="https://github.com/ictrektech/v-harness/blob/main/docs/api-gateway.zh.md">生成接口说明</a> · <a href="https://github.com/ictrektech/v-harness/blob/main/gateway/server.mjs">VOS网关处理器</a></li>
+</ul>
+<h2 id="zh-errors">错误、续期与停止</h2>
+
+<p>公开 <code>GET /__vh/health</code> 只返回 <code>{ok:true}</code>，不启动模型或用户实例。JSON错误通常含error，可选message；400输入、401会话/身份、403来源/权限、404路径/所属资源、405方法、409运行状态冲突、502上游/用户服务不可达。不要对上传、服务重启或会话写操作盲目重放。失效会话重新进行GET/POST握手；更换User-Agent也会失效。</p>
+<p>停止Agent、关闭流、停止用户服务、重启用户实例和释放Scheduler模型资源是不同操作。流断开触发对应请求取消，但不能据此宣称远端模型已卸载；调度器按实际完成/停止回执释放资源。logout会停止该用户实例，restart会中断实例并重新启动，操作前注意该用户的活动任务。</p>
+<h2 id="zh-section-3">开发说明</h2>
+<p>本参考不改变鉴权、实例API或模型路由。</p>
+</article><article id="en-doc" lang="en"><details open><summary>Quick navigation</summary><a href="#en-section-1">Summary</a> · <a href="#en-section-2">Table of contents</a> · <a href="#en-section-3">Dev Note</a></details><h1>v-harness VOS API</h1>
+<h2 id="en-section-1">Summary</h2>
+<p>Manage your files, services and agent workspace through a verified VOS session. V-Scheduler authorizes model calls as that user. This reference covers the VOS gateway; native DSH RPC/SDK fields remain with their generated references.</p>
+<h2 id="en-section-2">Table of contents</h2>
+<ul>
+<li><a href="#en-addresses">Addresses</a> · <a href="#en-identity">Identity and keys</a> · <a href="#en-sessions">Sessions</a> · <a href="#en-files">Files</a> · <a href="#en-services">Services</a> · <a href="#en-models">Models</a> · <a href="#en-rpc">Native RPC</a> · <a href="#en-errors">Errors and cancellation</a></li>
+</ul>
+<h2 id="en-addresses">Addresses</h2>
+
+<p>Container alias: <code>v-harness:8080</code>; no separate host business port is published. VOS page: <code>/app/com.ictrek.v-harness/</code>. Gateway controls use <code>/__vh/*</code> on that VOS origin. Append those paths directly to the container address; they are not uniformly under <code>/api/v1</code>. The sidebar API guide displays this reference.</p>
+<h2 id="en-identity">Identity and keys</h2>
+
+<p>A VOS token verifies/renews identity. The application vh_session defaults to a 12-hour sliding expiry and is bound to User-Agent. Cookies and x-vh-session are private session credentials, not log data. Each subject owns a private OS user, workspace and DSH instance.</p>
+<p>This app exposes no personal access-Key creation/update API. V-Scheduler personal Keys, model Keys and upstream-provider credentials do not grant gateway management access or another user's files. Per-user Scheduler/MCPHub capabilities are minted by the gateway, keep upstream VOS tokens out of the page and are not general management Keys.</p>
+<h2 id="en-sessions">Session API</h2>
+
+<p>GET <code>/__vh/session</code> returns200 even when signed out: <code>{authenticated:false,clientId,scope,csrf}</code>, plus a CSRF cookie. Signed-in responses include identity and tokenReady. POST <code>/__vh/session</code> (alias <code>/__vh/auth</code>) accepts JSON <code>{access_token,refresh_token?,expires_in?}</code> with the cookie from that GET and x-vh-csrf. Success200 returns <code>{authenticated:true,session,user:{username,namespace}}</code> and sets a session. Keep User-Agent stable. Identity failure401, unreachable VOS502 and invalid CSRF403 are distinct; successful sign-in does not prove instance startup.</p>
+<p>GET <code>/__vh/whoami</code> returns subject/account/username/locale. POST <code>/__vh/logout</code> revokes the session, stops that user's instance, returns <code>{authenticated:false}</code> and clears the cookie. GET <code>/__vh/boot</code> returns <code>{boot,error?}</code>. POST <code>/__vh/restart</code> returns202 <code>{ok:true}</code> before asynchronous drain/restart; poll state rather than treating202 as recovery. GET <code>/__vh/enter?to=/PATH</code> permits limited entry for an already-known session after renewal fails; only same-origin redirect paths are allowed, and upstream credentials are not restored.</p>
+<h2 id="en-files">File API</h2>
+
+<p>GET <code>/__vh/files?dir=RELATIVE_DIR</code>:200 <code>{path,entries:[{name,type,size?,mtime}]}</code> inside the current workspace. GET <code>/__vh/files/raw?path=RELATIVE_FILE</code> returns an attachment, not JSON; missing path400, non-file400 and unavailable/missing file404. POST <code>/__vh/files/upload?dir=RELATIVE_DIR&amp;name=FILENAME</code> takes raw bytes, not multipart; the native file-helper JSON is returned (with a <code>{ok:true}</code> fallback if parsing fails) or400 for invalid paths/names. URL-encode query values. Cross-user traversal is prohibited; container absolute paths are not workspace-relative paths.</p>
+<h2 id="en-services">Service and application APIs</h2>
+
+<p>GET <code>/__vh/services</code> lists the user's registered services. POST <code>/__vh/services/:port/restart</code> and <code>/stop</code> act only on owned services; the body does not select arbitrary processes. Errors return <code>{error,message}</code>. <code>/__vh/svc/:port/*</code> proxies only the user's registered services or owned-container published ports, including native HTTP/WebSocket; it is not an unrestricted network proxy. Internal service registration/heartbeats are separate from Scheduler inference registration.</p>
+<p>GET <code>/__vh/mcphub/services</code> returns services/routing. GET <code>/__vh/mcphub/tools</code> previews tools. GET/PUT <code>/__vh/mcphub/selection</code> uses <code>{names:string[]|null}</code> and returns selected/restartRequired; selection applies at the next launch. POST <code>/__vh/mcphub/servers/:name/toggle|reload</code> permits only those actions and preserves MCPHub user authorization. <code>/__vh/mcphub/agent/*</code> is a process-capability proxy, not an endpoint accepting an arbitrary model Key.</p>
+<p>GET <code>/__vh/office/list</code>:200 <code>{ok,total,files}</code>. GET <code>/__vh/office/session?name=FILE&amp;edit=1&amp;lang=en&amp;v=0</code> returns an editor session; <code>/open</code> redirects302. Name must be nonempty and contain no path separators, edit=0 requests read-only, and a changed v can force a new editor session. <code>/__vh/weknora/*</code> and internal Album/Image Studio/PhotoCraft capabilities retain their owning protocols and permissions; file contents are not universally converted to JSON.</p>
+<h2 id="en-models">Models and V-Scheduler</h2>
+
+<p>The gateway discovers visible models from Scheduler <code>/api/v1/models</code> using the current VOS identity. It prefers qualified IDs and selects OpenAI, Responses, Anthropic or text-completion conversion from endpoints/capabilities; vision declares image input. Scheduler visibility and admission remain authoritative; a listed model does not bypass budgets.</p>
+<p><code>/__vh/scheduler/v1/models</code> and the corresponding chat/completions, responses and messages routes use an internal process capability and allow discovery/inference only. They cannot change Scheduler models, visibility, admission or Keys. External agents obtain a user-owned Key from V-Scheduler and call Scheduler directly; do not extract internal Harness capabilities.</p>
+<h2 id="en-rpc">Native DSH RPC / SDK</h2>
+
+<p>A user's DSH <code>/api</code> exposes generated Remote methods and exact routes, not <code>/v1/chat/completions</code>. Unary calls use HTTP POST; streams use <code>/api/remote.mux</code> WebSocket. Generated SDK/service definitions own argument/result types; arbitrary internal methods are not universally callable. The gateway preserves user isolation and replaces instance cookies; an external model Key does not grant instance-owner identity. Use the native SDK for subscriptions, tools and session streams; one HTTP success is not completion of an agent run.</p>
+<ul>
+<li><a href="https://github.com/ictrektech/v-harness/blob/main/packages/client/connection/README.md">Native transport and identity</a> · <a href="https://github.com/ictrektech/v-harness/blob/main/packages/api/gateway/README.md">Remote arguments/results/streams</a> · <a href="https://github.com/ictrektech/v-harness/blob/main/docs/api-gateway.md">Generated API reference</a> · <a href="https://github.com/ictrektech/v-harness/blob/main/gateway/server.mjs">VOS gateway handlers</a></li>
+</ul>
+<h2 id="en-errors">Errors, renewal and cancellation</h2>
+
+<p>Public GET <code>/__vh/health</code> returns only <code>{ok:true}</code>, without starting models or instances. JSON errors usually include error and optional message:400 input,401 session/identity,403 origin/permission,404 route/owned resource,405 method,409 runtime conflict and502 unreachable upstream/service. Do not blindly replay uploads, service restarts or session mutations. Expired sessions repeat the GET/POST handshake; changing User-Agent also invalidates them.</p>
+<p>Stopping an agent, closing a stream, stopping a user service, restarting an instance and releasing model resources are distinct actions. Stream disconnection cancels its request but does not prove remote model unload; Scheduler releases resources from completion/stop evidence. Logout stops that user's instance, while restart interrupts/relaunches it; account for active user tasks.</p>
+<h2 id="en-section-3">Dev Note</h2>
+<p>This reference changes no authentication, instance API or model routing.</p>
+</article></main></html>
