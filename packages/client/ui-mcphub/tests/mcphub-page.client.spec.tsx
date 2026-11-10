@@ -65,7 +65,8 @@ describe('the MCPHub service page', () => {
     expect(view.getByText('私有')).toBeTruthy()
     expect(view.getByText('共享')).toBeTruthy()
     expect(view.getByText('运行中')).toBeTruthy()
-    expect(view.getByText('已停止')).toBeTruthy()
+    // A disabled service reads as disabled even when its connection lingers.
+    expect(view.getByText('已停用')).toBeTruthy()
     expect(view.getByText('共 2 个服务')).toBeTruthy()
   })
 
@@ -118,7 +119,8 @@ describe('the MCPHub service page', () => {
     fireEvent.click(view.getAllByRole('button', { name: '工具' })[0]!)
     await waitFor(() => { expect(view.getByText('amap-maps_geo')).toBeTruthy() })
     expect(view.getByText('地理编码')).toBeTruthy()
-    expect(view.getByText('已停用')).toBeTruthy()
+    // The row and the tool both say 已停用, so the tool's own badge is one of many.
+    expect(view.getAllByText('已停用').length).toBeGreaterThan(0)
     expect(loadTools).toHaveBeenCalledTimes(1)
 
     // The second service reuses the read rather than paying for another one.

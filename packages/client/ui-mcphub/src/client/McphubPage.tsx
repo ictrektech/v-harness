@@ -319,7 +319,7 @@ function Row({ view, server }: { view: View; server: McphubServer }) {
         <span className={css.badge}>{t(VISIBILITY[server.visibility] ?? 'visibility.unknown')}</span>
         <span className={css.state}>
           <span className={`${css.dot} ${dot}`} aria-hidden="true" />
-          {t(STATUS[server.status] ?? 'status.unknown')}
+          {t(!server.enabled ? 'status.disabled' : STATUS[server.status] ?? 'status.unknown')}
         </span>
         <span className={css.rowActions}>
           <button
