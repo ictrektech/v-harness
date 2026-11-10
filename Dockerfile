@@ -191,13 +191,21 @@ ARG DSH_IM_VERSION=5.10.0
 # The MCP connection manager (authorization, tool governance, diagnostics),
 # also a registry package that ships to every tenant.
 ARG DSH_MCP_CONNECTOR_VERSION=0.2.97
+# The connector registers its sidebar row with a label *function*, which the
+# surface re-evaluates on every projection, so that one row repaints whenever
+# the plugin's store moves — every other plugin registers a string and stays
+# still. Turning the entry off is the only lever we own: the package's own
+# bundle patch is what sets `true`, so a profile-level override loses to it.
+# The replacement is asserted, because a version bump that renames the key must
+# fail the build rather than silently bring the row back.
 RUN mkdir -p /tmp/registry-plugins \
  && npm install --prefix /tmp/registry-plugins --no-save --ignore-scripts --legacy-peer-deps \
       "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" "@xmanrui/dsh-im@${DSH_IM_VERSION}" \
       "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
- && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')"
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
 
 # ============================================================
 # Stage: runtime image
