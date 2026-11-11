@@ -411,6 +411,32 @@ fi
 
 TAG="$BASE_TAG"
 
+# A second build on the same day yields `_2`, then `_3`, and so on.
+#
+# The release table keeps one cell per date and the deployment names whatever
+# tag that cell holds, so rebuilding onto the same tag makes two builds
+# indistinguishable and leaves a rollback with nothing to return to once SWR
+# replaces the image behind it. A tag counts as taken when the registry serves
+# a manifest for it, or when this host already holds the image. An explicit
+# --tag-suffix above opts out: the caller named the tag it wants.
+if [[ -z "$TAG_SUFFIX" && "$DRY_RUN" != "1" && "$SKIP_BUILD" != "1" ]]; then
+  candidate="$BASE_TAG"
+  n=1
+  while docker manifest inspect "${IMAGE}:${candidate}" >/dev/null 2>&1 \
+     || docker image inspect "${IMAGE}:${candidate}" >/dev/null 2>&1; do
+    n=$((n + 1))
+    if [[ "$n" -gt 99 ]]; then
+      err "No free tag left for ${BASE_TAG} (_2.._99 are all taken)"
+      exit 1
+    fi
+    candidate="${BASE_TAG}_${n}"
+  done
+  if [[ "$candidate" != "$BASE_TAG" ]]; then
+    log "Tag ${BASE_TAG} is taken; building ${candidate} instead"
+  fi
+  TAG="$candidate"
+fi
+
 log "TARGET=${TARGET} ARCH=${ARCH}"
 log "TARGET_SHEETS=${TARGET_SHEET_TITLES[*]}"
 log "IMAGE=${IMAGE}:${TAG}"
