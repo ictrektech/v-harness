@@ -287,8 +287,11 @@ async function tenantHome(home, account, uid) {
   // normally owns this hand-over; repeating it keeps a contract written after a
   // failed sync from landing behind a root-only path.
   if (process.getuid?.() === 0 && uid !== undefined) {
-    await chown(home, uid, account ?? uid);
-    await chown(dshHome, uid, account ?? uid);
+    // `chown` takes numeric ids: the group is the tenant's own gid, which
+    // `vh-userctl` creates equal to the uid (`useradd -u <uid> -g <uid>`). Pass
+    // the account name here and the call throws EBADF/ERR_INVALID_ARG_TYPE.
+    await chown(home, uid, uid);
+    await chown(dshHome, uid, uid);
   }
   return dshHome;
 }
@@ -297,7 +300,7 @@ async function tenantHome(home, account, uid) {
  * Write one `0600` file atomically, optionally handing it to the tenant.
  * @param {string} path destination
  * @param {string} text contents
- * @param {{ uid?: number, account?: string }} [owner] tenant hand-over
+ * @param {{ uid?: number }} [owner] tenant hand-over, uid doubling as gid
  * @returns {Promise<void>}
  */
 async function writeAtomic(path, text, owner = {}) {
@@ -312,12 +315,12 @@ async function writeAtomic(path, text, owner = {}) {
   }
   chmodSync(tmp, 0o600);
   if (process.getuid?.() === 0 && owner.uid !== undefined) {
-    await chown(tmp, owner.uid, owner.account ?? owner.uid);
+    await chown(tmp, owner.uid, owner.uid);
   }
   await rename(tmp, path);
   chmodSync(path, 0o600);
   if (process.getuid?.() === 0 && owner.uid !== undefined) {
-    await chown(path, owner.uid, owner.account ?? owner.uid);
+    await chown(path, owner.uid, owner.uid);
   }
 }
 

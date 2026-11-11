@@ -687,7 +687,7 @@ async function authorizeWithRetry(cfg){
     try{return await authorize(cfg,25000);}catch(error){last=error;}
     // An expired portal sign-in survives every retry until the user signs in
     // again; fail fast into the prompt that says so instead of spinning.
-    if(isPortalExpired(error))break;
+    if(isPortalExpired(last))break;
     // A whole-exchange budget: with every leg clocked, the worst case still
     // lands on the actionable prompt inside a minute instead of spinning.
     if(attempt<attempts-1&&Date.now()-t0<60000){
@@ -1767,19 +1767,27 @@ async function handleControl(req, res, url) {
     // the instance's, not the login's: reporting it as 401 is what made a dead
     // dsh surface as "身份验证失败" on the bootstrap page, where the message is
     // relayed verbatim and no amount of retrying can fix the real cause.
-    try {
-      // The answer language is baked into the tenant's dsh process at launch.
-      // It is deliberately NOT restarted here: dsh closes gracefully over
-      // several seconds, and a relaunch racing that shutdown dies on the
-      // instance's own port (EADDRINUSE), which reads as a total sign-in
-      // failure. The stored language lands on the next natural start.
-      const accessToken = String(body.access_token);
-      console.log(`auth ${record.username}: refresh=${body.refresh_token ? 'yes' : 'no'}`);
-      rememberTokens(record.namespace, {
-        access: accessToken,
-        ...typeof body.refresh_token === 'string' && body.refresh_token ? { refresh: body.refresh_token } : {},
-        expiresAt: expiryFromToken(accessToken, Number(body.expires_in)),
-      });
+    // The answer language is baked into the tenant's dsh process at launch.
+    // It is deliberately NOT restarted here: dsh closes gracefully over
+    // several seconds, and a relaunch racing that shutdown dies on the
+    // instance's own port (EADDRINUSE), which reads as a total sign-in
+    // failure. The stored language lands on the next natural start.
+    const accessToken = String(body.access_token);
+    console.log(`auth ${record.username}: refresh=${body.refresh_token ? 'yes' : 'no'}`);
+    rememberTokens(record.namespace, {
+      access: accessToken,
+      ...typeof body.refresh_token === 'string' && body.refresh_token ? { refresh: body.refresh_token } : {},
+      expiresAt: expiryFromToken(accessToken, Number(body.expires_in)),
+    });
+    // Sign-in never waits for a cold start. `ensureInstance` needs 15–20 seconds
+    // on a fresh container, while the page gives this request 15 and then shows
+    // "平台身份验证失败，正在自动重试…" — three times, for every user, after every
+    // restart, when nothing was actually wrong. The session is returned now and
+    // the navigation that follows lands on the starting page (a document request
+    // with no instance yet), which polls `/__vh/boot` and reloads the moment the
+    // process answers. A launch that genuinely fails is reported there with its
+    // reason, instead of masquerading as a sign-in error.
+    void (async () => {
       await ensureInstance({
         record,
         stateRoot: STATE_ROOT,
@@ -1789,14 +1797,12 @@ async function handleControl(req, res, url) {
         userHelper: USER_HELPER,
       });
       await startCapabilities(record);
-    } catch (error) {
+    })().catch((error) => {
       console.error(
         `instance start failed user=${record.username} account=${record.account ?? record.linuxName}:`,
         error instanceof Error ? error.message : String(error),
       );
-      json(res, 503, { authenticated: false, error: '实例启动失败，请稍后重试' });
-      return;
-    }
+    });
 
     // Whoever proved themselves here owns this browser from now on: the ticket
     // it arrived with is retired, so the previous account cannot ride along in
