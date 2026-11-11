@@ -345,6 +345,11 @@ RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-h
  && printf 'root ALL=(root) NOPASSWD: /opt/v-harness/bin/vh-userctl, /opt/v-harness/bin/vh-file\n' > /etc/sudoers.d/vh \
  && chmod 0440 /etc/sudoers.d/vh
 
+# Registry mirrors are used while building. Start the image with official npm settings.
+RUN npm config delete registry
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
+    COREPACK_NPM_REGISTRY=https://registry.npmjs.org/
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

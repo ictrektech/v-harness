@@ -1,10 +1,11 @@
 /** Verify a disposable VOS image: shared RPC artifacts, tenant startup, authentication, and the proxied page. */
 import {createServer} from 'node:http';
-import {spawn} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {readdir,readFile} from 'node:fs/promises';
 assert.ok((await readFile('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-api-remotes/lib/client.js','utf8')).includes('selectDefaultModel'), 'browser Remote assembly must include default-model selection');
+assert.equal(execFileSync('npm', ['config', 'get', 'registry'], { encoding: 'utf8' }).trim(), 'https://registry.npmjs.org/');
 const webRoot='/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist';
 assert.equal(JSON.parse(await readFile(webRoot+'/manifest.webmanifest','utf8')).name,'v-harness','installed web manifest must use the fork identity');
 assert.match(await readFile(webRoot+'/favicon.svg','utf8'),/viewBox="0 0 1196 813"/,'installed favicon must carry the interwoven mark');
@@ -41,8 +42,8 @@ try {
  const market = await fetch(base + '/dsh-market/status', { headers: { cookie } });
  assert.equal(market.status, 200);
  const plugins = await market.json();
- assert.equal(plugins.region, 'china');
- assert.ok(plugins.githubProxy);
+ assert.equal(plugins.region, 'global');
+ assert.equal(plugins.githubProxy, null);
  for (const name of ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']) {
    assert.ok(Object.hasOwn(plugins.installed, name), `Missing bundled plugin ${name}`);
  }
@@ -50,5 +51,5 @@ try {
  for (const file of await readdir(logs)) {
    assert.doesNotMatch(await readFile(logs + '/' + file, 'utf8'), /prompt section .* is already registered/);
  }
- console.log('MAINLAND MARKET REGION AND BUNDLED PLUGINS: PASS');
+ console.log('GLOBAL MARKET DEFAULT AND BUNDLED PLUGINS: PASS');
 }catch(error){for(const file of await readdir('/data/.vh/logs').catch(()=>[])) console.log('INSTANCE LOG',await readFile('/data/.vh/logs/'+file,'utf8'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}

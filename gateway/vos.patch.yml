@@ -51,10 +51,10 @@
     personaSuffix: !!js "process.env.VH_USER_LOCALE === 'en' ? 'Always answer in English unless the user writes in another language.' : process.env.VH_USER_LOCALE === 'zh' ? '始终用简体中文回答，除非用户明确使用其他语言。' : ''"
 - id: dsh-market
   config:
-    region: china
+    region: global
 - id: plugin-manager
   config:
-    fallbackRegistries: ['https://registry.npmjs.org/']
+    fallbackRegistries: []
 # The forked conversation UI does not implement the newer text-interaction API.
 - id: message-quotes
   disabled: true

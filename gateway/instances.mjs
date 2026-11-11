@@ -619,8 +619,6 @@ async function launch(options) {
       // variables; unset, they still resolve to the (now writable) home, but
       // naming them keeps a stray `HOME` from sending writes elsewhere.
       NPM_CONFIG_CACHE: `${jailHome}/.npm`,
-      NPM_CONFIG_REGISTRY: process.env.NPM_CONFIG_REGISTRY ?? 'https://registry.npmmirror.com',
-      COREPACK_NPM_REGISTRY: process.env.COREPACK_NPM_REGISTRY ?? 'https://registry.npmmirror.com',
       PIP_CACHE_DIR: `${jailHome}/.cache/pip`,
       UV_CACHE_DIR: `${jailHome}/.cache/uv`,
       PNPM_HOME: `${jailHome}/.local/share/pnpm`,
