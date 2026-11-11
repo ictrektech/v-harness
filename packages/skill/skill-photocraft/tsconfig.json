@@ -25,6 +25,12 @@
     },
     {
       "path": "../../util/values"
+    },
+    {
+      "path": "../../core/agent"
+    },
+    {
+      "path": "../../session/working-directory"
     }
   ]
 }
