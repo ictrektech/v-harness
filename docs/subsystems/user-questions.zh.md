@@ -32,35 +32,45 @@ interface AskUserQuestionOption {
  * not know a tag renders the generic flow, and the answer encoding is identical
  * either way — an intent changes presentation only, never the protocol.
  */
-type AskUserQuestionIntent = {
-  /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
-  kind: 'plan-review'
-  /**
-   * The option label that approves the plan; every other option declines it.
-   * Named rather than positional so no UI infers the verdict from option order.
-   * An `approve` naming no option of its own question is rejected at `ask()`.
-   */
-  approve: string
-  /** Logged tool invocation whose arguments contain the reviewed plan. */
-  callId?: ToolCallId
-} | {
-  /** A blocking permission decision with fixed actions and no free-text answer. */
-  kind: 'approval'
-  /** Option label granting the scope described by the caller. */
-  approve: string
-  /** Option label refusing the requested access. */
-  reject: string
-  /** Optional persistent grant offered only when the caller supports it. */
-  always?: string
-  /** Metadata for human recognition; the caller admits icon sources, which the UI may load as URLs. Never an authorization identity. */
-  subject?: { name: string; icon?: string }
-  /** Localized question and limited-grant label; fixed cards own reject/always wording. Option labels remain answer values. */
-  display?: {
-    question: { en: string; [locale: string]: string }
-    detail?: { en: string; [locale: string]: string }
-    approve?: { en: string; [locale: string]: string }
+type AskUserQuestionIntent =
+  | {
+    /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
+    kind: 'plan-review'
+    /**
+     * The option label that approves the plan; every other option declines it.
+     * Named rather than positional so no UI infers the verdict from option order.
+     * An `approve` naming no option of its own question is rejected at `ask()`.
+     */
+    approve: string
+    /** Logged tool invocation whose arguments contain the reviewed plan. */
+    callId?: ToolCallId
   }
-}
+  | {
+    /**
+     * A parameter form: every question of the request is one field, and the UI
+     * renders them together in one dialog instead of walking them one by one.
+     * Fields describe their own control through {@link AskUserQuestionItem.input}.
+     */
+    kind: 'form'
+  }
+  | {
+    /** A blocking permission decision with fixed actions and no free-text answer. */
+    kind: 'approval'
+    /** Option label granting the scope described by the caller. */
+    approve: string
+    /** Option label refusing the requested access. */
+    reject: string
+    /** Optional persistent grant offered only when the caller supports it. */
+    always?: string
+    /** Metadata for human recognition; the caller admits icon sources, which the UI may load as URLs. Never an authorization identity. */
+    subject?: { name: string; icon?: string }
+    /** Localized question and limited-grant label; fixed cards own reject/always wording. Option labels remain answer values. */
+    display?: {
+      question: { en: string; [locale: string]: string }
+      detail?: { en: string; [locale: string]: string }
+      approve?: { en: string; [locale: string]: string }
+    }
+  }
 ```
 
 ## 问题条目
