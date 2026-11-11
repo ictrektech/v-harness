@@ -383,6 +383,7 @@ export class DraftEditorRuntime {
     return applied
   }
 
+  /**
    * Insert one quote after the retained draft selection as an independent undo edit.
    * @param text - nonblank selected transcript text.
    * @param labels - current localized editor controls.
