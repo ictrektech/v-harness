@@ -214,7 +214,7 @@ RUN mkdir -p /tmp/registry-plugins \
 FROM ${BASE_IMAGE}
 
 # Media Desk requires DSH 0.2.1-rc.5 or newer.
-ARG DSH_VERSION=0.2.1-rc.5
+ARG DSH_VERSION=0.2.2-rc.1
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.
