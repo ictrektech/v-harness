@@ -810,8 +810,25 @@ export const en = {
   'terminal.session': 'Terminal {sessionId}',
 } satisfies Record<ConversationKey, string>
 
+// VOS controls fall back to English in the other locale dictionaries.
+const vosFallback = {
+  'image.brush.chip': en['image.brush.chip'],
+  'image.region.boxMode': en['image.region.boxMode'],
+  'image.region.brushHint': en['image.region.brushHint'],
+  'image.region.brushMode': en['image.region.brushMode'],
+  'image.region.chip': en['image.region.chip'],
+  'image.region.clear': en['image.region.clear'],
+  'image.region.close': en['image.region.close'],
+  'image.region.done': en['image.region.done'],
+  'image.region.hint': en['image.region.hint'],
+  'image.region.open': en['image.region.open'],
+  'image.region.tip': en['image.region.tip'],
+  'image.region.title': en['image.region.title'],
+}
+
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  ...vosFallback,
   'quote.remove': '引用を削除',
   'shortcut.newline': '改行',
   'shortcut.complementary': '補助のキュー / 実行中の指示変更を使用',
@@ -1199,6 +1216,7 @@ export const ja = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  ...vosFallback,
   'quote.remove': 'Eliminar cotización',
   'shortcut.newline': 'Nueva linea',
   'shortcut.complementary': 'Usar la acción alternativa de poner en cola o redirigir',
@@ -1588,6 +1606,7 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  ...vosFallback,
   'quote.remove': 'Supprimer le devis',
   'shortcut.newline': 'Nouvelle ligne',
   'shortcut.complementary': 'Utiliser l’action alternative de mise en attente ou de guidage',
@@ -1977,6 +1996,7 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  ...vosFallback,
   'quote.remove': 'Zitat entfernen',
   'shortcut.newline': 'Neue Zeile',
   'shortcut.complementary': 'Die alternative Aktion zum Vormerken oder Lenken verwenden',
@@ -2366,6 +2386,7 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  ...vosFallback,
   'quote.remove': 'Удалить цитату',
   'shortcut.newline': 'Новая линия',
   'shortcut.complementary': 'Использовать альтернативное действие: поставить в очередь или направить',
@@ -2755,6 +2776,7 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  ...vosFallback,
   'quote.remove': 'Remover cotação',
   'shortcut.newline': 'Nova linha',
   'shortcut.complementary': 'Usar a ação alternativa de enfileirar ou orientar',

@@ -444,8 +444,21 @@ export const ja = {
   'keyRequired': '続けるにはAPIキーを入力してください。',
 } satisfies Record<keyof typeof en, string>
 
+// VOS controls fall back to English in the other locale dictionaries.
+const vosFallback = {
+  'schedulerChoose': en['schedulerChoose'],
+  'schedulerDefault': en['schedulerDefault'],
+  'schedulerEmpty': en['schedulerEmpty'],
+  'schedulerIntro': en['schedulerIntro'],
+  'schedulerLoading': en['schedulerLoading'],
+  'schedulerOpen': en['schedulerOpen'],
+  'schedulerRefresh': en['schedulerRefresh'],
+  'schedulerSelectionHint': en['schedulerSelectionHint'],
+}
+
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  ...vosFallback,
   nav: 'Modelos',
   deepSeekAccount: 'Cuenta DeepSeek',
   title: 'Modelos',
@@ -587,6 +600,7 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  ...vosFallback,
   nav: 'Modèles',
   deepSeekAccount: 'Compte DeepSeek',
   title: 'Modèles',
@@ -728,6 +742,7 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  ...vosFallback,
   nav: 'Modelle',
   deepSeekAccount: 'DeepSeek-Konto',
   title: 'Modelle',
@@ -869,6 +884,7 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  ...vosFallback,
   nav: 'Модели',
   deepSeekAccount: 'DeepSeek Аккаунт',
   title: 'Модели',
@@ -1010,6 +1026,7 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  ...vosFallback,
   nav: 'Modelos',
   deepSeekAccount: 'DeepSeek Conta',
   title: 'Modelos',

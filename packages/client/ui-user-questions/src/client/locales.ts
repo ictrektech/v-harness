@@ -81,8 +81,17 @@ export const en = {
   'form.submit': 'Confirm',
 } satisfies Record<QuestionKey, string>
 
+// VOS controls fall back to English in the other locale dictionaries.
+const vosFallback = {
+  'form.cancel': en['form.cancel'],
+  'form.close': en['form.close'],
+  'form.submit': en['form.submit'],
+  'form.title': en['form.title'],
+}
+
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  ...vosFallback,
   'error.incomplete': '先にこの質問に回答してください。',
   'error.unanswered': 'オプションを選択するか、カスタム回答を入力してください。',
   'error.unavailable': '現在送信できません。しばらくしてからもう一度お試しください。',
@@ -118,6 +127,7 @@ export const ja = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  ...vosFallback,
   'error.incomplete': 'Por favor complete esta pregunta primero.',
   'error.unanswered': 'Seleccione una opción o ingrese una respuesta personalizada.',
   'error.unavailable': 'No se puede enviar en este momento; Inténtalo de nuevo en un momento.',
@@ -153,6 +163,7 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  ...vosFallback,
   'error.incomplete': "Veuillez d'abord répondre à cette question.",
   'error.unanswered': 'Veuillez sélectionner une option ou saisir une réponse personnalisée.',
   'error.unavailable': 'Impossible de soumettre pour le moment ; réessayez dans un instant.',
@@ -188,6 +199,7 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  ...vosFallback,
   'error.incomplete': 'Bitte füllen Sie zunächst diese Frage aus.',
   'error.unanswered': 'Bitte wählen Sie eine Option aus oder geben Sie eine benutzerdefinierte Antwort ein.',
   'error.unavailable': 'Kann momentan nicht eingereicht werden; Versuchen Sie es gleich noch einmal.',
@@ -223,6 +235,7 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  ...vosFallback,
   'error.incomplete': 'Пожалуйста, сначала ответьте на этот вопрос.',
   'error.unanswered': 'Пожалуйста, выберите вариант или введите собственный ответ.',
   'error.unavailable': 'Невозможно отправить прямо сейчас; попробуйте еще раз через минуту.',
@@ -258,6 +271,7 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  ...vosFallback,
   'error.incomplete': 'Por favor, responda esta pergunta primeiro.',
   'error.unanswered': 'Selecione uma opção ou insira uma resposta personalizada.',
   'error.unavailable': 'Não é possível enviar agora; tente novamente em um momento.',
