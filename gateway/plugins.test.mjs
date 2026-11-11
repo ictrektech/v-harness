@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,6 +43,12 @@ await packageDir(join(agent, 'node_modules', 'dsh-media-desk'), 'dsh-media-desk'
 await packageDir(join(agent, 'node_modules', 'vh-agent-plugins'), 'vh-agent-plugins', '0.0.0');
 
 const { syncPlugins } = await import('./plugins.mjs');
+
+// Module-level fixtures used to leak a fresh set of temp directories on every
+// test run; the suite is run often enough that /tmp filled with them.
+after(async () => {
+  await Promise.all([plugins, agent, installation].map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 /**
  * One tenant home.
@@ -105,6 +111,39 @@ test('an existing profile keeps its DS Bot selection and receives the other bund
   assert.equal(disabled.dsh.profile.bundles.includes('ds-bot'), false);
   assert.equal(disabled.dependencies['ds-bot'], '0.3.2');
   await rm(user.home, { recursive: true, force: true });
+});
+
+test('an unchanged payload neither recopies packages nor rewrites the ledger', async () => {
+  const user = await tenant();
+  assert.equal(await syncPlugins(user), true);
+  const modules = join(user.home, '.dsh', 'profiles', 'node_modules', '@deepseek-ai');
+  const ledger = join(modules, '.vh-sync.json');
+  const first = await readFile(ledger, 'utf8');
+  const inodes = () => Promise.all(MANAGED.map(async (name) => (await stat(join(modules, name))).ino));
+  const before = await inodes();
+
+  assert.equal(await syncPlugins(user), true);
+
+  assert.deepEqual(await inodes(), before, 'matching stamps skip the copy');
+  assert.equal(await readFile(ledger, 'utf8'), first, 'the ledger is written once, not once per package');
+  await rm(user.home, { recursive: true, force: true });
+});
+
+test('one stale package is refreshed without losing the other stamps', async () => {
+  const user = await tenant();
+  assert.equal(await syncPlugins(user), true);
+  const modules = join(user.home, '.dsh', 'profiles', 'node_modules', '@deepseek-ai');
+  const source = join(plugins, MANAGED[0], 'lib', 'index.js');
+  await writeFile(source, 'updated');
+  try {
+    assert.equal(await syncPlugins(user), true);
+    const stamps = JSON.parse(await readFile(join(modules, '.vh-sync.json'), 'utf8'));
+    assert.equal(Object.keys(stamps).length, MANAGED.length, 'the ledger keeps every package');
+    assert.equal(await readFile(join(modules, MANAGED[0], 'lib', 'index.js'), 'utf8'), 'updated');
+  } finally {
+    await writeFile(source, '');
+    await rm(user.home, { recursive: true, force: true });
+  }
 });
 
 test('a stage that failed inside the sync is reported, not swallowed', async () => {

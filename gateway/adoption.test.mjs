@@ -13,7 +13,7 @@ import {
 } from './instance-state.mjs';
 import {
   ensureInstance, instanceBoot, migrateInstanceStateKeys, primeInstanceBoots,
-  stopAll, stopInstance,
+  readyBoot, stopAll, stopInstance,
 } from './instances.mjs';
 import { mcphubEnvironment, restoreMcphubKey } from './mcphub.mjs';
 import { restoreSchedulerKey, schedulerEnvironment } from './scheduler.mjs';
@@ -253,6 +253,35 @@ test('boot identity survives a gateway restart before any adoption', async () =>
     assert.equal(instanceBoot(subject), bootedAt);
     assert.equal(instanceBoot('never-booted'), 0);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('readyBoot stays 0 until an instance can actually serve requests', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-ready-boot-'));
+  let server;
+  try {
+    await stopAll();
+    const subject = 'subject-ready';
+    const record = user(subject, 20_010, await freePort());
+    const cookie = 'dsh-auth-ready=v1';
+    const bootedAt = Date.now() - 11_000;
+    const { options } = await registryWithInstance(root, subject, record, record.port, cookie, bootedAt);
+    primeInstanceBoots({ [subject]: { bootedAt } });
+    assert.equal(instanceBoot(subject), bootedAt, 'the persisted identity survives a restart');
+    assert.equal(readyBoot(subject), 0, 'but no instance is serving yet');
+
+    server = await tenantServer(record.port, cookie);
+    const adopted = await ensureInstance(options);
+    assert.equal(adopted.adopted, true);
+    assert.equal(readyBoot(subject), bootedAt, 'adoption makes the document ready');
+
+    await stopAll();
+    assert.equal(readyBoot(subject), 0, 'dropping the handles removes readiness');
+    assert.equal(instanceBoot(subject), bootedAt, 'the durable identity is unchanged');
+  } finally {
+    if (server) await closeServer(server);
+    await stopAll();
     await rm(root, { recursive: true, force: true });
   }
 });

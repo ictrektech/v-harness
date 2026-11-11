@@ -994,7 +994,15 @@ export async function ensureInstance(options) {
     .then(() => runUserHelper(options.userHelper, [
       'ensure', account, String(record.uid), userPaths(stateRoot, account).home,
     ]))
-    .then(() => launch(options));
+    .then(() => {
+      // A cold boot is the slowest path a user sees, and it used to leave no
+      // trace in the gateway log at all. One line per attempt makes the wait
+      // attributable before deciding where to optimise it.
+      const begun = Date.now();
+      return launch(options).finally(() => {
+        console.log(`instance launch for ${account} took ${String(Date.now() - begun)}ms`);
+      });
+    });
   launchChains.set(record.subject, attempt);
   placeholder.starting = attempt.then((launched) => {
     // Every process start exchanges its own launch URL for a cookie. A cached
@@ -1082,6 +1090,22 @@ export function launchFailure(subject) {
  */
 export function instanceBoot(subject) {
   return instances.get(subject)?.bootedAt ?? bootStamps.get(subject) ?? 0;
+}
+
+/**
+ * Boot identity to publish to a browser, or 0 while nothing can serve it.
+ *
+ * `instanceBoot` is deliberately durable: a gateway restart must not make an
+ * open workspace look replaced. But the starting page treats any non-zero boot
+ * as "reload now", so publishing that persisted value during a cold launch
+ * made it reload in a loop and queue another launch on every navigation. Only
+ * an instance that has exchanged its cookie can actually serve a document.
+ * @param {string} subject
+ * @returns {number}
+ */
+export function readyBoot(subject) {
+  const instance = instances.get(subject);
+  return instance?.cookie !== undefined ? instanceBoot(subject) : 0;
 }
 
 /**

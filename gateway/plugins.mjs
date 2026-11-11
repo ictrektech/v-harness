@@ -357,8 +357,7 @@ function profileLayer(home) {
  * @param {string} relative - package name relative to `node_modules`.
  * @returns {Promise<void>}
  */
-async function clearLegacyCopy(profile, relative) {
-  const declared = await readProfileDependencies(profile)
+async function clearLegacyCopy(profile, relative, declared) {
   if (Object.hasOwn(declared, relative)) return
   await rm(join(profile, 'node_modules', relative), { recursive: true, force: true }).catch(() => {})
 }
@@ -420,23 +419,38 @@ export async function syncClientPlugins(user) {
   }
   const stampPath = join(modules, '.vh-sync.json')
   const stamps = await readStamps(stampPath)
-  for (const name of deployed) {
-    const target = join(modules, name)
-    const source = join(PLUGIN_ROOT, name)
-    const stamp = await treeStamp(source)
-    if (stamps[name] === stamp && (await exists(join(target, 'package.json')))) {
-      await clearLegacyCopy(profile, `@deepseek-ai/${name}`)
-      continue
+  const declaredDeps = await readProfileDependencies(profile)
+  let copied = false
+  let stampDirty = false
+  try {
+    for (const name of deployed) {
+      const target = join(modules, name)
+      const source = join(PLUGIN_ROOT, name)
+      const stamp = await treeStamp(source)
+      if (stamps[name] === stamp && (await exists(join(target, 'package.json')))) {
+        await clearLegacyCopy(profile, `@deepseek-ai/${name}`, declaredDeps)
+        continue
+      }
+      try {
+        await replaceDirectory(source, target)
+        copied = true
+      } catch (error) {
+        throw new Error(`plugin sync failed: ${name}`, { cause: error })
+      }
+      stamps[name] = stamp
+      stampDirty = true
+      await clearLegacyCopy(profile, `@deepseek-ai/${name}`, declaredDeps)
     }
-    try {
-      await replaceDirectory(source, target)
-      await chownTo(target, user.uid, user.linuxName)
-    } catch (error) {
-      throw new Error(`plugin sync failed: ${name}`, { cause: error })
+  } finally {
+    // dsh has not spawned yet, so no reader can see a root-owned copy during
+    // the loop. One recursive chown over the layer replaces a `chown -R`
+    // process per package, and the ledger is written once instead of once per
+    // package — the dominant cost when an image update invalidates 82 stamps.
+    if (copied) await chownTo(modules, user.uid, user.linuxName)
+    if (stampDirty) {
+      await writeFile(stampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
+      await chownDir(stampPath, 0, 'root')
     }
-    stamps[name] = stamp
-    await writeFile(stampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
-    await clearLegacyCopy(profile, `@deepseek-ai/${name}`)
   }
 }
 
@@ -493,6 +507,10 @@ async function syncAgentPlugins(user) {
   await chownDir(profileModules, user.uid, user.linuxName)
   const agentStampPath = join(profile, '.vh-agent-sync.json')
   const stamps = await readStamps(agentStampPath)
+  const declaredDeps = await readProfileDependencies(profile)
+  let copiedLayer = false
+  let copiedProfile = false
+  let stampDirty = false
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
@@ -510,15 +528,22 @@ async function syncAgentPlugins(user) {
     if (stale) {
       try {
         await replaceDirectory(join(payloadModules, relative), target)
-        await chownTo(target, user.uid, user.linuxName)
+        if (declared) copiedProfile = true
+        else copiedLayer = true
         stamps[relative] = stamp
-        await writeFile(agentStampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
+        stampDirty = true
       } catch (error) {
         failures.push(`agent plugin sync failed for ${name} in ${user.linuxName}: ${String(error.message)}`)
       }
     }
-    if (!declared) await clearLegacyCopy(profile, relative)
+    if (!declared) await clearLegacyCopy(profile, relative, declaredDeps)
   }
+  // One recursive chown per tree, and one ledger write, instead of a process
+  // and a file write per package. dsh has not spawned yet, so there is no
+  // reader to see a root-owned package while the loop runs.
+  if (copiedLayer) await chownTo(layer, user.uid, user.linuxName)
+  if (copiedProfile) await chownTo(profileModules, user.uid, user.linuxName)
+  if (stampDirty) await writeFile(agentStampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
   // A name the manifest lists but the payload lacks used to leave no trace: the
   // loop above only walks packages that are present, so the tenant silently
   // booted without that plugin (no market, no bot) and nothing was logged. An

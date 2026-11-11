@@ -47,8 +47,8 @@ import {
 import {
   ensureInstance,
   instanceAnswers,
-  instanceBoot,
   launchFailure,
+  readyBoot,
   liveInstance,
   migrateInstanceStateKeys,
   primeInstanceBoots,
@@ -759,7 +759,18 @@ function sendBootstrap(res) {
  * page waits for the boot identity to appear and then loads the shell, so the
  * end of a restart is the app rather than a blank tab.
  */
-const STARTING = `<!doctype html>
+/**
+ * The waiting page must work when the app is mounted under a portal prefix.
+ *
+ * An absolute `/__vh/*` URL lands on the portal root there, not on the gateway,
+ * so the boot probe 404s while a cold launch is still running. A paced document
+ * reload is the reliable path: that request always reaches the gateway, drives
+ * the launch, and returns the real app once the instance can serve it.
+ * @returns {string}
+ */
+function startingPage() {
+  const bootUrl = APP_BASE_PATH ? `${APP_BASE_PATH}/__vh/boot` : '/__vh/boot';
+  return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>v-harness</title>
@@ -771,40 +782,46 @@ const STARTING = `<!doctype html>
 @keyframes r{to{transform:rotate(360deg)}}</style>
 </head><body><div id="w"><div id="m"><span id="s"></span><span>正在启动工作区…</span></div><div id="h"></div></div>
 <script>
-var tries = 0;
+var BOOT_URL = ${JSON.stringify(bootUrl)};
 var hint = document.getElementById('h');
 var failed = '';
+var startedAt = Date.now();
+try {
+  var since = Number(sessionStorage.getItem('vh-starting-since') || 0);
+  if (since && Date.now() - since < 300000) startedAt = since;
+  else sessionStorage.setItem('vh-starting-since', String(startedAt));
+} catch (e) { /* storage unavailable: count only this page load */ }
+function waited() { return Math.round((Date.now() - startedAt) / 1000); }
 function poll() {
-  tries += 1;
-  // A launch that keeps failing would otherwise spin here forever with no
-  // explanation; say how long it has been, and what to do about it.
-  if (tries === 80 && !failed) hint.textContent = '启动时间较长，仍在重试…';
-  if (tries === 200 && !failed) hint.textContent = '仍在自动重试：若长时间无响应，请联系管理员查看工作区日志。';
-  // Absolute: a relative path would resolve under whatever deep link asked for
-  // this page and poll the instance instead of the gateway that answers it.
-  fetch('/__vh/boot', { credentials: 'same-origin', cache: 'no-store' })
+  var w = waited();
+  if (!failed) {
+    if (w >= 60) hint.textContent = '启动时间较长（' + w + ' 秒），仍在自动重试…';
+    else if (w >= 10) hint.textContent = '正在启动，已等待 ' + w + ' 秒…';
+  }
+  // Fast path on deployments that route the prefixed probe to the gateway.
+  fetch(BOOT_URL, { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
-      // reload(), not replace(same url): a shell with a hash route treats an
-      // unchanged-URL replace as a fragment change and answers it without
-      // asking the server, which leaves the tab on this page for good.
       if (d && typeof d.boot === 'number' && d.boot > 0) { location.reload(); return; }
       if (d && typeof d.error === 'string' && d.error !== '') {
         failed = d.error;
-        hint.textContent = '启动失败：' + d.error;
+        hint.textContent = '启动失败：' + d.error + '，仍在自动重试…';
       }
-      setTimeout(poll, tries < 120 ? 700 : 3000);
     })
-    .catch(function () { setTimeout(poll, 1000); });
+    .catch(function () { /* the paced reload below is the fallback */ });
+  // A document request reaches the gateway regardless of /__vh routing; it
+  // keeps the launch alive and returns the app as soon as the instance is up.
+  setTimeout(function () { location.reload(); }, w < 30 ? 2000 : 5000);
 }
 setTimeout(poll, 500);
 </script></body></html>`;
+}
 
 /**
  * @param {import('node:http').ServerResponse} res
  */
 function sendStarting(res) {
-  const body = Buffer.from(STARTING, 'utf8');
+  const body = Buffer.from(startingPage(), 'utf8');
   res.writeHead(200, {
     'content-type': 'text/html; charset=utf-8',
     'content-length': String(body.byteLength),
@@ -1409,8 +1426,9 @@ async function handleControl(req, res, url) {
     }
     // A launch that failed says why: the starting page shows the reason while
     // it keeps retrying, which is the difference between waiting and not
-    // knowing.
-    const boot = instanceBoot(session.subject);
+    // knowing. The durable boot identity alone is not a readiness signal —
+    // `readyBoot` answers 0 until an instance can actually forward a request.
+    const boot = readyBoot(session.subject);
     const failure = launchFailure(session.subject);
     json(res, 200, failure === undefined ? { boot } : { boot, error: failure });
     return;
