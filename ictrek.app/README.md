@@ -66,7 +66,7 @@ Node 24 基镜像按架构上传到 ictrek SWR，标签为 `node:24-bookworm-sli
 
 打包校验完整读取归档目录后再检查必需文件；外层归档必须仅包含 `app.tar.gz`。
 
-两种架构的镜像均推送并写入飞书后，在本地运行 `./ictrek.app/scripts/update_version.sh patch`。GitHub Actions 从最新已发布 Release 解析 V-Scheduler 依赖版本，生成安装包并发布至 GitHub Release 和 VOS 应用商店；应用商店发布失败会令工作流失败。
+两种架构的镜像均推送并写入飞书后，在本地运行 `./ictrek.app/scripts/update_version.sh patch`。GitHub Actions 从最新已发布 Release 解析 V-Scheduler 依赖版本，生成安装包并发布至 GitHub Release 和 VOS 应用商店；应用商店发布失败会令工作流失败。 发布说明使用 fork 主线的提交记录，合并上游时保留同步提交和本地改动的发布记录。
 
 发布前在构建机用独立容器运行 `scripts/verify_runtime.mjs`：将该文件只读挂载到容器并以 `node` 为入口，沿用 Compose 的 `SYS_ADMIN`、`SYS_PTRACE` 和 security_opt，不挂载真实 `/data`。它验证浏览器远程接口、真实租户实例启动、模拟 VOS 登录及首页反代；模型设置仍需在 VOS 页面选择并重新打开核验。
 
