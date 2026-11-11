@@ -1,18 +1,19 @@
 /**
  * The document the gateway rewrites: the tenant's dsh shell.
  *
- * Three things ride on it, and all of them have to happen inside the shell
+ * Four things ride on it, and all of them have to happen inside the shell
  * because the gateway owns no code in the browser:
  *
  *   1. The language entry the client locale plugin reads before it mounts.
- *   2. A URL bridge. The ingress only routes `/app/com.ictrek.v-harness`,
+ *   2. The initial DS Bot surface mode.
+ *   3. A URL bridge. The ingress only routes `/app/com.ictrek.v-harness`,
  *      `/api`, `/plugins`, `/assets`, `/__vh` and `/favicon.ico` of this origin
  *      to the gateway (ictrek.app/src/docker-compose.yml), so a plugin that
  *      serves its own routes — `@goodandready/dsh-gitea` fetches
  *      `/dsh-gitea/config` — is answered by the platform with 404. The bridge
  *      prefixes root-absolute same-origin requests with the application path,
  *      which is the one thing the plugin cannot know about itself.
- *   3. The restart affordance. A plugin bundle patch that carries configuration
+ *   4. The restart affordance. A plugin bundle patch that carries configuration
  *      is applied by the bundle layer at startup only; the surface reports
  *      "restart to apply" but has no control that performs one.
  *
@@ -68,7 +69,7 @@ export function injectShell(html, { locale, basePath = '', shell = true }) {
   // reloading two seconds after it opened is exactly what the user sees as
   // "refreshing every few seconds".
   const scripts = shell
-    ? `${verifyScript()}${localeScript(locale)}${runtimeScript(copy, basePath, true)}`
+    ? `${verifyScript()}${localeScript(locale)}${surfaceModeScript()}${runtimeScript(copy, basePath, true)}`
     : runtimeScript(copy, basePath, false);
   const head = /<head[^>]*>/iu.exec(html);
   // A document without a head still gets the scripts: prepending keeps the rest
@@ -106,6 +107,11 @@ function localeScript(locale) {
   const tag = locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : '';
   if (tag === '') return '';
   return `<script>try{localStorage.setItem("preferences-locale",JSON.stringify({value:"${tag}"}))}catch(e){}</script>`;
+}
+
+/** Give a fresh browser the classic Agent sidebar before DS Bot mounts. */
+function surfaceModeScript() {
+  return '<script>try{if(localStorage.getItem("ds-bot:surface")===null)localStorage.setItem("ds-bot:surface","agent")}catch(e){}</script>';
 }
 
 /**

@@ -53,6 +53,7 @@ test('a plugin document gets the URL bridge and nothing else', () => {
   // someone else's page reloaded it a couple of seconds after it opened.
   assert.ok(!html.includes(VERIFY_SCRIPT_SRC));
   assert.ok(!html.includes('preferences-locale'));
+  assert.ok(!html.includes('ds-bot:surface'));
   assert.equal(scriptsOf(html).length, 1);
 });
 
@@ -97,6 +98,21 @@ test('the language entry carries the tenant language and nothing else', () => {
   assert.ok(!injectShell(SHELL, { locale: undefined }).includes('preferences-locale'));
 });
 
+test('the classic Agent surface is the default and a saved DS Bot choice wins', () => {
+  const script = scriptsOf(injectShell(SHELL, {})).find(value => value.includes('ds-bot:surface'));
+  assert.ok(script);
+  const mode = new Map();
+  const localStorage = {
+    getItem: key => mode.get(key) ?? null,
+    setItem: (key, value) => mode.set(key, value),
+  };
+  vm.runInNewContext(script, { localStorage });
+  assert.equal(mode.get('ds-bot:surface'), 'agent');
+  mode.set('ds-bot:surface', 'bot');
+  vm.runInNewContext(script, { localStorage });
+  assert.equal(mode.get('ds-bot:surface'), 'bot');
+});
+
 test('the bridge is told where the gateway is mounted', () => {
   const html = injectShell(SHELL, { locale: 'zh', basePath: '/app/com.ictrek.v-harness' });
   assert.ok(html.includes('"base":"/app/com.ictrek.v-harness"'));
@@ -109,12 +125,12 @@ test('the bridge is told where the gateway is mounted', () => {
 test('a document without a head still gets the scripts', () => {
   const html = injectShell('<body>hi</body>', { locale: 'zh', basePath: '/app/x' });
   assert.ok(html.endsWith('<body>hi</body>'));
-  assert.equal(scriptsOf(html).length, 2);
+  assert.equal(scriptsOf(html).length, 3);
 });
 
 test('the injected script survives a document that is not a full page', () => {
   const html = injectShell('', { locale: 'zh', basePath: '' });
-  assert.equal(scriptsOf(html).length, 2);
+  assert.equal(scriptsOf(html).length, 3);
   assert.ok(!html.includes('</script><script></script>'));
 });
 
@@ -126,8 +142,8 @@ test('the injected script survives a document that is not a full page', () => {
  */
 function loadBridge(basePath, origin = 'https://vos.example') {
   const html = injectShell('<html><head></head><body></body></html>', { locale: 'zh', basePath });
-  const bridge = scriptsOf(html)[1];
-  assert.ok(bridge !== undefined && bridge.includes('ROOT_ROUTES'));
+  const bridge = scriptsOf(html).find(value => value.includes('ROOT_ROUTES'));
+  assert.ok(bridge);
   const asked = { fetch: /** @type {string[]} */ ([]), xhr: /** @type {string[]} */ ([]) };
   class FakeXhr {
     /** @param {string} method @param {string} url */
