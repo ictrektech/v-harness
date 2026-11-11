@@ -55,3 +55,6 @@
 - id: plugin-manager
   config:
     fallbackRegistries: ['https://registry.npmjs.org/']
+# The forked conversation UI does not implement the newer text-interaction API.
+- id: message-quotes
+  disabled: true

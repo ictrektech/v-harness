@@ -38,4 +38,17 @@ try {
  });
  assert.equal(crossSiteWrite.status, 403);
  console.log('AUTHENTICATED MEDIA DESK AND CROSS-SITE WRITE REJECTION: PASS');
-}catch(error){for(const file of await readdir('/data/logs').catch(()=>[])) console.log('INSTANCE LOG',await readFile('/data/logs/'+file,'utf8'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}
+ const market = await fetch(base + '/dsh-market/status', { headers: { cookie } });
+ assert.equal(market.status, 200);
+ const plugins = await market.json();
+ assert.equal(plugins.region, 'china');
+ assert.ok(plugins.githubProxy);
+ for (const name of ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']) {
+   assert.ok(Object.hasOwn(plugins.installed, name), `Missing bundled plugin ${name}`);
+ }
+ const logs = '/data/.vh/logs';
+ for (const file of await readdir(logs)) {
+   assert.doesNotMatch(await readFile(logs + '/' + file, 'utf8'), /prompt section .* is already registered/);
+ }
+ console.log('MAINLAND MARKET REGION AND BUNDLED PLUGINS: PASS');
+}catch(error){for(const file of await readdir('/data/.vh/logs').catch(()=>[])) console.log('INSTANCE LOG',await readFile('/data/.vh/logs/'+file,'utf8'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}
