@@ -38,7 +38,7 @@ const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/age
 /** The carrier bundle that mounts the agent-side plugin rows. */
 const AGENT_BUNDLE_NAME = 'vh-agent-plugins'
 
-/** Registry bundles installed at image build and declared in each Web profile. */
+/** Registry packages installed at image build and declared in each Web profile. */
 const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']
 
 /**
@@ -48,16 +48,15 @@ const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-conn
  * a tenant's first login ships the full tool surface instead of a degraded
  * one. dsh never overwrites existing profile files, so pre-creation wins.
  *
- * The registry plugins follow the carrier layer because their own
- * `dsh.bundle.patch` files mount their rows — and ds-bot's also restates the
- * `web` row's search provider. A profile patch that names another provider
- * still wins, since the tenant's patch layer applies after every bundle.
+ * The default registry bundles follow the carrier because their own patches
+ * mount their rows. Existing user-selected bundle layers are retained.
  */
+// DS Bot is installed for each user and is selected only through that user's plugin manager.
 const PROFILE_BUNDLES = [
   '@deepseek-ai/dsh-base',
   '@deepseek-ai/dsh-web-app',
   AGENT_BUNDLE_NAME,
-  ...PROFILE_PLUGINS,
+  ...PROFILE_PLUGINS.filter(name => name !== 'ds-bot'),
 ]
 
 /** Mirrors dsh's profile user-patch template. */

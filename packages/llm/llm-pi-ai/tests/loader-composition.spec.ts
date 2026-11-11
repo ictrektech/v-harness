@@ -9,6 +9,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import LlmRuntime, { createMessage, createUserMessage, userAgent } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import AuthorizationService from '@deepseek-ai/dsh-authorization'
 import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
@@ -87,53 +88,23 @@ async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }
 }
 
 describe('llm-pi-ai real dormant composition', () => {
-  it('discovers managed models through the Loader and sends a real streaming request', async () => {
-    const catalog = { body: JSON.stringify({ data: [{ id: 'private/managed', name: 'Managed', api: 'openai-completions', input: ['text'] }] }) }
-    const server = await mockServer([catalog, catalog, { events: textEvents }, { body: JSON.stringify({ data: [] }) }])
-    vi.stubEnv('VH_SCHEDULER_URL', server.url)
-    vi.stubEnv('VH_SCHEDULER_KEY', 'tenant-inference-capability')
-    const { ctx } = await loadComposition()
-    expect((await ctx.llm.listModels('v-scheduler')).map(model => model.id)).toEqual(['private/managed'])
-    const result = await assemble(ctx, { provider: 'v-scheduler', model: 'private/managed', messages: [] })
-    expect(result.message.content).toEqual([{ type: 'text', text: 'hello' }])
-    expect(server.paths).toEqual(['/v1/models', '/v1/models', '/v1/chat/completions'])
-    expect(server.headers[2]?.authorization).toBe('Bearer tenant-inference-capability')
-    expect(await ctx.llm.listModels('v-scheduler')).toEqual([])
-    const llm = ctx.llm
-    await context?.fiber.dispose()
-    context = undefined
-    expect(llm.listProviders()).toEqual([])
-  })
-
-  it('uses the Messages endpoint for managed Anthropic models', async () => {
-    const catalog = { body: JSON.stringify({ data: [{ id: 'private/claude', api: 'anthropic-messages', input: ['text'] }] }) }
-    const server = await mockServer([catalog, catalog, { events: anthropicTextEvents }])
-    vi.stubEnv('VH_SCHEDULER_URL', server.url)
-    vi.stubEnv('VH_SCHEDULER_KEY', 'tenant-inference-capability')
-    const { ctx } = await loadComposition()
-    expect((await ctx.llm.listModels('v-scheduler-messages')).map(model => model.id)).toEqual(['private/claude'])
-    const result = await assemble(ctx, { provider: 'v-scheduler-messages', model: 'private/claude', messages: [] })
-    expect(result.message.content).toEqual([{ type: 'text', text: 'hello' }])
-    expect(server.paths[2]).toBe('/v1/messages?beta=true')
-  })
-
-  it('uses Responses transport for managed Responses models', async () => {
-    const catalog = { body: JSON.stringify({ data: [{ id: 'private/responses', api: 'openai-responses', input: ['text'] }] }) }
-    const item = { type: 'message', id: 'msg_reply', role: 'assistant', content: [{ type: 'output_text', text: 'hello', annotations: [] }] }
-    const events = [
-      JSON.stringify({ type: 'response.created', response: { id: 'resp_reply' } }),
-      JSON.stringify({ type: 'response.output_item.added', output_index: 0, item }),
-      JSON.stringify({ type: 'response.output_item.done', output_index: 0, item }),
-      JSON.stringify({ type: 'response.completed', response: { id: 'resp_reply', status: 'completed', output: [item], usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 } } }),
-    ]
-    const server = await mockServer([catalog, catalog, { events }])
-    vi.stubEnv('VH_SCHEDULER_URL', server.url)
-    vi.stubEnv('VH_SCHEDULER_KEY', 'tenant-inference-capability')
-    const { ctx } = await loadComposition()
-    expect((await ctx.llm.listModels('v-scheduler-responses')).map(model => model.id)).toEqual(['private/responses'])
-    const result = await assemble(ctx, { provider: 'v-scheduler-responses', model: 'private/responses', messages: [] })
-    expect(result.message.content).toEqual([{ type: 'text', text: 'hello' }])
-    expect(server.paths[2]).toBe('/v1/responses')
+  it('dispatches header contributors through the Loader-mounted adapter', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const { ctx, settingsPath } = await loadComposition()
+    ctx.on('llm-pi-ai/request-headers', (request, headers, next) => {
+      headers.set('x-request-session', String(request.sessionId))
+      return next()
+    })
+    await writeFile(settingsPath, [
+      '- id: llm-pi-ai', '  config:', '    providers:', '      deepseek:',
+      '        apiKeyEnv: PI_COMPOSITION_KEY', `        baseURL: ${server.url}`, '',
+    ].join('\n'))
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['deepseek'])
+    }, { timeout: 5000 })
+    const result = await assemble(ctx, { model: 'deepseek-flash', messages: [], sessionId: SessionId('loader-session') })
+    expect(result.finish).toEqual({ kind: 'stop' })
+    expect(server.headers[0]?.['x-request-session']).toBe('loader-session')
   })
 
   it('boots with zero routes and registers one the moment settings supply a profile', async () => {

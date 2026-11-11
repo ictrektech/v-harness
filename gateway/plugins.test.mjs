@@ -63,7 +63,7 @@ test('a new profile declares the published payload plugins as dependencies', asy
     dshmarket: '1.73.17', 'ds-bot': '0.3.2', '@xmanrui/dsh-im': '5.10.0', 'dsh-mcp-connector': '0.2.100', 'dsh-media-desk': '2.6.2',
   });
   assert.deepEqual(manifest.dsh.profile.bundles, [
-    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', 'dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk',
+    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', 'dshmarket', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk',
   ]);
   // Declared dependencies stay inside the profile: pnpm installs and repairs them.
   assert.equal(existsSync(join(user.profile, 'node_modules', 'dshmarket')), true);
@@ -77,14 +77,14 @@ test('a new profile declares the published payload plugins as dependencies', asy
   await rm(user.home, { recursive: true, force: true });
 });
 
-test('an existing profile receives the dependencies and the carrier it predates', async () => {
+test('an existing profile keeps its DS Bot selection and receives the other bundled plugins', async () => {
   const user = await tenant();
   await mkdir(join(user.profile, 'node_modules'), { recursive: true });
   await writeFile(join(user.profile, 'package.json'), JSON.stringify({
     name: 'dsh-profile-web',
     private: true,
     dependencies: { 'dsh-pet': '0.4.4' },
-    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-bot'] } },
   }));
 
   await syncPlugins(user);
@@ -98,5 +98,11 @@ test('an existing profile receives the dependencies and the carrier it predates'
   assert.equal(manifest.dsh.profile.bundles.includes('@xmanrui/dsh-im'), true);
   assert.equal(manifest.dsh.profile.bundles.includes('dsh-mcp-connector'), true);
   assert.equal(manifest.dsh.profile.bundles.includes('dsh-media-desk'), true);
+  manifest.dsh.profile.bundles = manifest.dsh.profile.bundles.filter(name => name !== 'ds-bot');
+  await writeFile(join(user.profile, 'package.json'), JSON.stringify(manifest));
+  await syncPlugins(user);
+  const disabled = JSON.parse(await readFile(join(user.profile, 'package.json'), 'utf8'));
+  assert.equal(disabled.dsh.profile.bundles.includes('ds-bot'), false);
+  assert.equal(disabled.dependencies['ds-bot'], '0.3.2');
   await rm(user.home, { recursive: true, force: true });
 });

@@ -308,10 +308,6 @@ COPY skills/ /opt/v-harness/skills/
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.
 COPY --from=plugins /build/plugins/ /opt/v-harness/plugins/
-# DSH 0.2.2 registers file-reference guidance upstream. Keep its Host half
-# with the fork's browser half so the prompt is registered once.
-RUN cp /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-deliverables/lib/index.js \
-       /opt/v-harness/plugins/dsh-client-ui-deliverables/lib/index.js
 # The payload directory is the list: every browser package the image built
 # replaces its published counterpart. A hand-maintained name list drifted from
 # the source tree once and shipped the old attachment editor, so a plugin now

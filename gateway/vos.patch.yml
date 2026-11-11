@@ -55,6 +55,3 @@
 - id: plugin-manager
   config:
     fallbackRegistries: []
-# The forked conversation UI does not implement the newer text-interaction API.
-- id: message-quotes
-  disabled: true

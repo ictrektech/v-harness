@@ -21,10 +21,9 @@ workspace, and private deliverables.
 
 ## Built-in plugins
 
-The first visit opens in Classic Agent mode. Open DS Bot from the sidebar to switch. Your saved mode is retained.
+The first visit opens in Classic Agent mode. DS Bot is preinstalled and can be enabled under Plugins. Each user keeps their own activation state.
 
 - **Media Desk**. Sign in to VOS, open v-harness, and select Media Desk in the sidebar. If the DS Bot interface is active, open Settings from the account menu and switch to Classic Agent mode under Mode. Add a note under Ideas, then open the card to generate a script, title, cover, illustrations, and storyboard. Schedule the draft in Calendar and enter or import metrics in Review. Drafting uses the v-harness default model unless you select another in Media Desk. For images, configure an image provider or select an available subscription image tool in Media Desk settings and generate a test image. You can explore with sample data or clear it before adding your own. [Upstream usage guide](https://github.com/woniuniuniu/dsh-media-desk/blob/main/README.en.md)
 - **IM Bot**. Open Settings → IM Bot, choose a channel, and follow its QR code or credential setup. Assign a workspace and model, set conversation access, then send a test message from the chat app once connected. If the connection fails, check platform permissions, credentials, and network access. [Upstream channel guide](https://github.com/xmanrui/dsh-im)
 - Both plugins use the signed-in VOS user's isolated environment. Media Desk's `/media-desk/*` routes serve its own browser UI and ship with the plugin. IM platform connections are managed by each channel adapter.
 - **Plugin downloads**. Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
-- DSH 0.2.2 text-selection quoting is currently disabled in the v-harness conversation interface.
