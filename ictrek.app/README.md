@@ -26,7 +26,7 @@
 
 首次登录使用租户工作目录作为默认工作区的目录基准，不依赖容器中不存在的桌面 Documents/XDG 服务；已有工作区不改名或迁移。
 
-默认 profile 从共享 dsh 安装加载内置插件；镜像构建时将定制插件写入该安装。网关只同步已存在的用户级插件覆盖，不要求用户目录具有 `node_modules`，也不重建用户配置。
+镜像内置自媒体工作台 `dsh-media-desk@2.6.2` 和 IM 机器人 `@xmanrui/dsh-im@5.10.0`。网关在新用户首次启动、已有用户升级后首次启动时，将插件及其依赖声明同步到各自的 Web profile。自媒体工作台要求 DSH `0.2.1-rc.5`，随镜像提供。操作入口见 [中文使用说明](src/README.zh-CN.md) 和 [English usage guide](src/README.en.md)。
 
 | 路径 | 用途 |
 |---|---|
@@ -67,4 +67,3 @@ V_HARNESS_SOURCE_REVISION=<本地提交完整 SHA> ./build_image.sh --target arm
 ## 已知限制
 
 - 模型统一在 V-Scheduler 中管理；设置页通过 VOS 应用抽屉跳转，保留平台身份上下文，并提供刷新及默认模型下拉框。推理沿用当前 VOS 用户身份。纯文本补全模型不支持工具调用。
-- 默认 profile 使用共享安装的内置插件；用户另行安装的插件才写入用户级 pnpm store 与 `node_modules`。

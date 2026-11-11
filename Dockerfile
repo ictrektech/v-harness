@@ -191,6 +191,7 @@ ARG DSH_IM_VERSION=5.10.0
 # The MCP connection manager (authorization, tool governance, diagnostics),
 # also a registry package that ships to every tenant.
 ARG DSH_MCP_CONNECTOR_VERSION=0.2.97
+ARG DSH_MEDIA_DESK_VERSION=2.6.2
 # The connector registers its sidebar row with a label *function*, which the
 # surface re-evaluates on every projection, so that one row repaints whenever
 # the plugin's store moves — every other plugin registers a string and stays
@@ -201,10 +202,10 @@ ARG DSH_MCP_CONNECTOR_VERSION=0.2.97
 RUN mkdir -p /tmp/registry-plugins \
  && npm install --prefix /tmp/registry-plugins --no-save --ignore-scripts --legacy-peer-deps \
       "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" "@xmanrui/dsh-im@${DSH_IM_VERSION}" \
-      "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" \
+      "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" "dsh-media-desk@${DSH_MEDIA_DESK_VERSION}" \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
- && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
 
 # ============================================================
@@ -212,7 +213,8 @@ RUN mkdir -p /tmp/registry-plugins \
 # ============================================================
 FROM ${BASE_IMAGE}
 
-ARG DSH_VERSION=0.2.1-rc.2
+# Media Desk requires DSH 0.2.1-rc.5 or newer.
+ARG DSH_VERSION=0.2.1-rc.5
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.

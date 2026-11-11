@@ -2212,6 +2212,10 @@ async function proxyRequest(req, res) {
 
   const path = stripPrefix(req.url ?? '/').replace(/^\/__vh-ui-v2\/assets\//, '/assets/');
   const headers = upstreamHeaders(req, instance.port, instance.cookie);
+  // Media Desk checks Fetch Metadata before processing write requests.
+  if (path.startsWith('/media-desk/') && req.headers['sec-fetch-site'] !== undefined) {
+    headers['sec-fetch-site'] = req.headers['sec-fetch-site'];
+  }
   // Only the document carries the shell injection; assets and RPC answers are
   // streamed untouched. The shell is rewritten as text, so this one request
   // must not come back compressed.

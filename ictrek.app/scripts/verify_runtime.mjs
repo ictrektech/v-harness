@@ -26,4 +26,16 @@ try {
  const body=await auth.json();console.log('AUTH RESULT',auth.status,body.authenticated);assert.equal(auth.status,200);assert.equal(body.authenticated,true);
  const cookie=auth.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
  const page=await fetch(base+'/',{headers:{cookie}});const html=await page.text();assert.equal(page.status,200);assert.ok(html.includes('<html'));assert.ok(html.includes('<title>v-harness</title>'),'proxied page must use the fork title');assert.ok(!html.includes('网关错误'));console.log('FULL STARTUP AND AUTHENTICATED PAGE: PASS');
+ const state = await fetch(base + '/media-desk/state', { headers: { cookie, 'x-media-desk-lang': 'en' } });
+ assert.equal(state.status, 200);
+ assert.ok(Array.isArray((await state.json()).state.items));
+ const unknown = await fetch(base + '/media-desk/nonexistent', { headers: { cookie } });
+ assert.equal(unknown.status, 404);
+ const crossSiteWrite = await fetch(base + '/media-desk/ops', {
+   method: 'POST',
+   headers: { cookie, 'sec-fetch-site': 'cross-site', 'content-type': 'application/json' },
+   body: JSON.stringify({ ops: [] }),
+ });
+ assert.equal(crossSiteWrite.status, 403);
+ console.log('AUTHENTICATED MEDIA DESK AND CROSS-SITE WRITE REJECTION: PASS');
 }catch(error){for(const file of await readdir('/data/logs').catch(()=>[])) console.log('INSTANCE LOG',await readFile('/data/logs/'+file,'utf8'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}

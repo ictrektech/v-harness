@@ -38,6 +38,9 @@ const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/age
 /** The carrier bundle that mounts the agent-side plugin rows. */
 const AGENT_BUNDLE_NAME = 'vh-agent-plugins'
 
+/** Registry bundles installed at image build and declared in each Web profile. */
+const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']
+
 /**
  * Pre-created profile manifest fields. dsh initializes the same content on
  * first use (packages/boot/app-boot profile.ts); creating it here lets the
@@ -54,10 +57,7 @@ const PROFILE_BUNDLES = [
   '@deepseek-ai/dsh-base',
   '@deepseek-ai/dsh-web-app',
   AGENT_BUNDLE_NAME,
-  'dshmarket',
-  'ds-bot',
-  '@xmanrui/dsh-im',
-  'dsh-mcp-connector',
+  ...PROFILE_PLUGINS,
 ]
 
 /** Mirrors dsh's profile user-patch template. */
@@ -104,15 +104,6 @@ async function alignProfileStore(user) {
 
 /** Plugins shipped from this repository, by package name. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes']
-
-/**
- * Payload plugins that are published, so a profile declares them like any other
- * dependency. `@xmanrui/dsh-im` is the IM bridge (WeCom/Feishu/DingTalk/QQ/
- * Telegram/...), a third-party registry package staged like the market and the
- * bot: its version is read from the payload, never pinned here.
- * `dsh-mcp-connector` is the MCP connection manager, staged the same way.
- */
-const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector']
 
 /**
  * The dependencies every tenant profile declares: the published payload
