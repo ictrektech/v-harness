@@ -254,9 +254,11 @@ export async function syncPlugins(user) {
  *
  * A restart used to recopy the whole payload — 83 MB across 4400 files — for
  * every tenant boot, which is most of the twenty seconds a restart took. File
- * count, total bytes and the newest mtime move on any image rebuild and stay
- * put otherwise, so the copy can be skipped when the fingerprint matches what
- * the target was built from.
+ * count, total bytes and the package version identify the build; the copy can
+ * be skipped when they match what the target was built from. Source mtimes are
+ * deliberately NOT part of the stamp: every image rebuild rewrites them without
+ * changing a byte of content, which used to invalidate all stamps on every
+ * deploy and force a full recopy for the first tenant to sign in.
  *
  * @param {string} root - source directory.
  * @returns {Promise<string>} a comparable stamp.
@@ -264,7 +266,6 @@ export async function syncPlugins(user) {
 async function treeStamp(root) {
   let count = 0
   let bytes = 0
-  let newest = 0
   /** @param {string} dir */
   const walk = async (dir) => {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
@@ -278,11 +279,13 @@ async function treeStamp(root) {
       if (info === undefined) continue
       count += 1
       bytes += info.size
-      if (info.mtimeMs > newest) newest = info.mtimeMs
     }
   }
   await walk(root)
-  return `${String(count)}:${String(bytes)}:${String(Math.trunc(newest))}`
+  const version = await readFile(join(root, 'package.json'), 'utf8')
+    .then((text) => String(JSON.parse(text)?.version ?? ''))
+    .catch(() => '')
+  return `${String(count)}:${String(bytes)}:${version}`
 }
 
 /**

@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -142,6 +142,24 @@ test('one stale package is refreshed without losing the other stamps', async () 
     assert.equal(await readFile(join(modules, MANAGED[0], 'lib', 'index.js'), 'utf8'), 'updated');
   } finally {
     await writeFile(source, '');
+    await rm(user.home, { recursive: true, force: true });
+  }
+});
+
+test('a rebuild that only changes source mtimes does not recopy plugins', async () => {
+  const user = await tenant();
+  assert.equal(await syncPlugins(user), true);
+  const modules = join(user.home, '.dsh', 'profiles', 'node_modules', '@deepseek-ai');
+  const inodes = () => Promise.all(MANAGED.map(async (name) => (await stat(join(modules, name))).ino));
+  const before = await inodes();
+  const source = join(plugins, MANAGED[0], 'lib', 'index.js');
+  const original = await stat(source);
+  await utimes(source, new Date('2030-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'));
+  try {
+    assert.equal(await syncPlugins(user), true);
+    assert.deepEqual(await inodes(), before, 'mtime alone is not a content change');
+  } finally {
+    await utimes(source, original.atime, original.mtime);
     await rm(user.home, { recursive: true, force: true });
   }
 });

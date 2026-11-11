@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 
-import { RESTART_PATH, VERIFY_SCRIPT_SRC, injectShell } from './shell-inject.mjs';
+import { BOOT_PATH, RESTART_PATH, VERIFY_SCRIPT_SRC, injectShell } from './shell-inject.mjs';
 
 const SHELL = '<html><head><meta charset="utf-8"><script type="module" src="./assets/entry.js"></script></head><body></body></html>';
 
@@ -116,7 +116,10 @@ test('the classic Agent surface is the default and a saved DS Bot choice wins', 
 test('the bridge is told where the gateway is mounted', () => {
   const html = injectShell(SHELL, { locale: 'zh', basePath: '/app/com.ictrek.v-harness' });
   assert.ok(html.includes('"base":"/app/com.ictrek.v-harness"'));
-  assert.ok(html.includes(`"path":"${RESTART_PATH}"`));
+  assert.ok(html.includes(`"path":"/app/com.ictrek.v-harness${RESTART_PATH}"`));
+  assert.ok(html.includes(`"boot":"/app/com.ictrek.v-harness${BOOT_PATH}"`));
+  // With no prefix the absolute control routes are already correct.
+  assert.ok(injectShell(SHELL, { locale: 'en', basePath: '' }).includes(`"path":"${RESTART_PATH}"`));
   // The copy is the tenant's: the button reads in the surface language.
   assert.ok(html.includes('重启工作区'));
   assert.ok(injectShell(SHELL, { locale: 'en', basePath: '' }).includes('Restart workspace'));

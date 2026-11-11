@@ -120,7 +120,15 @@ function surfaceModeScript() {
  * @returns {string} the bridge script tag.
  */
 function runtimeScript(copy, basePath, shell) {
-  const config = JSON.stringify({ base: basePath, path: RESTART_PATH, boot: BOOT_PATH, copy, shell });
+  // The control routes are answered by this gateway, not the portal root. When
+  // the app is mounted under a base path, an absolute `/__vh/*` URL lands on
+  // the portal and 404s, leaving the restart button and the boot watcher dead.
+  const config = JSON.stringify({
+    base: basePath,
+    path: basePath ? `${basePath}${RESTART_PATH}` : RESTART_PATH,
+    boot: basePath ? `${basePath}${BOOT_PATH}` : BOOT_PATH,
+    copy, shell,
+  });
   return `<script>(function(){try{var vh=${config};${BRIDGE}}catch(e){}})();</script>`;
 }
 

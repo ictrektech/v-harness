@@ -763,9 +763,10 @@ function sendBootstrap(res) {
  * The waiting page must work when the app is mounted under a portal prefix.
  *
  * An absolute `/__vh/*` URL lands on the portal root there, not on the gateway,
- * so the boot probe 404s while a cold launch is still running. A paced document
- * reload is the reliable path: that request always reaches the gateway, drives
- * the launch, and returns the real app once the instance can serve it.
+ * so the boot probe can 404 while a cold launch is still running. The page
+ * polls the prefixed probe and, when that is unavailable, fetches the document
+ * in the background: both drive the launch, and neither reloads the tab until
+ * the instance can actually serve the app (no flashing on a cold boot).
  * @returns {string}
  */
 function startingPage() {
@@ -792,26 +793,44 @@ try {
   else sessionStorage.setItem('vh-starting-since', String(startedAt));
 } catch (e) { /* storage unavailable: count only this page load */ }
 function waited() { return Math.round((Date.now() - startedAt) / 1000); }
+var lastRetry = 0;
+// A document request always reaches the gateway and drives instanceFor.
+// Fetching it in the background keeps the launch alive (and retries a failed
+// one) without reloading the tab — reloading every couple of seconds is what
+// made this page flash during a cold boot. Only a document that has stopped
+// being this page triggers a single reload.
+function pokeDocument() {
+  var now = Date.now();
+  if (now - lastRetry < 10000) return;
+  lastRetry = now;
+  fetch(location.href.split('#')[0], {
+    credentials: 'same-origin', cache: 'no-store', headers: { accept: 'text/html' }
+  })
+    .then(function (r) { return r.ok ? r.text() : ''; })
+    .then(function (html) {
+      if (html && html.indexOf('正在启动工作区') === -1) location.reload();
+    })
+    .catch(function () {});
+}
 function poll() {
   var w = waited();
   if (!failed) {
     if (w >= 60) hint.textContent = '启动时间较长（' + w + ' 秒），仍在自动重试…';
     else if (w >= 10) hint.textContent = '正在启动，已等待 ' + w + ' 秒…';
   }
-  // Fast path on deployments that route the prefixed probe to the gateway.
   fetch(BOOT_URL, { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
-      if (d && typeof d.boot === 'number' && d.boot > 0) { location.reload(); return; }
-      if (d && typeof d.error === 'string' && d.error !== '') {
+      if (!d) { pokeDocument(); return; }
+      if (typeof d.boot === 'number' && d.boot > 0) { location.reload(); return; }
+      if (typeof d.error === 'string' && d.error !== '') {
         failed = d.error;
         hint.textContent = '启动失败：' + d.error + '，仍在自动重试…';
+        pokeDocument();
       }
     })
-    .catch(function () { /* the paced reload below is the fallback */ });
-  // A document request reaches the gateway regardless of /__vh routing; it
-  // keeps the launch alive and returns the app as soon as the instance is up.
-  setTimeout(function () { location.reload(); }, w < 30 ? 2000 : 5000);
+    .catch(function () { pokeDocument(); });
+  setTimeout(poll, 2000);
 }
 setTimeout(poll, 500);
 </script></body></html>`;

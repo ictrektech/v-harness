@@ -41,23 +41,41 @@ frontend_rule_works() {
   local chain="vh-boot-probe-$$" rc=0
   "$frontend" -N "$chain" 2>/dev/null || return 1
   "$frontend" -A "$chain" "$@" 2>/dev/null || rc=1
-  "$frontend" -F "$chain" 2>/dev/null || true
-  "$frontend" -X "$chain" 2>/dev/null || true
+  # A leftover probe chain is harmless, but silently leaving one makes a
+  # container that could not clean up after itself indistinguishable from one
+  # that never ran the check.
+  "$frontend" -F "$chain" 2>/dev/null \
+    || echo "boot probe: could not flush $chain for $frontend" >&2
+  "$frontend" -X "$chain" 2>/dev/null \
+    || echo "boot probe: could not delete $chain for $frontend" >&2
   return "$rc"
 }
-# Exactly the matches the jail and the gateway install: a frontend that carries
-# one but not the other still leaves the isolation half-built.
+# Exactly the conntrack and mark matches the jail and the gateway install,
+# including the DNS port match from vh-jail's resolver rule.
 frontend_matches_work() {
   frontend_rule_works "$1" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT \
+    && frontend_rule_works "$1" -p udp -m conntrack --ctorigdstport 53 -j ACCEPT \
     && frontend_rule_works "$1" -m mark --mark 0x1 -j ACCEPT
 }
 for family in iptables ip6tables; do
   frontend_matches_work "$family" && continue
   if command -v "${family}-legacy" >/dev/null 2>&1 \
      && frontend_matches_work "${family}-legacy"; then
-    update-alternatives --set "$family" "/usr/sbin/${family}-legacy" >/dev/null
-    echo "${family}: switched to the legacy frontend (this kernel cannot load the nf_tables matches)"
+    if update-alternatives --set "$family" "/usr/sbin/${family}-legacy" >/dev/null 2>&1; then
+      echo "${family}: switched to the legacy frontend (this kernel cannot load the nf_tables matches)"
+    else
+      echo "${family}: the legacy frontend works but update-alternatives --set failed; rules are still routed to nft and will fail" >&2
+    fi
+  else
+    echo "${family}: neither frontend can install conntrack/mark on this kernel; network isolation will be unavailable (fail-open)" >&2
   fi
+done
+# xt_owner is a separate module: docker-proxy's per-tenant rule needs it, but
+# the jail's isolation does not. Check the frontend that won above and say so
+# instead of letting a missing owner match force a false frontend switch.
+for family in iptables ip6tables; do
+  frontend_rule_works "$family" -m owner --uid-owner 0 -j ACCEPT \
+    || echo "boot probe: $family cannot install the owner match; docker-proxy's per-tenant rule may be skipped" >&2
 done
 
 # dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
