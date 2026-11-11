@@ -39,6 +39,7 @@ PUSH_IMAGES=1
 UPDATE_FEISHU=1
 DRY_RUN=0
 SKIP_BUILD=0
+TAG_SUFFIX=""
 
 log() { echo "[INFO] $*"; }
 err() { echo "[ERROR] $*" >&2; }
@@ -56,6 +57,9 @@ Options:
   --dry-run             Print the plan without building or writing Feishu
   --target TARGET       Build target tag prefix: amd or arm (default: detect host)
   --sheet SHEET         Override Feishu sheet title list; comma-separated
+  --tag-suffix SUFFIX   Append SUFFIX to the date tag, so a second build on the
+                        same day stays addressable (amd_20261111_a1a9903) and the
+                        tag already in the release table is left untouched
   -h, --help            Show this help
 
 Environment:
@@ -344,6 +348,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; PUSH_IMAGES=0; UPDATE_FEISHU=0; shift ;;
     --target) TARGET="$2"; shift 2 ;;
     --sheet) TARGET_SHEET_SPEC="$2"; shift 2 ;;
+    --tag-suffix) TAG_SUFFIX="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) err "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -390,6 +395,19 @@ fi
 
 DATE="$(date +%Y%m%d)"
 BASE_TAG="${PROFILE_TAG}_${DATE}"
+
+# A rebuild on the same day would otherwise land on the tag the release table
+# already records and the running deployment already names: the table could no
+# longer tell the two builds apart, and a rollback would have nothing to return
+# to once SWR replaced the image behind that tag. An explicit suffix keeps both
+# builds addressable, which is why the caller passes the commit it built.
+if [[ -n "$TAG_SUFFIX" ]]; then
+  [[ "$TAG_SUFFIX" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+    err "Invalid --tag-suffix: ${TAG_SUFFIX} (letters, digits, dot, dash, underscore)"
+    exit 1
+  }
+  BASE_TAG="${BASE_TAG}_${TAG_SUFFIX}"
+fi
 
 TAG="$BASE_TAG"
 
