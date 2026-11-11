@@ -35,10 +35,10 @@ for (const name of MANAGED) {
 await writeFile(join(agent, 'manifest.json'), JSON.stringify({
   plugins: ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk', 'vh-agent-plugins'],
 }));
-await packageDir(join(agent, 'node_modules', 'dshmarket'), 'dshmarket', '1.73.8');
-await packageDir(join(agent, 'node_modules', 'ds-bot'), 'ds-bot', '0.2.5');
+await packageDir(join(agent, 'node_modules', 'dshmarket'), 'dshmarket', '1.73.17');
+await packageDir(join(agent, 'node_modules', 'ds-bot'), 'ds-bot', '0.3.2');
 await packageDir(join(agent, 'node_modules', '@xmanrui', 'dsh-im'), '@xmanrui/dsh-im', '5.10.0');
-await packageDir(join(agent, 'node_modules', 'dsh-mcp-connector'), 'dsh-mcp-connector', '0.2.97');
+await packageDir(join(agent, 'node_modules', 'dsh-mcp-connector'), 'dsh-mcp-connector', '0.2.100');
 await packageDir(join(agent, 'node_modules', 'dsh-media-desk'), 'dsh-media-desk', '2.6.2');
 await packageDir(join(agent, 'node_modules', 'vh-agent-plugins'), 'vh-agent-plugins', '0.0.0');
 
@@ -60,7 +60,7 @@ test('a new profile declares the published payload plugins as dependencies', asy
 
   const manifest = JSON.parse(await readFile(join(user.profile, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.dependencies, {
-    dshmarket: '1.73.8', 'ds-bot': '0.2.5', '@xmanrui/dsh-im': '5.10.0', 'dsh-mcp-connector': '0.2.97', 'dsh-media-desk': '2.6.2',
+    dshmarket: '1.73.17', 'ds-bot': '0.3.2', '@xmanrui/dsh-im': '5.10.0', 'dsh-mcp-connector': '0.2.100', 'dsh-media-desk': '2.6.2',
   });
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', 'dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk',
@@ -91,7 +91,7 @@ test('an existing profile receives the dependencies and the carrier it predates'
 
   const manifest = JSON.parse(await readFile(join(user.profile, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.dependencies, {
-    'dsh-pet': '0.4.4', dshmarket: '1.73.8', 'ds-bot': '0.2.5', '@xmanrui/dsh-im': '5.10.0', 'dsh-mcp-connector': '0.2.97', 'dsh-media-desk': '2.6.2',
+    'dsh-pet': '0.4.4', dshmarket: '1.73.17', 'ds-bot': '0.3.2', '@xmanrui/dsh-im': '5.10.0', 'dsh-mcp-connector': '0.2.100', 'dsh-media-desk': '2.6.2',
   });
   assert.equal(manifest.dsh.profile.bundles.includes('vh-agent-plugins'), true);
   assert.equal(manifest.dsh.profile.bundles.includes('ds-bot'), true);

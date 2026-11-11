@@ -16,8 +16,7 @@ IMAGE="${APP_REGISTRY_PREFIX}/v-harness"
 SERVICE_NAME="v-harness"
 # Mirrored into SWR once so repeat builds, and the other architecture's host,
 # never depend on Docker Hub being reachable.
-BASE_IMAGE="node:22-bookworm-slim"
-SWR_BASE_IMAGE="${APP_REGISTRY_PREFIX}/node:22-bookworm-slim"
+BASE_IMAGE="node:24-bookworm-slim"
 
 FEISHU_CONFIG_FILE="${FEISHU_CONFIG_FILE:-${HOME}/.feishu.json}"
 # A spreadsheet token identifies a document; reading it still requires a
@@ -117,11 +116,8 @@ ensure_base_image() {
     pull_base_image "$BASE_IMAGE" || { err "cannot pull ${BASE_IMAGE} from any registry"; exit 1; }
   fi
   docker tag "$BASE_IMAGE" "$SWR_BASE_IMAGE"
-  if docker push "$SWR_BASE_IMAGE"; then
-    log "Base image mirrored to SWR: ${SWR_BASE_IMAGE}"
-  else
-    err "warning: could not push ${SWR_BASE_IMAGE}; continuing with the local copy"
-  fi
+  docker push "$SWR_BASE_IMAGE"
+  log "Base image mirrored to SWR: ${SWR_BASE_IMAGE}"
 }
 
 docker_build_image() {
@@ -369,14 +365,18 @@ fi
 case "$TARGET" in
   amd)
     PROFILE_TAG="amd"
+    BASE_ARCH="amd64"
     TARGET_SHEET_SPEC="${TARGET_SHEET_SPEC:-AMD_with_cuda,AMD_with_mxn100}"
     ;;
   arm)
     PROFILE_TAG="arm"
+    BASE_ARCH="arm64"
     TARGET_SHEET_SPEC="${TARGET_SHEET_SPEC:-ARM_without_cuda,l4t,ARM_with_cuda,thor_spark,SOPHON_bm1688}"
     ;;
   *) err "Unsupported target: ${TARGET}"; exit 1 ;;
 esac
+
+SWR_BASE_IMAGE="${APP_REGISTRY_PREFIX}/${BASE_IMAGE}-${BASE_ARCH}"
 
 IFS=',' read -r -a TARGET_SHEET_TITLES <<< "$TARGET_SHEET_SPEC"
 [[ "${#TARGET_SHEET_TITLES[@]}" -gt 0 ]] || { err "No Feishu sheet titles configured"; exit 1; }

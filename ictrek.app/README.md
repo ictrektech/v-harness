@@ -13,6 +13,10 @@
 - 每用户独立 `vh-xxxxxxxx` OS 账号、独立 `DSH_HOME`、独立工作区
 - 不用容器做用户隔离；隔离边界是 OS 账号 + 文件权限
 
+## 插件安装
+
+内置插件来自镜像中的固定版本。插件市场默认使用「中国大陆」下载区域，已有用户保存的区域优先。在「设置 → 插件 → 插件配置」可切换下载区域和配置 GitHub 加速。DSH 的标准 npm 包安装默认查询 npmmirror，镜像缺包或请求失败时可回退官方 npm。GitHub 加速由插件市场处理，源码归档仍从 GitHub 下载。
+
 ## VOS 认证
 
 - `manifest.yml` 声明 `oauth2.client`（public client + PKCE S256）
@@ -55,6 +59,8 @@ V_HARNESS_SOURCE_REVISION=<本地提交完整 SHA> ./build_image.sh --target arm
 ./build_image.sh --dry-run             # 只看计划
 ./build_image.sh --no-feishu           # 不写飞书
 ```
+
+Node 24 基镜像按架构上传到 ictrek SWR，标签为 `node:24-bookworm-slim-amd64` 和 `node:24-bookworm-slim-arm64`。
 
 镜像：`swr.cn-southwest-2.myhuaweicloud.com/ictrek/v-harness:<amd|arm>_YYYYMMDD`。当天重复构建更新同一标签，不添加自定义后缀。远端只构建通过 rsync 同步的本地代码，不执行 Git。
 

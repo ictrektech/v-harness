@@ -10,7 +10,7 @@
 # from a user home are the dsh launch URL on that process's stdout.
 # Base image is overridable so the build host can pull it from SWR instead of
 # Docker Hub; build_image.sh mirrors it once and reuses it afterwards.
-ARG BASE_IMAGE=node:22-bookworm-slim
+ARG BASE_IMAGE=node:24-bookworm-slim
 # ============================================================
 # Stage: browser plugins built from this repository
 # ============================================================
@@ -182,15 +182,15 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
 # copied only when a profile has no copy yet — the same rule that keeps a
 # published package from being shadowed by this payload. Peers are not
 # installed: dsh supplies them from the installation at runtime.
-ARG DSMARKET_VERSION=1.73.8
-ARG DS_BOT_VERSION=0.2.5
+ARG DSMARKET_VERSION=1.73.17
+ARG DS_BOT_VERSION=0.3.2
 # The IM bridge (WeCom/Feishu/DingTalk/QQ/Telegram/...), a third-party registry
 # package that ships to every tenant like the market and the bot. Its runtime
 # dependencies (IM SDKs, mail/IMAP clients) ride along with the closure below.
 ARG DSH_IM_VERSION=5.10.0
 # The MCP connection manager (authorization, tool governance, diagnostics),
 # also a registry package that ships to every tenant.
-ARG DSH_MCP_CONNECTOR_VERSION=0.2.97
+ARG DSH_MCP_CONNECTOR_VERSION=0.2.100
 ARG DSH_MEDIA_DESK_VERSION=2.6.2
 # The connector registers its sidebar row with a label *function*, which the
 # surface re-evaluates on every projection, so that one row repaints whenever
@@ -225,7 +225,9 @@ ENV NODE_ENV=production \
     PORT=8080 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    DSH_BIN=/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
+    DSH_BIN=/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+    NPM_CONFIG_REGISTRY=${NPM_REGISTRY} \
+    COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
 
 # Build toolchain is a product requirement, not a convenience: plugins that ship
 # native modules (node-pty, ssh2, better-sqlite3) run `node-gyp` at install time
