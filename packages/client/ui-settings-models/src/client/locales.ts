@@ -303,8 +303,21 @@ export const zh: { [Key in keyof typeof en]: string } = {
   keyRequired: '请输入 API 密钥后继续。',
 }
 
+// VOS controls fall back to English in the other locale dictionaries.
+const vosFallback = {
+  'schedulerChoose': en['schedulerChoose'],
+  'schedulerDefault': en['schedulerDefault'],
+  'schedulerEmpty': en['schedulerEmpty'],
+  'schedulerIntro': en['schedulerIntro'],
+  'schedulerLoading': en['schedulerLoading'],
+  'schedulerOpen': en['schedulerOpen'],
+  'schedulerRefresh': en['schedulerRefresh'],
+  'schedulerSelectionHint': en['schedulerSelectionHint'],
+}
+
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  ...vosFallback,
   'nav': 'モデル',
   'deepSeekAccount': 'DeepSeekアカウント',
   'title': 'モデル',
@@ -443,18 +456,6 @@ export const ja = {
   'onboardingSaving': '保存中…',
   'keyRequired': '続けるにはAPIキーを入力してください。',
 } satisfies Record<keyof typeof en, string>
-
-// VOS controls fall back to English in the other locale dictionaries.
-const vosFallback = {
-  'schedulerChoose': en['schedulerChoose'],
-  'schedulerDefault': en['schedulerDefault'],
-  'schedulerEmpty': en['schedulerEmpty'],
-  'schedulerIntro': en['schedulerIntro'],
-  'schedulerLoading': en['schedulerLoading'],
-  'schedulerOpen': en['schedulerOpen'],
-  'schedulerRefresh': en['schedulerRefresh'],
-  'schedulerSelectionHint': en['schedulerSelectionHint'],
-}
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
