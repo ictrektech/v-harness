@@ -28,6 +28,38 @@ find "${STATE_ROOT}" -maxdepth 1 -type f \( -name '*.tmp' -o -name '*.tmp-*' \) 
 # cannot run an instance, and that is worth failing at startup.
 node /opt/v-harness/bin/network-probe.mjs
 
+# Debian resolves `iptables` and `ip6tables` to the nft frontends. A kernel
+# built without CONFIG_NFT_CT (the Jetson arm hosts) cannot load the matches
+# they emit, so `-m conntrack` fails — and so does `-m mark` — and bin/vh-jail
+# refuses to start any tenant with "network isolation failed". The legacy
+# frontends reach xt_conntrack and xt_mark, which those kernels do ship. Both
+# frontends accept a rule when parsing it, so the only way to tell them apart is
+# to have the kernel install it on a throwaway chain; the winner then becomes
+# the container-wide default, which also covers the gateway's isolation rules.
+frontend_rule_works() {
+  local frontend="$1"; shift
+  local chain="vh-boot-probe-$$" rc=0
+  "$frontend" -N "$chain" 2>/dev/null || return 1
+  "$frontend" -A "$chain" "$@" 2>/dev/null || rc=1
+  "$frontend" -F "$chain" 2>/dev/null || true
+  "$frontend" -X "$chain" 2>/dev/null || true
+  return "$rc"
+}
+# Exactly the matches the jail and the gateway install: a frontend that carries
+# one but not the other still leaves the isolation half-built.
+frontend_matches_work() {
+  frontend_rule_works "$1" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT \
+    && frontend_rule_works "$1" -m mark --mark 0x1 -j ACCEPT
+}
+for family in iptables ip6tables; do
+  frontend_matches_work "$family" && continue
+  if command -v "${family}-legacy" >/dev/null 2>&1 \
+     && frontend_matches_work "${family}-legacy"; then
+    update-alternatives --set "$family" "/usr/sbin/${family}-legacy" >/dev/null
+    echo "${family}: switched to the legacy frontend (this kernel cannot load the nf_tables matches)"
+  fi
+done
+
 # dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
 # usable the bash tool refuses to run. Record the verdict at startup so a broken
 # container is diagnosed from the log instead of from a user report.
