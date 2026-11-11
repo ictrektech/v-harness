@@ -81,10 +81,10 @@ jobs:
             echo
             if [[ -n "$PREVIOUS" ]]; then
               echo "Changes since ${PREVIOUS}:"
-              git log --no-merges --pretty='- %s (%h)' "${PREVIOUS}..${CURRENT}"
+              git log --first-parent --no-merges --pretty='- %s (%h)' "${PREVIOUS}..${CURRENT}"
             else
               echo "Initial VOS package release."
-              git log --no-merges --pretty='- %s (%h)' -20 "${CURRENT}"
+              git log --first-parent --no-merges --pretty='- %s (%h)' -20 "${CURRENT}"
             fi
           } > release-notes.md
 
