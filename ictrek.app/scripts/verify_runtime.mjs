@@ -52,4 +52,4 @@ try {
    assert.doesNotMatch(await readFile(logs + '/' + file, 'utf8'), /prompt section .* is already registered/);
  }
  console.log('GLOBAL MARKET DEFAULT AND BUNDLED PLUGINS: PASS');
-}catch(error){for(const file of await readdir('/data/.vh/logs').catch(()=>[])) console.log('INSTANCE LOG',await readFile('/data/.vh/logs/'+file,'utf8'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}
+}catch(error){for(const file of await readdir('/data/.vh/logs').catch(()=>[])) console.log('INSTANCE LOG',(await readFile('/data/.vh/logs/'+file,'utf8')).replace(/token=[^\s&]+/g, 'token=<redacted>'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}

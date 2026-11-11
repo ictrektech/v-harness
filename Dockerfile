@@ -64,11 +64,6 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --registry="${NPM_REGISTRY}"
 # compilation instead of a full Host build.
 RUN node --import tsx/esm scripts/generate-typert.ts
 
-# The agent-plugins stage inherits this one and its staging script reads the
-# carrier bundle from gateway/agent-plugins/. Copied after the install so
-# gateway edits never invalidate the dependency layers.
-COPY gateway/ gateway/
-
 # Compile the plugin's project graph, then bundle it. The bundle is the
 # browser artifact gateway/plugins.mjs ships into each user's profile.
 RUN pnpm exec tsc -b packages/client/ui-knowledge/tsconfig.json \
@@ -167,6 +162,7 @@ RUN set -eu; for spec in api/session-controller:dsh-api-session-controller api/r
 # dependency closure. It inherits the plugins stage to reuse the workspace
 # install; a second full install would cost more than the serialized build.
 FROM plugins AS agent-plugins
+COPY gateway/agent-plugins/ gateway/agent-plugins/
 
 RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.txt) \
  && pnpm exec tsdown --config-loader native --config scripts/agent-plugins.tsdown.config.ts \
@@ -207,6 +203,7 @@ RUN mkdir -p /tmp/registry-plugins \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
+ && node gateway/agent-plugins/set-market-default.mjs /build/agent-plugins/node_modules/dshmarket/lib/routes.js \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
 
 # ============================================================
