@@ -364,7 +364,7 @@ mkdir -p "$DIST_DIR"
 acquire_lock
 
 APP_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-[[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid VERSION: ${APP_VERSION}"
+"${PYTHON_BIN}" "${ROOT_DIR}/scripts/vos_version.py" check "$APP_VERSION"
 log "Package version: ${APP_VERSION}"
 
 load_feishu_auth

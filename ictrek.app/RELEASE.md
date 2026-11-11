@@ -107,22 +107,23 @@ swr.cn-southwest-2.myhuaweicloud.com/ictrek/v-harness:arm_YYYYMMDD
 先确认工作区干净（脚本会拒绝脏工作区），然后：
 
 ```bash
-./ictrek.app/scripts/update_version.sh patch   # 或 minor / major
+./ictrek.app/scripts/update_version.sh --dry-run
+./ictrek.app/scripts/update_version.sh
 ```
 
 这个脚本做四件事：
 
-1. 递增 `ictrek.app/VERSION`
-2. `git commit -m "chore: release VOS v-harness x.y.z"`
-3. 打 tag `vos-v-harness-vx.y.z`
+1. 从根目录 `package.json` 读取官方版本。相同前缀下递增 `.vos.xx`，前缀变化后从 `.vos.01` 开始，并写入 `ictrek.app/VERSION`。例如 `0.2.2-rc.1.vos.01` → `0.2.2-rc.1.vos.02`；同步到 `0.2.2-rc.2` 后为 `0.2.2-rc.2.vos.01`
+2. 提交版本文件
+3. 打 tag `vos-v-harness-v<version>`
 4. push 分支与 tag
 
 tag 推上去后，`.github/workflows/vos-release.yml` 自动：
 
 1. 写入飞书凭据
 2. 跑 `package.sh`：按 profile 从飞书读最新镜像 tag，渲染进 `app.tar.gz/.env`
-3. 打 `v-harness_x.y.z_pull.tar`
-4. 创建 GitHub Release（tag `vx.y.z`，附变更日志）
+3. 打 `v-harness_<version>_pull.tar`
+4. 创建 GitHub Release（tag `v<version>`，附变更日志）
 5. 通过 SSH 隧道把包投到 VOS App Store
 
 **完成标准**：
