@@ -245,7 +245,10 @@ async function run() {
     // showed as "stopped".
   }, HEARTBEAT_MS);
 
-  process.stderr.write(`vh-service: 「${name}」已登记 (${process.env.VH_TENANT_IP ?? '127.0.0.1'}:${String(port)})，Ctrl-C 停止\n`);
+  // Normal operation, so it goes to stdout: stderr is what the gateway reads
+  // back as the reason a replayed service died, and a registration that
+  // succeeded must not be mistaken for one.
+  process.stdout.write(`vh-service: 「${name}」已登记 (${process.env.VH_TENANT_IP ?? '127.0.0.1'}:${String(port)})，Ctrl-C 停止\n`);
 }
 
 /** List this tenant's registered services as JSON. */

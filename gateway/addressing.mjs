@@ -49,3 +49,32 @@ export function instanceAddress(uid) {
 
 /** The gateway as an instance dials it (model calls, scheduled follow-ups). */
 export const GATEWAY_IP = '127.0.0.1';
+
+/**
+ * Bit 30 keeps this mark clear of the ones docker puts on bridge traffic.
+ *
+ * The jail stamps every packet this uid emits with it (nft `meta skuid`, which
+ * needs no kernel module) and the gateway's iptables rules match the mark. That
+ * indirection exists because `-m owner --uid-owner` needs `xt_owner`, and the
+ * deployment kernel does not always ship it: without the stamp the chain built
+ * from an owner match could never load, and the tenant boundary silently did
+ * nothing.
+ */
+const TENANT_MARK_BASE = 0x40000000;
+
+/**
+ * The packet mark shared by `bin/vh-jail` and the gateway's network rules.
+ *
+ * Mirrors the shell arithmetic in `bin/vh-jail` (`net_isolate`); a value that
+ * disagrees with it turns the tenant boundary into a no-op, so the two are kept
+ * in lockstep by a test.
+ * @param {number} uid - tenant uid; selects its mark.
+ * @returns {string} the mark as `0x`-prefixed hex, the form iptables accepts.
+ */
+export function tenantPacketMark(uid) {
+  const n = Number(uid);
+  if (!Number.isInteger(n) || n <= 0 || n >= UID_ADDRESS_LIMIT) {
+    throw new Error(`tenant uid ${String(uid)} has no packet mark (needs 1-${String(UID_ADDRESS_LIMIT - 1)})`);
+  }
+  return `0x${(TENANT_MARK_BASE + n).toString(16)}`;
+}

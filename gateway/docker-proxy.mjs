@@ -30,6 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { chmodSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
+import { tenantPacketMark } from './addressing.mjs';
 
 const SOCKET_NAME = 'docker.sock';
 const STATE_FILE = 'docker-objects.json';
@@ -1004,6 +1005,25 @@ function iptablesOnce(args) {
 }
 
 /**
+ * Remove one rule, quietly.
+ *
+ * Only the upgrade path uses this: the rule this file installed before the
+ * packet mark existed matched on `--uid-owner`. On a kernel without xt_owner
+ * that rule never loaded, and on one with it the mark rule replaces it, so a
+ * missing rule — or a match the kernel cannot load — is the expected answer
+ * rather than an error worth logging.
+ * @param {string[]} args - the rule spec exactly as `iptables -D` would take it.
+ */
+function iptablesDelete(args) {
+  if (typeof process.getuid === 'function' && process.getuid() !== 0) return;
+  try {
+    execFileSync('iptables', ['-D', ...args.slice(1)], { stdio: 'ignore' });
+  } catch {
+    // Not there, or the match cannot load here: nothing to remove.
+  }
+}
+
+/**
  * Install the network isolation rules for one tenant container network.
  *
  * The jail's per-uid chain drops the private ranges wholesale, so the
@@ -1035,7 +1055,14 @@ async function syncNetworkIsolation(tenant, name) {
   } catch (error) {
     console.warn(`docker-proxy: could not read the subnet of ${name} (${String(/** @type {Error} */ (error).message)})`);
   }
-  iptablesOnce(['-I', 'OUTPUT', '-m', 'owner', '--uid-owner', String(tenant.uid), '-d', subnet, '-j', 'ACCEPT']);
+  // The jail stamps this uid's packets with the tenant mark and its own chain
+  // matches that mark. An owner match cannot stand in for it: the deployment
+  // kernel may have no xt_owner (the arm hosts do not), and then this rule
+  // never loads — leaving the tenant unable to reach its own containers while
+  // the jail's DROP of the private ranges still applies.
+  const mark = tenantPacketMark(tenant.uid);
+  iptablesDelete(['-D', 'OUTPUT', '-m', 'owner', '--uid-owner', String(tenant.uid), '-d', subnet, '-j', 'ACCEPT']);
+  iptablesOnce(['-I', 'OUTPUT', '-m', 'mark', '--mark', mark, '-d', subnet, '-j', 'ACCEPT']);
   iptablesOnce(['-A', 'INPUT', '-s', subnet, '-p', 'tcp', '-m', 'conntrack', '--ctstate', 'NEW', '-m', 'tcp', '!', '--dport', GATEWAY_PORT, '-j', 'DROP']);
   iptablesOnce(['-A', 'INPUT', '-s', subnet, '-p', 'udp', '-m', 'conntrack', '--ctstate', 'NEW', '-m', 'udp', '!', '--dport', GATEWAY_PORT, '-j', 'DROP']);
 }

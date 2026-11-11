@@ -191,13 +191,18 @@ function isLive(record, listeners) {
  * @param {string} text
  * @returns {string | undefined}
  */
-function firstFailure(text) {
+export function firstFailure(text) {
   const lines = text.split('\n').map((line) => line.trim()).filter((line) => line !== '');
   const named = lines.find((line) =>
     /^(?:Error|OSError|TypeError|SyntaxError|RangeError)\b/i.test(line)
     || /\b(?:EADDRINUSE|EACCES|EPERM|ENOENT|Cannot find module|Address already in use)\b/.test(line),
   );
-  return named ?? lines[0];
+  // The tenant CLI reports its own progress on the same stream. "已登记" means
+  // the registration succeeded, so handing it back as the reason a service
+  // exited is worse than saying nothing: it hides the line that does explain
+  // it, and the owner reads a success message as a failure.
+  const informative = lines.filter((line) => !/^vh-service: 「.*」已登记/.test(line));
+  return named ?? informative[0];
 }
 
 /** @returns {Record<string, ServiceRecord[]>} the persisted shape. */
@@ -633,9 +638,12 @@ export async function restartService(subject, port) {
         VH_GATEWAY_PORT: process.env.PORT ?? '8080',
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       },
-      // stderr only, and for the record: `stdio: 'ignore'` used to swallow the
-      // reason a replayed command never came up.
-      stdio: ['ignore', 'ignore', logFd],
+      // Both streams land in the log. `stdio: 'ignore'` used to swallow the
+      // reason a replayed command never came up, and a command that reports on
+      // stdout — a server's banner, `console.log`, a wrapper's own message — had
+      // nowhere to say it, so the panel showed whatever the supervisor printed
+      // instead of what the service died of.
+      stdio: ['ignore', logFd, logFd],
       detached: true,
     },
   );
