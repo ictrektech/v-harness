@@ -174,7 +174,7 @@ function renderTab(
     useConfigLedger: bindSnapshotSelector(ledger),
     usePluginTabs: bindSnapshotSelector(tabLedger),
     useBundleDetails: bindSnapshotSelector(bundleDetails),
-    useLocale: bindSnapshotSelector(createSnapshotStore<LocaleSnapshot>({ active: 'en', locales: [], revision: 0 })),
+    useLocale: bindSnapshotSelector(createSnapshotStore<LocaleSnapshot>({ active: 'en', locales: [], following: false, revision: 0 })),
     useConfigurations: bindSnapshotSelector(createSnapshotStore<SettingsMirrorSnapshot>({
       status: 'ready', error: null,
       view: { writable: true, hasDocument: true, namespaces: Object.keys(forms).map(ns => ({

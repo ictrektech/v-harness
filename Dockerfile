@@ -138,7 +138,8 @@ RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
 # v-harness owns the visible brand in both the shell and dynamic UI plugins.
 # Stage every local browser plugin after vendor libraries and client bundles are rebuilt.
 ENV DSH_CLIENT_BUILD_PROFILE=official DSH_CLIENT_TITLE=v-harness
-RUN pnpm run build:lib:client \
+RUN pnpm exec tsx scripts/compile-referenced-projects.ts client \
+ && pnpm exec tsdown --config-loader native --env.DSH_BUILD_FACE client \
  && pnpm --filter @deepseek-ai/dsh-web-frontend build \
  && for dir in packages/client/*/; do \
       [ -f "$dir/lib/client.js" ] || continue; \

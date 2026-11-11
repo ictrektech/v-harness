@@ -65,7 +65,7 @@ const photo = (id: string): ComposerImageAttachment => ({
   previewUrl: `blob:${id}`,
 } as ComposerImageAttachment)
 
-function props(overrides: Partial<ComposerAttachmentsProps> = {}): ComposerAttachmentsProps {
+function props(overrides: Partial<ComposerAttachmentsProps> = {}): React.ComponentProps<typeof ComposerAttachments> {
   return {
     attachments: [photo('a1')],
     canAcceptDrop: true,
@@ -73,9 +73,11 @@ function props(overrides: Partial<ComposerAttachmentsProps> = {}): ComposerAttac
     onRemoveAttachment: () => {},
     uploads: {},
     onRetryFile: () => {},
+    readFileDrag: () => undefined,
+    uploadFailureText: () => '',
     t,
     ...overrides,
-  } as ComposerAttachmentsProps
+  } as React.ComponentProps<typeof ComposerAttachments>
 }
 
 describe('region measurement', () => {

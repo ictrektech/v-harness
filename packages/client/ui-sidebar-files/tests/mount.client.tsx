@@ -239,6 +239,7 @@ const unusedFactoryProps = {
   useTrajectory: unusedFrameworkProp,
   inputActions: {
     insertQuote: unusedFrameworkProp,
+    insertRegionTokens: () => false,
     captureInsertion: unusedFrameworkProp,
     insertText: unusedFrameworkProp,
     setDraft: unusedFrameworkProp,

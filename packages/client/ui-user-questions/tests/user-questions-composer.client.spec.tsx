@@ -1146,3 +1146,87 @@ it('retains custom-answer focus across Enter navigation between option questions
   expect((second as HTMLTextAreaElement).value).toBe('second answer')
   expect(screen.getByRole('radio', { name: 'Two' }).getAttribute('aria-describedby')).toBeNull()
 })
+
+const FORM: PendingQuestion['questions'] = [
+  {
+    id: 'prompt', header: '确认参数', question: 'Prompt',
+    input: { kind: 'longtext', default: 'a quiet tea house' }, intent: { kind: 'form' },
+  },
+  {
+    id: 'model_key', question: 'Model',
+    options: [{ label: 'sdxl' }, { label: 'sd15' }],
+    input: { default: 'sd15' }, intent: { kind: 'form' },
+  },
+  { id: 'steps', question: 'Steps', input: { kind: 'number', placeholder: 'Service default' }, intent: { kind: 'form' } },
+]
+
+describe('form presentation', () => {
+  it('narrows a batch whose every question declares the form intent', () => {
+    expect(formOf(FORM)).toEqual({
+      title: '确认参数',
+      fields: [
+        {
+          id: 'prompt', header: '确认参数', label: 'Prompt',
+          input: { kind: 'longtext', default: 'a quiet tea house' },
+        },
+        { id: 'model_key', label: 'Model', options: [{ label: 'sdxl' }, { label: 'sd15' }], input: { default: 'sd15' } },
+        { id: 'steps', label: 'Steps', input: { kind: 'number', placeholder: 'Service default' } },
+      ],
+    })
+  })
+
+  it('narrows a batch whose every question carries a control, even without an intent', () => {
+    // What an asker sends after a runtime rejects the intent: the fields alone
+    // still open the same dialog.
+    const controlled = FORM.map((question) => {
+      const copy = { ...question }
+      delete copy.intent
+      return copy
+    }) as PendingQuestion['questions']
+
+    expect(formOf(controlled)?.fields.map(field => field.id)).toEqual(['prompt', 'model_key', 'steps'])
+  })
+
+  it('leaves a mixed batch to the generic flow', () => {
+    const mixed = [...FORM, { id: 'extra', question: 'Anything else?' }] as PendingQuestion['questions']
+    expect(formOf(mixed)).toBeUndefined()
+    const { carrier } = wait(mixed)
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('1 / 4')).toBeTruthy()
+  })
+
+  it('renders every field in one dialog and answers the values it shows', async () => {
+    const { carrier, answer } = wait(FORM)
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    // One dialog over every field, not a pager: the defaults the asker declared
+    // are already filled in, and submitting unchanged sends them back verbatim.
+    expect(screen.queryByText('1 / 3')).toBeNull()
+    const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
+    expect(prompt.value).toBe('a quiet tea house')
+    expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('sd15')
+    expect((screen.getByLabelText('Steps') as HTMLInputElement).value).toBe('')
+
+    fireEvent.change(prompt, { target: { value: 'a snowy tea house' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh['form.submit'] })) })
+
+    expect(answer).toHaveBeenCalledWith(answerBatch([
+      { id: 'prompt', selected: [], custom: 'a snowy tea house' },
+      { id: 'model_key', selected: ['sd15'] },
+      { id: 'steps', selected: [] },
+    ]))
+  })
+
+  it('ends the request instead of hiding it when the dialog is cancelled', async () => {
+    const { carrier, cancel, dismiss } = wait(FORM)
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh['form.cancel'] })) })
+
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(dismiss).not.toHaveBeenCalled()
+  })
+})

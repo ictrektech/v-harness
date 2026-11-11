@@ -269,7 +269,7 @@ type ImageRenderer = (owner: MessageImagesOwnerProps) => React.ReactNode
 declare const userChainDispatch: PropsRenderSlots<'conversation.chat.user.before'>['renderSlotChain']
 type UserChainRenderer = typeof userChainDispatch<'conversation.chat.user.before'>
 type UserChainState = { readonly renderer: UserChainRenderer | undefined }
-type HarnessStandardProps = ChatViewSlotProps & PropsRenderFactories & Pick<React.ComponentProps<typeof AssistantNodeView>, 'fileMentions'>
+type HarnessStandardProps = ChatViewSlotProps & PropsRenderFactories & Pick<React.ComponentProps<typeof AssistantNodeView>, 'fileMentions' | 'inlineMarks'>
 
 function isImageOwner(owner: object): owner is MessageImagesOwnerProps {
   return 'images' in owner && Array.isArray(owner.images)

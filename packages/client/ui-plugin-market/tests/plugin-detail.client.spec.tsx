@@ -24,7 +24,7 @@ const DOCUMENT = brandString<PluginDetailDocumentId>('doc')
 
 function setup(initial: DetailsState = {}, language = 'en') {
   const details = createSnapshotStore<DetailsState>(initial)
-  const locale = createSnapshotStore<LocaleSnapshot>({ active: language, locales: [], revision: 0 })
+  const locale = createSnapshotStore<LocaleSnapshot>({ active: language, locales: [], following: false, revision: 0 })
   const face = {
     loadDetail: vi.fn(), retryDetail: vi.fn(),
     detailImage: vi.fn((document: PluginDetailDocumentId, destination: string) => `https://dsh.example/api/plugin-market/detail-file?document=${document}&path=${destination}`),
@@ -47,7 +47,7 @@ it('reads the document of the request in the active language and renders its Mar
   // Relative links stay text.
   expect(screen.queryByRole('link', { name: 'guide' })).toBeNull()
   expect(screen.getByText('guide')).toBeTruthy()
-  act(() => { locale.set({ active: 'zh', locales: [], revision: 1 }) })
+  act(() => { locale.set({ active: 'zh', locales: [], following: false, revision: 1 }) })
   expect(face.loadDetail).toHaveBeenLastCalledWith(REQUEST, 'zh')
   view.rerender(<PluginDetailSection request={REQUEST} t={translator(zh)} {...face} />)
   expect(face.loadDetail).toHaveBeenCalledTimes(2)
