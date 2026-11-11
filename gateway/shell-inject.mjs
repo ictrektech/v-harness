@@ -163,6 +163,12 @@ function appPath(path) {
 function fixUrl(value) {
   var text = String(value);
   if (text === "") return value;
+  // Only this deployment's own http(s) pages are routed under the app prefix.
+  // A blob: URL reports the page's origin, so the branch below used to treat it
+  // as a page address and rebuilt it as "blob:///app/...#http://...", which no
+  // longer names the blob. The document preview builds one blob per interactive
+  // HTML file, so every such file rendered as a blank frame.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(text) && !/^https?:/i.test(text)) return value;
   if (/^[a-z][a-z0-9+.-]*:/i.test(text) || text.slice(0, 2) === "//") {
     var abs;
     try { abs = new URL(text, location.href); } catch (e) { return value; }

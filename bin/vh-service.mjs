@@ -107,6 +107,14 @@ function parseRunArgs() {
   if (name === '' || name.length > 64) die('服务名称不能为空且不超过 64 个字符');
   if (!Number.isInteger(port) || port < 1024 || port > 65_535) die('端口必须在 1024-65535 之间');
   if (port >= RESERVED_MIN && port <= RESERVED_MAX) die(`端口 ${String(port)} 在实例保留段 3100-3999 内，请换一个`);
+  // The gateway listens on 0.0.0.0:<gateway port>, which covers every address
+  // in the shared loopback. A service that asks for the same number can never
+  // bind it: the child died with EADDRINUSE while the panel showed the first
+  // stderr line instead, which named nothing useful.
+  const gatewayPort = Number(process.env.VH_GATEWAY_PORT ?? 8080);
+  if (port === gatewayPort) {
+    die(`端口 ${String(port)} 是网关自己的监听端口，服务无法占用，请换一个（例如 8090 或 3004）`);
+  }
   if (cmd.length === 0) die('-- 后面必须跟启动命令');
   if (basePath !== undefined && !basePath.startsWith('/')) die('--basePath 必须以 / 开头');
   if (!cwd.startsWith('/')) die('--cwd 必须是绝对路径');
@@ -190,8 +198,17 @@ async function run() {
     void call('DELETE', `/services/${String(port)}`, undefined).catch(() => {});
   };
   child.on('exit', (code, signal) => {
-    goodbye();
-    process.exit(signal === null ? (code ?? 0) : 0);
+    // The unregister must actually leave this process: the DELETE is what
+    // marks the row stopped, and a fire-and-forget request died with the
+    // supervisor, leaving a record whose last heartbeat still looked fresh
+    // (a green "running" row for a service that no longer exists).
+    const exitCode = signal === null ? (code ?? 0) : 0;
+    const finish = () => { process.exit(exitCode); };
+    const timer = setTimeout(finish, 1_500);
+    timer.unref();
+    void call('DELETE', `/services/${String(port)}`, undefined)
+      .catch(() => {})
+      .finally(() => { clearTimeout(timer); finish(); });
   });
   const forward = (signal) => {
     if (child.pid !== undefined && child.exitCode === null) child.kill(signal);

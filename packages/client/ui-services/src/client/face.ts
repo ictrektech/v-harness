@@ -15,11 +15,15 @@ export interface ServiceEntry {
   readonly restartable: boolean
 }
 
+/** The gateway has no session for this browser: a reload re-runs the auth hop. */
+const SESSION_EXPIRED = '登录状态已失效，请刷新页面后重试'
+
 /**
  * @returns the tenant's own services, newest heartbeat order kept by the gateway.
  */
 export async function fetchServices(): Promise<ServiceEntry[]> {
   const response = await fetch('/__vh/services', { credentials: 'same-origin', cache: 'no-store' })
+  if (response.status === 401) throw new Error(SESSION_EXPIRED)
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
   const body = await response.json() as { services?: readonly ServiceEntry[] }
   return Array.isArray(body?.services) ? [...body.services] : []
@@ -37,6 +41,7 @@ export async function serviceAction(port: number, action: 'restart' | 'stop'): P
   })
   if (!response.ok) {
     const body = await response.json().catch(() => undefined) as { message?: string } | undefined
+    if (response.status === 401) throw new Error(SESSION_EXPIRED)
     throw new Error(typeof body?.message === 'string' ? body.message : `HTTP ${String(response.status)}`)
   }
 }

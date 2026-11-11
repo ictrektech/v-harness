@@ -268,6 +268,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       postgresql-client sqlite3 \
       git openssh-client \
       procps iproute2 net-tools iputils-ping netcat-openbsd bind9-dnsutils \
+      iptables nftables \
       lsof zip pkg-config \
       rsync unzip less jq ripgrep vim-tiny \
       chromium fonts-liberation fonts-noto-cjk \

@@ -24,7 +24,7 @@
 
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, readFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -56,6 +56,16 @@ const MAX_NAME_LENGTH = 64;
 // tenant's own dsh, not a service the panel could sensibly own.
 const RESERVED_PORT_MIN = 3100;
 const RESERVED_PORT_MAX = 3999;
+/** A just-restarted service may still be starting; trust its heartbeat this long. */
+const START_GRACE_MS = 20_000;
+
+/**
+ * @returns {number} the port the gateway itself listens on.
+ */
+function gatewayPort() {
+  const value = Number(process.env.PORT ?? 8080);
+  return Number.isInteger(value) ? value : 8080;
+}
 
 const HOME_ROOT = process.env.HOME_ROOT ?? process.env.DATA_ROOT ?? '/data';
 const JAIL_BIN = process.env.JAIL_BIN ?? '/opt/v-harness/bin/vh-jail';
@@ -122,6 +132,74 @@ function isRunning(record) {
   return record.stopped !== true && Date.now() - record.lastSeen < STALE_MS;
 }
 
+/**
+ * The ports listening in this network namespace, with the uids owning each.
+ *
+ * A heartbeat says the supervisor was alive, not that the service is: the
+ * supervisor registers before its child binds, and a child that dies at once
+ * leaves a fresh `lastSeen` behind. The gateway itself listens on
+ * 0.0.0.0:<gateway port>, so a record registered for that port reads "running"
+ * from the heartbeat while nothing of the tenant's is listening at all — the
+ * uid in `ss -e` is what separates the two.
+ * @returns {Map<number, Set<number>> | undefined} undefined when ss is missing.
+ */
+function listenersByPort() {
+  /** @type {string} */
+  let listing;
+  try {
+    listing = execFileSync('ss', ['-Hltnpe'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return undefined; // no ss here: the heartbeat is all this deployment has
+  }
+  /** @type {Map<number, Set<number>>} */
+  const byPort = new Map();
+  for (const line of listing.split('\n')) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 4 || fields[0] !== 'LISTEN') continue;
+    const local = fields[3];
+    const port = Number(local.slice(local.lastIndexOf(':') + 1));
+    if (!Number.isInteger(port)) continue;
+    const uid = Number(/uid:(\d+)/.exec(line)?.[1] ?? 0);
+    const owners = byPort.get(port) ?? new Set();
+    owners.add(uid);
+    byPort.set(port, owners);
+  }
+  return byPort;
+}
+
+/**
+ * @param {ServiceRecord} record
+ * @param {Map<number, Set<number>> | undefined} listeners
+ * @returns {boolean} a fresh heartbeat AND a live listener for this tenant.
+ */
+function isLive(record, listeners) {
+  if (!isRunning(record)) return false;
+  if (listeners === undefined) return true;
+  if (listeners.get(record.port)?.has(record.uid) === true) return true;
+  // A service that was just (re)started may still be starting; the heartbeat
+  // is all there is until it binds.
+  return Date.now() - record.registeredAt < START_GRACE_MS;
+}
+
+/**
+ * The stderr line that names the failure, taken from the whole stream.
+ *
+ * A command that cannot start prints more than one thing: a loader banner, a
+ * jail warning, then the actual error. Taking the first chunk's first match
+ * kept surfacing the jail's xt_owner warning ("Extension owner revision 0 not
+ * supported") for services that had died on EADDRINUSE or a missing file.
+ * @param {string} text
+ * @returns {string | undefined}
+ */
+function firstFailure(text) {
+  const lines = text.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  const named = lines.find((line) =>
+    /^(?:Error|OSError|TypeError|SyntaxError|RangeError)\b/i.test(line)
+    || /\b(?:EADDRINUSE|EACCES|EPERM|ENOENT|Cannot find module|Address already in use)\b/.test(line),
+  );
+  return named ?? lines[0];
+}
+
 /** @returns {Record<string, ServiceRecord[]>} the persisted shape. */
 function snapshot() {
   /** @type {Record<string, ServiceRecord[]>} */
@@ -169,9 +247,18 @@ export async function initServices(options) {
       if (!Array.isArray(records)) continue;
       const services = tenantServices(subject);
       for (const record of records) {
+        if (!isValidRecord(record)) continue;
+        // The gateway owns that port on every address of the shared loopback,
+        // so a record registered there can never start. It was accepted before
+        // the registration check existed and would otherwise stay in the panel
+        // as a row that fails on every restart.
+        if (record.port === gatewayPort()) {
+          console.warn(`services registry: dropping "${record.name}" on gateway port ${String(record.port)}`);
+          continue;
+        }
         // `stopped` is written by this module only; anything else on disk is
         // read as "not stopped" rather than as a truthy accident.
-        if (isValidRecord(record)) services.set(record.port, { ...record, stopped: record.stopped === true });
+        services.set(record.port, { ...record, stopped: record.stopped === true });
       }
     }
   } catch (error) {
@@ -201,6 +288,13 @@ function portProblem(port) {
   if (!Number.isInteger(port) || port < 1024 || port > 65_535) return 'port 必须在 1024-65535 之间';
   if (port >= RESERVED_PORT_MIN && port <= RESERVED_PORT_MAX) {
     return `端口 ${String(port)} 在实例保留段 3100-3999 内，请换一个`;
+  }
+  // The gateway listens on 0.0.0.0:<gateway port>, which covers every address
+  // of the shared loopback. A tenant service on the same number can never
+  // bind: it died with EADDRINUSE at replay time and the panel showed a line
+  // that named no cause.
+  if (port === gatewayPort()) {
+    return `端口 ${String(port)} 是网关自己的监听端口，服务无法绑定，请换一个`;
   }
   return undefined;
 }
@@ -403,12 +497,13 @@ function unregister(subject, port) {
  * @returns {{ port: number, name: string, running: boolean, basePath: string | undefined, lastSeen: number, restartable: boolean }[]}
  */
 export function listServices(subject) {
+  const listeners = listenersByPort();
   return [...(registry.get(subject)?.values() ?? [])]
     .sort((a, b) => a.port - b.port)
     .map((record) => ({
       port: record.port,
       name: record.name,
-      running: isRunning(record),
+      running: isLive(record, listeners),
       basePath: record.basePath,
       lastSeen: record.lastSeen,
       restartable: record.cmd.length > 0,
@@ -486,9 +581,21 @@ function jailCwd(record) {
 export async function restartService(subject, port) {
   const record = registry.get(subject)?.get(port);
   if (!record) return { status: 404, error: 'not-found', message: '服务不存在' };
-  if (isRunning(record)) return { status: 409, error: 'already-running', message: `「${record.name}」正在运行` };
+  if (isLive(record, listenersByPort())) {
+    return { status: 409, error: 'already-running', message: `「${record.name}」正在运行` };
+  }
   const cmdIssue = cmdProblem(record.cmd);
   if (cmdIssue) return { status: 400, error: 'invalid-command', message: cmdIssue };
+  // Without a working directory the replay lands in the tenant home, where a
+  // relative entry file does not exist: the process died with "Cannot find
+  // module". Refuse before spawning, so the panel names the real problem.
+  if (record.cwd === undefined) {
+    return {
+      status: 400,
+      error: 'missing-cwd',
+      message: `「${record.name}」这条登记没有启动目录，重启会找不到入口文件；请在服务目录里用 vh-service run --cwd 重新登记`,
+    };
+  }
 
   const existing = restartedJails.get(`${subject}:${String(port)}`);
   if (existing?.exitCode === null && !existing.killed) {
@@ -503,6 +610,18 @@ export async function restartService(subject, port) {
   record.lastSeen = 0;
   persist();
 
+  // A replayed service outlives this process on purpose (the panel offers
+  // restart), so its stdio cannot be a pipe this process owns. Once the gateway
+  // exits, the read end is gone; the child's next write — every HTTP request
+  // logs a line to stderr — fails with EPIPE, and the handler drops the
+  // connection without sending anything. The listener stays up, the heartbeat
+  // keeps it "running", and the proxy turns the empty reply into
+  // "服务没有在运行" for a service that is in fact listening. stderr goes to a
+  // file instead; the early-exit message is read back from it.
+  const logDir = statePath === undefined ? '/tmp/vh-service-logs' : join(dirname(statePath), 'service-logs');
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  const logPath = join(logDir, `${record.account}-${String(port)}.log`);
+  const logFd = openSync(logPath, 'w', 0o600);
   const child = spawn(
     JAIL_BIN,
     [record.account, String(record.uid), join(HOME_ROOT, record.account), ...replayArgs(record)],
@@ -516,27 +635,22 @@ export async function restartService(subject, port) {
       },
       // stderr only, and for the record: `stdio: 'ignore'` used to swallow the
       // reason a replayed command never came up.
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'ignore', logFd],
       detached: true,
     },
   );
-  /** @type {string | undefined} */
-  let failure;
-  child.stderr?.on('data', (chunk) => {
-    // One line only: a failing command reports a stack, and the gateway log is
-    // shared with every tenant. The line worth keeping names the problem, which
-    // is not always the first one — a module loader prints its frame header
-    // before the file it could not find.
-    const lines = String(chunk).split('\n').map((line) => line.trim()).filter((line) => line !== '');
-    const named = lines.find((line) => /error|cannot|no such|not found|ENOENT/i.test(line)) ?? lines[0];
-    if (named === undefined) return;
-    failure ??= named;
-    console.warn(`service restart (${record.account} port=${String(port)}): ${named}`);
-  });
+  closeSync(logFd);
+  // The whole stream, not the first chunk it delivers: a command that cannot
+  // start prints its loader banner and the jail's warnings before the line
+  // that names the cause, and the first chunk used to decide the message.
+  /** @type {string} */
+  let stderrText = '';
   // Without a listener an unspawnable jail (missing JAIL_BIN) emits 'error' and
   // takes the whole gateway down.
+  /** @type {string | undefined} */
+  let spawnError;
   child.on('error', (error) => {
-    failure ??= error.message;
+    spawnError = error.message;
     console.error(`service restart failed (${record.account} port=${String(port)}):`, error);
   });
   child.unref();
@@ -569,14 +683,25 @@ export async function restartService(subject, port) {
   });
   if (exitCode !== undefined) {
     restartedJails.delete(key);
-    const reason = failure === undefined ? '' : `：${failure}`;
-    const hint = record.cwd === undefined
-      ? '（这条登记没有启动目录，相对路径的命令找不到入口文件，请用 vh-service run --cwd 重新登记）'
-      : '';
+    try {
+      stderrText = readFileSync(logPath, 'utf8').slice(0, 16_384);
+    } catch {
+      // No log file: nothing to name the cause, which the exit code still does.
+    }
+    // One line only: the gateway log is shared with every tenant. The line
+    // worth keeping names the problem, and it is picked from the whole stream
+    // so a warning printed first cannot stand in for the error.
+    const failure = firstFailure(stderrText) ?? spawnError;
+    if (failure !== undefined) {
+      console.warn(`service restart (${record.account} port=${String(port)}): ${failure}`);
+    }
+    // The exit code is the jail wrapper's, which is not the command's own, so
+    // it is only worth printing when there is no message that names the cause.
+    const detail = failure === undefined ? `（退出码 ${String(exitCode)}）` : `：${failure}`;
     return {
       status: 502,
       error: 'exited',
-      message: `「${record.name}」启动后立即退出（退出码 ${String(exitCode)}）${reason}${hint}`,
+      message: `「${record.name}」启动后立即退出${detail}`,
     };
   }
   return { status: 200 };
