@@ -18,6 +18,11 @@ x-v-harness-env: &v-harness-env
   # MCPHub（com.ictrek.mcphub）同样在 vos_default 网络，按 compose 别名直连容器
   # 3000；它的 BASE_PATH 由自己保留，不经 VOS 网关，因此不做 strip。
   MCPHUB_URL: ${MCPHUB_URL:-http://mcphub:3000/app/com.ictrek.mcphub}
+  # 租户 agent 需要直连的 VOS 内部服务。jail 默认丢弃所有 RFC1918 与 127/8，
+  # 只有这里列出的名字会被解析成当前地址并放行（见 gateway/instances.mjs 的
+  # allowedDestinations）。用服务名而不是 IP：容器重建后地址会变，写死的 /32
+  # 会变成一条看起来正确、实际永不匹配的规则。
+  VH_NET_ALLOW_HOSTS: ${VH_NET_ALLOW_HOSTS:-v-voice-backend}
   SESSION_TTL_MS: ${SESSION_TTL_MS:-43200000}
   DSH_PERMISSION_MODE: workspace-write
   # Docker Hub is not reachable from these hosts: `registry-1.docker.io` and

@@ -21,6 +21,7 @@ import { mkdir, readFile, writeFile, access, open, readdir, rm, stat } from 'nod
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
+import { lookup } from 'node:dns/promises';
 import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import { rememberProfile, restoreProfile } from './last-good.mjs';
 import { capabilitiesPluginShipped, syncPlugins } from './plugins.mjs';
@@ -544,6 +545,40 @@ export async function waitForFreePort(port, attempts) {
 }
 
 /**
+ * Destinations a tenant may reach outside its own address.
+ *
+ * The jail drops every private range, so any VOS service the agent has to call
+ * has to be named here — that list is the only way out. Hosts are resolved at
+ * launch instead of being pinned as addresses: a recreated container gets a new
+ * address, and a stale `/32` in a deployment file is a rule that silently stops
+ * matching while looking correct.
+ *
+ * `VH_NET_ALLOW_CIDRS` stays as the literal form for ranges (an office subnet,
+ * a resolver); `VH_NET_ALLOW_HOSTS` names single services by their compose name.
+ * @returns {Promise<string>} comma-separated destinations; empty when none apply.
+ */
+async function allowedDestinations() {
+  const entries = [];
+  for (const raw of String(process.env.VH_NET_ALLOW_CIDRS ?? '').split(',')) {
+    const cidr = raw.trim();
+    if (cidr !== '') entries.push(cidr);
+  }
+  for (const raw of String(process.env.VH_NET_ALLOW_HOSTS ?? '').split(',')) {
+    const host = raw.trim();
+    if (host === '') continue;
+    try {
+      const { address, family } = await lookup(host);
+      entries.push(family === 6 ? `${address}/128` : `${address}/32`);
+    } catch (error) {
+      // A host that cannot be resolved is a deployment mistake worth seeing, and
+      // the launch continues: the rest of the allow-list still applies.
+      console.warn(`cannot resolve VH_NET_ALLOW_HOSTS entry ${host}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return entries.join(',');
+}
+
+/**
  * Start one dsh process and capture its cookie.
  * @param {{
  *   record: import('./users.mjs').UserRecord,
@@ -605,6 +640,9 @@ async function launch(options) {
     '--port', String(record.port),
     '--no-open',
   ];
+  // One lookup per launch: the allow-list is what lets the agent reach a VOS
+  // service, so it has to reflect the address that service has right now.
+  const allowed = await allowedDestinations();
   const launchOptions = {
     cwd: paths.workspace,
     env: {
@@ -619,6 +657,9 @@ async function launch(options) {
       // instance can call back (scheduler, model proxying) under the strict
       // per-tenant 127/8 policy it installs.
       VH_GATEWAY_PORT: String(process.env.PORT ?? 8080),
+      // VOS services the agent may call past its own address. vh-jail drops
+      // every private range, so this list is the only opening it gets.
+      ...(allowed === '' ? {} : { VH_NET_ALLOW_CIDRS: allowed }),
       // Product skills shipped in the image (V-Office today). The provider
       // scans this root at rank 600, so a tenant cannot shadow them from
       // `$DSH_HOME/skills` or `.agents/skills`.
