@@ -171,9 +171,19 @@ unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     must iptables -A OUTPUT -m mark --mark "$mark" -j "$chain"
     # No tenant address space on ::1: the whole IPv6 loopback drops. External
     # IPv6 destinations are untouched.
-    if command -v ip6tables >/dev/null 2>&1; then
+    #
+    # The probe asks the kernel a real question, because the command merely
+    # existing proves nothing: a host with IPv6 disabled (`ipv6.disable=1`, or
+    # `net.ipv6.conf.all.disable_ipv6=1`) still ships ip6tables, and every rule
+    # it takes then fails with "Address family not supported by protocol". That
+    # must not refuse a launch — this deployment has nothing on ::1 to protect,
+    # and the isolation it does need is already installed above. Where IPv6 does
+    # work, the rule is mandatory like its IPv4 counterpart.
+    if command -v ip6tables >/dev/null 2>&1 && ip6tables -L OUTPUT -n >/dev/null 2>&1; then
       while ip6tables -D OUTPUT -m mark --mark "$mark" -d ::1 -j DROP 2>/dev/null; do :; done
       must ip6tables -A OUTPUT -m mark --mark "$mark" -d ::1 -j DROP
+    else
+      warn "IPv6 is not available on this host; skipping the ::1 policy"
     fi
   }
   net_isolate
