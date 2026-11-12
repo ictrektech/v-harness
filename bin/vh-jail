@@ -403,16 +403,24 @@ unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
       || fail \"no usable sandbox backend in the tenant jail\"
     echo \"vh-jail: tenant sandbox backend verified (bwrap)\" >&2
     # dsh is the pid namespace init but has no reaper, so every confined bwrap
-    # run left defunct children reparented to it. tini is already in the image:
-    # make it the init and let dsh be an ordinary child. tini reaps orphans and
+    # run left defunct children reparented to it. tini reaps orphans and
     # forwards signals; the tenant uid, caps, no-new-privs and listening port
-    # stay exactly as they were.
+    # stay exactly as they were. An older base image on another architecture
+    # may not carry tini: refusing to start dsh there is worse than the orphans.
+    if [ -x /usr/bin/tini ]; then
+      exec /usr/bin/setpriv \
+        --no-new-privs \
+        --bounding-set=-all \
+        --inh-caps=-all \
+        --ambient-caps=-all \
+        --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \
+        /usr/bin/tini -s -- \"\$@\"
+    fi
     exec /usr/bin/setpriv \
       --no-new-privs \
       --bounding-set=-all \
       --inh-caps=-all \
       --ambient-caps=-all \
-      --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \
-      /usr/bin/tini -s -- \"\$@\"
+      --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \"\$@\"
   " sh "$@"
 ' -- "$@"

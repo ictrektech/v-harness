@@ -983,6 +983,35 @@ const isolatedNetworks = new Set();
 /** Probe result memo: false once iptables turned out to be unusable here. */
 let iptablesUsable;
 
+/** Memoized {@link iptablesFrontend} result; undefined until the first read. */
+let frontendMemo;
+
+/**
+ * The iptables frontend the boot probe verified and recorded at container
+ * start. The gateway installs owner/mark rules of its own; trusting the
+ * alternatives symlink would silently lose them when a kernel whose nft
+ * frontend cannot load the matches is reset to nft. Older images and hotfixed
+ * containers have no record, so fall back to the ambient command.
+ * @returns {string}
+ */
+function iptablesFrontend() {
+  if (frontendMemo !== undefined) return frontendMemo;
+  frontendMemo = 'iptables';
+  try {
+    for (const line of readFileSync('/run/vh-iptables-frontend', 'utf8').split('\n')) {
+      const [family, command] = line.trim().split(/\s+/);
+      if (family === 'iptables' && command && /^[A-Za-z0-9._-]+$/.test(command)) {
+        frontendMemo = command;
+        break;
+      }
+    }
+  } catch (error) {
+    // No record: keep the command this gateway always used.
+    void error;
+  }
+  return frontendMemo;
+}
+
 /**
  * Install one iptables rule unless it is already present.
  * @param {string[]} args - the rule spec exactly as `iptables -A` would take it.
@@ -991,13 +1020,13 @@ function iptablesOnce(args) {
   if (iptablesUsable === false) return;
   if (typeof process.getuid === 'function' && process.getuid() !== 0) return;
   try {
-    execFileSync('iptables', ['-C', ...args.slice(1)], { stdio: 'ignore' });
+    execFileSync(iptablesFrontend(), ['-w', '-C', ...args.slice(1)], { stdio: 'ignore' });
     return;
   } catch (error) {
     if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') iptablesUsable = false;
   }
   try {
-    execFileSync('iptables', args, { stdio: 'ignore' });
+    execFileSync(iptablesFrontend(), ['-w', ...args], { stdio: 'ignore' });
   } catch (error) {
     if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') iptablesUsable = false;
     console.warn(`docker-proxy: could not install the network rule (${String(/** @type {Error} */ (error).message)})`);
@@ -1017,7 +1046,7 @@ function iptablesOnce(args) {
 function iptablesDelete(args) {
   if (typeof process.getuid === 'function' && process.getuid() !== 0) return;
   try {
-    execFileSync('iptables', ['-D', ...args.slice(1)], { stdio: 'ignore' });
+    execFileSync(iptablesFrontend(), ['-w', '-D', ...args.slice(1)], { stdio: 'ignore' });
   } catch {
     // Not there, or the match cannot load here: nothing to remove.
   }

@@ -978,6 +978,9 @@ export async function ensureInstance(options) {
       uid: record.uid, port: record.port, cookie: existing.cookie,
     })) {
       existing.checkedAt = Date.now();
+      // A proved listener invalidates any failure left by an earlier launch:
+      // a timed-out jail can announce its URL after the ladder gave up on it.
+      launchFailures.delete(record.subject);
       return existing;
     }
     instances.delete(record.subject);
@@ -1012,6 +1015,10 @@ export async function ensureInstance(options) {
     };
     instances.set(record.subject, adopted);
     bootStamps.set(record.subject, adopted.bootedAt);
+    // The probe above is proof this process serves documents. A failure left
+    // by a launch that timed out and then came up on its own is stale: keeping
+    // it would publish boot 0 forever and pin the waiting page to an error.
+    launchFailures.delete(record.subject);
     console.log(`instance adopted: ${account} port=${String(record.port)} boot=${String(adopted.bootedAt)}`);
     return adopted;
   }

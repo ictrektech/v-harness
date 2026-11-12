@@ -613,3 +613,114 @@ test('invalidateInstance throttles repeat failures to one retirement per window'
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('adoption clears the failure a timed-out launch left behind', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-stale-failure-'));
+  let child;
+  const killer = setTimeout(() => { child?.kill('SIGKILL'); }, 30_000);
+  try {
+    const port = await freePort();
+    const bin = join(root, 'bin');
+    await mkdir(bin, { recursive: true });
+    await mkdir(join(root, 'vh-stale', 'workspace'), { recursive: true });
+    await mkdir(join(root, 'vh-stale', '.dsh'), { recursive: true });
+    // rewriteJailPaths only touches homes carrying this marker.
+    await writeFile(join(root, 'vh-stale', '.dsh', '.jail-paths-home-v3'), '');
+    await writeFile(join(bin, 'vh-userctl'), '#!/bin/sh\nexit 0\n');
+    // The jail exits before announcing a URL, so every rung of the ladder
+    // fails and the launch records a failure.
+    await writeFile(join(bin, 'vh-jail'), '#!/bin/sh\nexit 1\n');
+    // A non-root gateway reaches the helper through sudo -n.
+    await writeFile(join(bin, 'sudo'), '#!/bin/sh\nshift\nexec "$@"\n');
+    for (const name of ['vh-userctl', 'vh-jail', 'sudo']) {
+      await chmod(join(bin, name), 0o755);
+    }
+    // The registry names a live-looking tenant whose listener only appears
+    // after the failed launch — the timed-out jail that boots late.
+    const statePath = join(root, 'state.json');
+    await writeRegistry(statePath, {
+      stale: {
+        cookie: 'dsh-auth-stale=v1',
+        cookieExpiresAt: Date.now() + 86_400_000,
+        port,
+        uid: process.getuid(),
+        bootedAt: Date.now() - 5_000,
+      },
+    });
+    // JAIL_BIN and HOME_ROOT are read at module load, so the launch path needs
+    // a fresh module graph in a subprocess with its own environment.
+    const instancesUrl = new URL('./instances.mjs', import.meta.url).href;
+    const probe = join(root, 'probe.mjs');
+    await writeFile(probe, `
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+const [root, portText] = process.argv.slice(2);
+const port = Number(portText);
+const record = {
+  subject: 'stale', namespace: 'stale-ns', username: 'stale',
+  account: 'vh-stale', linuxName: 'vh-stale',
+  uid: process.getuid(), port, createdAt: Date.now(),
+};
+const options = {
+  record, stateRoot: root, dshBin: root + '/no-dsh',
+  nodeBin: process.execPath, statePath: root + '/state.json',
+  userHelper: root + '/bin/vh-userctl',
+};
+const { ensureInstance, launchFailure, stopAll } = await import(${JSON.stringify(instancesUrl)});
+try {
+  await ensureInstance(options);
+  console.log(JSON.stringify({ phase: 1, failure: 'launch unexpectedly succeeded' }));
+} catch {
+  console.log(JSON.stringify({ phase: 1, failure: launchFailure('stale') ?? null }));
+}
+const server = createServer((req, res) => {
+  const ok = req.headers.cookie === 'dsh-auth-stale=v1';
+  res.writeHead(ok ? 200 : 401);
+  res.end(ok ? 'ok' : 'no');
+});
+server.listen(port, '0.0.0.0');
+await once(server, 'listening');
+const adopted = await ensureInstance(options);
+console.log(JSON.stringify({
+  phase: 2, adopted: adopted.adopted === true, failure: launchFailure('stale') ?? null,
+}));
+server.close();
+await stopAll();
+`, 'utf8');
+    child = spawn(process.execPath, [probe, root, String(port)], {
+      env: {
+        ...process.env,
+        JAIL_BIN: join(bin, 'vh-jail'),
+        HOME_ROOT: root,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        // The launch ladder probes MCPHub once per process; a refused local
+        // port keeps that probe instant instead of a deployment's real URL.
+        MCPHUB_URL: 'http://127.0.0.1:1/base',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const code = await new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('exit', (exitCode) => { resolve(exitCode); });
+    });
+    assert.equal(code, 0, `probe child failed: ${stderr}`);
+    const phases = stdout.split('\n')
+      .filter((line) => line.startsWith('{"phase":'))
+      .map((line) => JSON.parse(line));
+    assert.equal(phases.length, 2, stdout);
+    assert.equal(typeof phases[0].failure, 'string', 'the failed ladder records a failure');
+    assert.deepEqual(
+      phases[1],
+      { phase: 2, adopted: true, failure: null },
+      'a proved listener clears the failure so the waiting page is not pinned',
+    );
+  } finally {
+    clearTimeout(killer);
+    if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
+  }
+});
