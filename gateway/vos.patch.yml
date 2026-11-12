@@ -13,23 +13,26 @@
 - id: workspace-controller
   config:
     documentsDirectory: !!js process.env.HOME + '/workspace'
-# The terminal sandbox hides every other account's tree. `tenantRoot` is this
-# account's own root as the jailed process sees it; the provider masks the
-# sibling homes and the state root, so even a deployment that loses its jail
-# never exposes another tenant. A patch replaces the whole config, so the
+# The vh-jail private tmpfs root is already the tenant boundary: sibling homes,
+# /data and /root do not exist in it. A patch replaces the whole config, so the
 # mode/root the base bundle sets are restated here.
 # `workspaceRoot` is the whole tenant home, not `<home>/workspace`. npm, pnpm,
 # pip, uv and cargo all write to `~/.npm`, `~/.cache`, `~/.local` before they
 # write a single project file: with the narrower root, every session that
 # installed a dependency first had to rediscover this and hand-set cache
-# directories. The isolation boundary is `tenantRoot` — a sibling home still
-# does not exist in this jail — so widening the writable root inside one's own
-# home costs nothing.
+# directories. The jail hides every other tenant, so widening the writable root
+# inside one's own home costs nothing.
+# `tenantRoot` is "/" because the whole private root belongs to this tenant.
+# Pointing it at the home makes bwrap add --tmpfs masks for /home, /root, /data,
+# /srv, /mnt and /media; none of those exist in the jail, and bwrap cannot
+# create mount points under its own read-only root. The jail already hides them,
+# so the masks are redundant. "/" keeps the bwrap dev-bind and /tmp bind while
+# leaving the mask list empty.
 - id: sandbox-policy
   config:
     mode: !!js "process.env.DSH_PERMISSION_MODE ?? 'workspace-write'"
     workspaceRoot: !!js "process.env.HOME ?? process.cwd()"
-    tenantRoot: !!js "process.env.HOME ?? '/data'"
+    tenantRoot: "/"
 # A tenant may pick read-only or workspace-write in General settings, never
 # danger-full-access: one click must not be able to turn the sandbox off.
 - id: permission

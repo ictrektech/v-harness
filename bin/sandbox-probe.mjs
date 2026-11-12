@@ -9,6 +9,12 @@
  *
  * Exit code is always 0: this is a diagnosis, not a gate. Read `verdict`.
  *
+ * Scope: container root, not the tenant jail. A root probe can pass with
+ * CAP_SYS_ADMIN while the tenant process cannot create a user namespace (for
+ * example inside a chroot). `bin/vh-jail` runs the authoritative gate with the
+ * tenant's credentials at every instance launch; `verdict` here is a host-level
+ * hint, never a statement about dsh's sandbox.
+ *
  * @module v-harness/bin/sandbox-probe
  */
 
@@ -83,6 +89,7 @@ else verdict = 'blocked';
 const report = {
   platform: platform(),
   kernel: release(),
+  scope: 'container-root; tenant context is gated by bin/vh-jail',
   verdict,
   bwrap,
   userns,

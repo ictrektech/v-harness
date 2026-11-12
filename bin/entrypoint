@@ -78,9 +78,10 @@ for family in iptables ip6tables; do
     || echo "boot probe: $family cannot install the owner match; docker-proxy's per-tenant rule may be skipped" >&2
 done
 
-# dsh fails closed when it cannot confine bash: if neither bwrap nor Landlock is
-# usable the bash tool refuses to run. Record the verdict at startup so a broken
-# container is diagnosed from the log instead of from a user report.
+# Container-level confinement diagnosis only. The authoritative gate runs in
+# bin/vh-jail with each tenant's credentials at instance launch: dsh fails
+# closed when neither bwrap nor Landlock can confine, so a broken jail must
+# refuse the launch rather than surface as a "bash unavailable" tool error.
 node /opt/v-harness/bin/sandbox-probe.mjs
 
 # Containers have no init loop for the per-user accounts, so rebuild them from
