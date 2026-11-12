@@ -390,18 +390,42 @@ unshare --mount --pid --ipc --uts --fork --mount-proc bash -c '
     ulimit -n 4096 2>/dev/null || true
     ulimit -f 2097152 2>/dev/null || true
     cd \"\$HOME/workspace\" 2>/dev/null || cd \"\$HOME\"
-    # dsh fails closed when bwrap cannot confine (this kernel has no Landlock),
-    # so verify the backend with the exact tenant credentials before launch.
-    # A root-side probe would pass with CAP_SYS_ADMIN and hide a broken jail.
-    /usr/bin/timeout 10 /usr/bin/setpriv \
-      --no-new-privs \
-      --bounding-set=-all \
-      --inh-caps=-all \
-      --ambient-caps=-all \
-      --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \
-      /usr/bin/bwrap --ro-bind / / --unshare-pid --unshare-ipc --proc /proc --die-with-parent --dev /dev -- /usr/bin/true \
-      || fail \"no usable sandbox backend in the tenant jail\"
-    echo \"vh-jail: tenant sandbox backend verified (bwrap)\" >&2
+    # The inner sandbox belongs to dsh; the jail above is the tenant boundary,
+    # and only the checks before this point refuse a launch. dsh
+    # probes its Linux chain in order — bwrap, then the Landlock launcher — and
+    # confines with the first rung that answers, so a host that denies an
+    # unprivileged user namespace (arm deployments:
+    # kernel.apparmor_restrict_unprivileged_userns=1) still has Landlock.
+    # Probing bwrap alone read that host as no usable backend and refused every
+    # launch, locking every tenant out of a workspace dsh could have served.
+    # Report the rung that answered instead: a workspace whose dsh cannot
+    # confine still opens, and dsh names the missing backend at its first
+    # shell command.
+    as_tenant() {
+      /usr/bin/timeout 10 /usr/bin/setpriv \
+        --no-new-privs \
+        --bounding-set=-all \
+        --inh-caps=-all \
+        --ambient-caps=-all \
+        --reuid=\"$VH_JAIL_UID\" --regid=\"$VH_JAIL_UID\" --init-groups \
+        \"\$@\"
+    }
+    backend=
+    if as_tenant /usr/bin/bwrap --ro-bind / / --unshare-pid --unshare-ipc --proc /proc --die-with-parent --dev /dev -- /usr/bin/true 2>/dev/null; then
+      backend=bwrap
+    else
+      for launcher in \
+        /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/node-addon-system-*/bin/landlock-run \
+        /usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/node-addon-system-*/bin/landlock-run; do
+        [ -x \"\$launcher\" ] || continue
+        if as_tenant \"\$launcher\" --probe >/dev/null 2>&1; then backend=landlock; break; fi
+      done
+    fi
+    case \"\$backend\" in
+      bwrap) echo \"vh-jail: tenant sandbox backend verified (bwrap)\" >&2 ;;
+      landlock) echo \"vh-jail: tenant sandbox backend verified (landlock); this host denies unprivileged user namespaces, so bwrap cannot confine here. Set kernel.apparmor_restrict_unprivileged_userns=0 for full enforcement\" >&2 ;;
+      *) echo \"vh-jail: no confinement backend answered for uid $VH_JAIL_UID; dsh will refuse its own shell commands (see bin/sandbox-probe.mjs)\" >&2 ;;
+    esac
     # dsh is the pid namespace init but has no reaper, so every confined bwrap
     # run left defunct children reparented to it. tini reaps orphans and
     # forwards signals; the tenant uid, caps, no-new-privs and listening port

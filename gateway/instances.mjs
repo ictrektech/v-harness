@@ -215,6 +215,81 @@ export async function runUserHelper(helper, args) {
   }
 }
 
+/** vh-jail's own exit status: it refused to build the jail. */
+export const JAIL_REFUSAL_EXIT = 97;
+
+/** How much of a refused launch's own log line is worth quoting back. */
+const EXIT_DETAIL_LIMIT = 300;
+
+/**
+ * A launch that ended before dsh announced its URL.
+ *
+ * The exit status separates the two causes the launch ladder must treat
+ * differently: vh-jail refuses on its own with {@link JAIL_REFUSAL_EXIT} when
+ * the host cannot give the tenant a jail, while a dsh that exits by itself is
+ * very likely reading a configuration the ladder can replace.
+ */
+export class LaunchRefusedError extends Error {
+  /**
+   * @param {string} message
+   * @param {number | null} exitCode
+   */
+  constructor(message, exitCode) {
+    super(message);
+    this.name = 'LaunchRefusedError';
+    this.exitCode = exitCode;
+  }
+}
+
+/**
+ * Whether a failed launch was the jail refusing this host.
+ *
+ * Nothing the ladder does can fix a jail the host will not build, and both of
+ * its rungs rewrite what the tenant chose: dropping the service choice and
+ * restoring the last good profile destroy a setting the tenant is entitled to
+ * keep. A refusal therefore reports itself instead of walking down.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isJailRefusal(error) {
+  return error instanceof LaunchRefusedError && error.exitCode === JAIL_REFUSAL_EXIT;
+}
+
+/**
+ * The last line this attempt appended to its log.
+ *
+ * A process that never reached dsh has no error object to report: vh-jail
+ * prints its refusal to the tenant's log and exits. Quoting that line is the
+ * difference between "exited before announcing its URL" and the reason — a jail
+ * that refused, a mount that failed — which is what the starting page shows.
+ * @param {string} logPath
+ * @param {number} fromOffset - log size before this attempt started.
+ * @returns {Promise<string>}
+ */
+export async function attemptExitDetail(logPath, fromOffset) {
+  /** @type {import('node:fs/promises').FileHandle | undefined} */
+  let handle;
+  try {
+    handle = await open(logPath, 'r');
+    const { size } = await handle.stat();
+    if (size <= fromOffset) return '';
+    const length = Math.min(size - fromOffset, 8 * 1024);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+    const lines = buffer.subarray(0, bytesRead).toString('utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+    const last = lines.at(-1) ?? '';
+    return last.length > EXIT_DETAIL_LIMIT ? `${last.slice(0, EXIT_DETAIL_LIMIT)}…` : last;
+  } catch (error) {
+    if (/** @type {{ code?: string }} */ (error)?.code !== 'ENOENT') throw error;
+    return '';
+  } finally {
+    await handle?.close();
+  }
+}
+
 /**
  * Extract the launch URL dsh prints once its listener is up.
  *
@@ -237,7 +312,14 @@ export async function waitForLaunchUrl(child, logPath, fromOffset, timeoutMs) {
   let carry = '';
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error('dsh exited before announcing its URL');
+      const detail = await attemptExitDetail(logPath, fromOffset);
+      // The child's own last words travel with the error: the caller reports one
+      // line to the tenant's page, and "exited before announcing its URL" alone
+      // leaves a locked-out user with nothing to act on.
+      throw new LaunchRefusedError(
+        `dsh exited before announcing its URL${detail === '' ? '' : `: ${detail}`}`,
+        child.exitCode,
+      );
     }
     /** @type {import('node:fs/promises').FileHandle | undefined} */
     let handle;
@@ -842,12 +924,22 @@ async function launch(options) {
       failures.push(detail);
       return detail;
     };
+    /** Report the failure the ladder ended on, and remember it for the page. */
+    const giveUp = () => {
+      const reason = failures.at(-1) ?? 'launch failed';
+      launchFailures.set(record.subject, reason);
+      throw new Error(`${reason} (log: ${paths.log})`);
+    };
 
     try {
       Object.assign(launchOptions.env, mcphubChoice.env ?? {});
       return await startOnce(launchArgsFor(mcphubChoice));
     } catch (error) {
       console.error(`launch failed for ${account}:`, note(error));
+      // The jail refused the host, not the configuration: every rung below would
+      // rewrite a setting this tenant is entitled to keep, for a cause none of
+      // them can change.
+      if (isJailRefusal(error)) giveUp();
     }
 
     // The service choice is a preference, so it goes first: an owner who picked
@@ -881,8 +973,7 @@ async function launch(options) {
       console.error(`last known good profile not restored for ${account}:`, note(error));
     }
 
-    launchFailures.set(record.subject, failures.at(-1) ?? 'launch failed');
-    throw new Error(`${failures.at(-1) ?? 'launch failed'} (log: ${paths.log})`);
+    return giveUp();
   };
 
   /** @type {{ child: import('node:child_process').ChildProcess, launchUrl: string }} */

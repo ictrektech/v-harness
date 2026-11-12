@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { appendFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { exchangeCookie, waitForLaunchUrl } from './instances.mjs';
+import { exchangeCookie, isJailRefusal, LaunchRefusedError, waitForLaunchUrl } from './instances.mjs';
 
 /**
  * Reserve a loopback port and hand it back unused, so a test can listen on it
@@ -92,6 +92,54 @@ test('fails fast when dsh exits and times out when no URL arrives', async () => 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('a launch that dies says what the child printed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-launch-detail-'));
+  const path = join(root, 'instance.log');
+  try {
+    await writeFile(
+      path,
+      'starting\nvh-jail: isolation check failed: no usable sandbox backend in the tenant jail\n',
+      'utf8',
+    );
+    const exited = spawn(process.execPath, ['-e', 'process.exit(97)'], { stdio: 'ignore' });
+    await once(exited, 'exit');
+    await assert.rejects(waitForLaunchUrl(exited, path, 0, 500), (error) => {
+      assert.match(error.message, /exited before announcing its URL/);
+      assert.match(error.message, /no usable sandbox backend/);
+      assert.equal(error.exitCode, 97);
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('quotes only the lines the current attempt appended', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-launch-detail-tail-'));
+  const path = join(root, 'instance.log');
+  try {
+    await writeFile(path, 'vh-jail: isolation check failed: an earlier attempt\n', 'utf8');
+    const fromOffset = (await stat(path)).size;
+    await appendFile(path, 'vh-jail: pivot_root failed\n', 'utf8');
+    const exited = spawn(process.execPath, ['-e', 'process.exit(97)'], { stdio: 'ignore' });
+    await once(exited, 'exit');
+    await assert.rejects(waitForLaunchUrl(exited, path, fromOffset, 500), (error) => {
+      assert.match(error.message, /pivot_root failed/);
+      assert.doesNotMatch(error.message, /an earlier attempt/);
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a jail refusal is reported instead of stepping the configuration ladder', () => {
+  assert.equal(isJailRefusal(new LaunchRefusedError('refused', 97)), true);
+  assert.equal(isJailRefusal(new LaunchRefusedError('exited by itself', 0)), false);
+  assert.equal(isJailRefusal(new LaunchRefusedError('killed', null)), false);
+  assert.equal(isJailRefusal(new Error('vh-jail: refused')), false);
 });
 
 test('retries a refused dial until the freshly printed listener answers', async () => {
