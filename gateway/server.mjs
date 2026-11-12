@@ -47,6 +47,7 @@ import {
 import {
   ensureInstance,
   instanceAnswers,
+  invalidateInstance,
   launchFailure,
   readyBoot,
   liveInstance,
@@ -2560,6 +2561,9 @@ async function proxyRequest(req, res) {
 
     upstream.on('error', (error) => {
       console.error(`upstream ${String(instance.port)} failed:`, error.message);
+      // The record only proves the process existed, not that it still answers:
+      // retire it so the next request probes again or launches a replacement.
+      invalidateInstance(record.subject);
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('实例不可用');
       resolve();
@@ -2619,7 +2623,10 @@ async function proxyUpgrade(req, socket, head) {
     upstream.pipe(socket);
     socket.pipe(upstream);
   });
-  upstream.on('error', () => socket.destroy());
+  upstream.on('error', () => {
+    invalidateInstance(session.subject);
+    socket.destroy();
+  });
   socket.on('error', () => upstream.destroy());
   socket.on('close', () => upstream.destroy());
 }

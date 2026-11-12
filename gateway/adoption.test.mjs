@@ -12,8 +12,8 @@ import {
   readRegistry, writeRegistry,
 } from './instance-state.mjs';
 import {
-  ensureInstance, instanceBoot, migrateInstanceStateKeys, primeInstanceBoots,
-  readyBoot, stopAll, stopInstance,
+  ensureInstance, instanceBoot, invalidateInstance, migrateInstanceStateKeys,
+  primeInstanceBoots, readyBoot, stopAll, stopInstance,
 } from './instances.mjs';
 import { mcphubEnvironment, restoreMcphubKey } from './mcphub.mjs';
 import { restoreSchedulerKey, schedulerEnvironment } from './scheduler.mjs';
@@ -491,5 +491,125 @@ test('capability keys are recovered, while a new launch still rotates one', asyn
     if (previousUrl === undefined) delete process.env.MCPHUB_URL;
     else process.env.MCPHUB_URL = previousUrl;
     await closeServer(upstream);
+  }
+});
+
+test('invalidateInstance retires an unreachable instance and stops the deaf wrapper', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-invalidate-'));
+  let child;
+  try {
+    await stopAll();
+    const subject = 'subject-inv';
+    const record = user(subject, 20_020, await freePort());
+    const cookie = 'dsh-auth-inv=v1';
+    // A wrapper whose cmdline names vh-jail, so the ownership check passes: it
+    // serves until SIGUSR1 closes the listener, then stays alive but deaf —
+    // the process-level liveness check alone would call it healthy forever.
+    const wrapper = join(root, 'vh-jail');
+    await writeFile(wrapper, `
+      const http = require('node:http');
+      const server = http.createServer((_req, res) => { res.writeHead(200); res.end('ok'); });
+      server.listen(${String(record.port)}, '0.0.0.0');
+      process.on('SIGUSR1', () => { server.close(); });
+      setInterval(() => {}, 1000);
+    `, 'utf8');
+    child = spawn(process.execPath, [wrapper], { stdio: 'ignore' });
+    await once(child, 'spawn');
+    const { statePath, options } = await registryWithInstance(root, subject, record, record.port, cookie);
+    const registry = await readRegistry(statePath);
+    registry[subject].pid = child.pid;
+    await writeRegistry(statePath, registry);
+    const upDeadline = Date.now() + 5_000;
+    while (Date.now() < upDeadline
+      && !await probeInstance({ uid: record.uid, port: record.port, cookie, host: '127.0.0.1' })) {
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    const adopted = await ensureInstance(options);
+    assert.equal(adopted.adopted, true);
+    assert.ok(readyBoot(subject) > 0);
+
+    process.kill(child.pid, 'SIGUSR1');
+    const deafDeadline = Date.now() + 5_000;
+    while (Date.now() < deafDeadline
+      && await probeInstance({ uid: record.uid, port: record.port, cookie, host: '127.0.0.1' })) {
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    invalidateInstance(subject);
+    assert.equal(readyBoot(subject), 0, 'readiness drops immediately');
+    assert.equal(instanceBoot(subject), 0, 'the durable stamp goes with the record');
+    const killDeadline = Date.now() + 5_000;
+    while (child.exitCode === null && child.signalCode === null && Date.now() < killDeadline) {
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'the deferred cleanup stops the deaf wrapper');
+    // The registry still names the dead process: the next request must try to
+    // launch, not adopt it. The launch fails on the missing helper, which is
+    // exactly the proof that adoption was refused.
+    await assert.rejects(ensureInstance(options));
+  } finally {
+    if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await stopAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('invalidateInstance spares a healthy instance and adoption restores it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-invalidate-healthy-'));
+  let server;
+  try {
+    await stopAll();
+    const subject = 'subject-inv-ok';
+    const record = user(subject, 20_021, await freePort());
+    const cookie = 'dsh-auth-invok=v1';
+    const bootedAt = Date.now() - 3_000;
+    const { options } = await registryWithInstance(root, subject, record, record.port, cookie, bootedAt);
+    server = await tenantServer(record.port, cookie);
+    const adopted = await ensureInstance(options);
+    assert.equal(adopted.adopted, true);
+
+    // A mid-stream reset on a healthy instance also invalidates: the probe
+    // must clear the process, and the next request re-adopts without a restart.
+    invalidateInstance(subject);
+    assert.equal(readyBoot(subject), 0);
+    const readopted = await ensureInstance(options);
+    assert.equal(readopted.adopted, true, 'a healthy process is re-adopted, not relaunched');
+    assert.equal(readopted.bootedAt, bootedAt);
+    assert.equal(readyBoot(subject), bootedAt);
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+    assert.equal(
+      await probeInstance({ uid: record.uid, port: record.port, cookie, host: '127.0.0.1' }),
+      true,
+      'the deferred cleanup did not kill the healthy listener',
+    );
+  } finally {
+    if (server) await closeServer(server);
+    await stopAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('invalidateInstance throttles repeat failures to one retirement per window', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vh-invalidate-throttle-'));
+  let server;
+  try {
+    await stopAll();
+    const subject = 'subject-inv-th';
+    const record = user(subject, 20_022, await freePort());
+    const cookie = 'dsh-auth-invth=v1';
+    const bootedAt = Date.now() - 3_000;
+    const { options } = await registryWithInstance(root, subject, record, record.port, cookie, bootedAt);
+    server = await tenantServer(record.port, cookie);
+    await ensureInstance(options);
+
+    invalidateInstance(subject);
+    const readopted = await ensureInstance(options);
+    assert.equal(readopted.adopted, true);
+    invalidateInstance(subject);
+    assert.equal(readyBoot(subject), bootedAt, 'a second failure inside the window keeps the restored record');
+    invalidateInstance('never-seen');
+  } finally {
+    if (server) await closeServer(server);
+    await stopAll();
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -117,6 +117,16 @@ const launchChains = new Map();
 const launchFailures = new Map();
 
 /**
+ * A forwarding failure invalidates at most once per window: every concurrent
+ * request to a dead instance reports the same error, and one relaunch answers
+ * all of them.
+ */
+const INVALIDATE_THROTTLE_MS = 5_000;
+
+/** @type {Map<string, number>} */
+const invalidatedAt = new Map();
+
+/**
  * Directory layout for one tenant. The home is `<DATA_ROOT>/<account>` and nothing
  * else: the account is the only name a tenant ever sees, and its home is the
  * one writable tree in its world. Gateway state (user table, logs, instance
@@ -1174,23 +1184,15 @@ function isJailWrapper(pid) {
 }
 
 /**
- * Stop one instance at the owner's request; the next request starts it again.
- *
- * Signalling the `vh-jail` wrapper is not enough: it does not forward signals,
- * and the real dsh is a grandchild that has dropped to the tenant uid. The
- * authoritative target is whoever holds the tenant's fixed port. Both that
- * owner and the wrapper are checked before being signalled, because a pid
- * restored from the registry may point at a reused, unrelated process.
- * @param {string} subject
- * @returns {Promise<boolean>} whether an instance was being tracked.
+ * Signal whoever holds a tenant port until the port is actually free, then
+ * the jail wrapper. dsh is the init of its own pid namespace, so the port
+ * owner is the authoritative target: the wrapper does not forward signals,
+ * and a pid restored from the registry may point at a reused, unrelated
+ * process, so both owners are checked before being signalled.
+ * @param {Instance} instance
+ * @returns {Promise<void>}
  */
-export async function stopInstance(subject) {
-  const instance = instances.get(subject);
-  if (instance === undefined) return false;
-  instances.delete(subject);
-  bootStamps.delete(subject);
-  retired.add(subject);
-
+async function stopProcesses(instance) {
   const owner = listenerIn(instance.port);
   if (owner !== undefined) {
     if (owner.uid === instance.uid) {
@@ -1208,7 +1210,60 @@ export async function stopInstance(subject) {
       void error;
     }
   }
+}
+
+/**
+ * Stop one instance at the owner's request; the next request starts it again.
+ * @param {string} subject
+ * @returns {Promise<boolean>} whether an instance was being tracked.
+ */
+export async function stopInstance(subject) {
+  const instance = instances.get(subject);
+  if (instance === undefined) return false;
+  instances.delete(subject);
+  bootStamps.delete(subject);
+  retired.add(subject);
+  await stopProcesses(instance);
   return true;
+}
+
+/**
+ * Retire an instance a forwarded request could not reach, so the next request
+ * proves it again or launches a replacement.
+ *
+ * A process can outlive its listener: the child handle stays alive while every
+ * connect times out, and a record that only checks `exitCode` keeps publishing
+ * readiness forever. Dropping the record returns `readyBoot` to 0 and routes
+ * the next document through the starting page. The kill is deliberate but
+ * deferred: a mid-stream reset on a healthy instance also lands here, so the
+ * process is only stopped after a probe confirms it cannot serve, inside the
+ * launch chain so a relaunch cannot race the kill for the port. A healthy
+ * probe leaves the process alone; adoption restores the record without a
+ * restart.
+ * @param {string} subject - the tenant whose upstream failed.
+ * @returns {void}
+ */
+export function invalidateInstance(subject) {
+  const now = Date.now();
+  if (now - (invalidatedAt.get(subject) ?? 0) < INVALIDATE_THROTTLE_MS) return;
+  const instance = instances.get(subject);
+  if (instance === undefined) return;
+  invalidatedAt.set(subject, now);
+  instances.delete(subject);
+  bootStamps.delete(subject);
+  console.warn(`instance invalidated: ${instance.linuxName} port=${String(instance.port)} (upstream unreachable)`);
+  const previous = launchChains.get(subject) ?? Promise.resolve();
+  const task = previous.catch(() => {}).then(async () => {
+    // A concurrent request may have re-adopted or already relaunched.
+    if (instances.has(subject)) return;
+    if (instance.cookie !== undefined && await probeInstance({
+      uid: instance.uid, port: instance.port, cookie: instance.cookie,
+    })) return;
+    await stopProcesses(instance);
+  }).catch((error) => {
+    console.error(`instance invalidation cleanup failed for ${instance.linuxName}:`, error instanceof Error ? error.message : error);
+  });
+  launchChains.set(subject, task);
 }
 
 /**
@@ -1221,6 +1276,7 @@ export function stopAll() {
   instances.clear();
   launchChains.clear();
   launchFailures.clear();
+  invalidatedAt.clear();
   retired.clear();
   return Promise.resolve();
 }
