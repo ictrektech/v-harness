@@ -776,7 +776,7 @@ function startingPage() {
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>v-harness</title>
-<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0d10;color:#c8ccd4;font:14px/1.7 system-ui,sans-serif}
+<style>html{background:#0b0d10}body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0d10;color:#c8ccd4;font:14px/1.7 system-ui,sans-serif}
 #w{text-align:center}
 #m{opacity:.85;display:flex;gap:.6rem;align-items:center;justify-content:center}
 #s{width:14px;height:14px;border:2px solid #2a2f38;border-top-color:#7aa2f7;border-radius:50%;animation:r .8s linear infinite}
@@ -787,6 +787,7 @@ function startingPage() {
 var BOOT_URL = ${JSON.stringify(bootUrl)};
 var hint = document.getElementById('h');
 var failed = '';
+var handedOff = false;
 var startedAt = Date.now();
 try {
   var since = Number(sessionStorage.getItem('vh-starting-since') || 0);
@@ -795,11 +796,16 @@ try {
 } catch (e) { /* storage unavailable: count only this page load */ }
 function waited() { return Math.round((Date.now() - startedAt) / 1000); }
 var lastRetry = 0;
-// A document request always reaches the gateway and drives instanceFor.
-// Fetching it in the background keeps the launch alive (and retries a failed
-// one) without reloading the tab — reloading every couple of seconds is what
-// made this page flash during a cold boot. Only a document that has stopped
-// being this page triggers a single reload.
+// One tab, one handoff. A broken arm boot used to answer the background
+// document probe with an error page, and every probe reloaded the whole tab:
+// the waiting page flashed for as long as the launch kept failing. Drive the
+// launch in the background, but never reload while a failure is reported, and
+// hand off to the workspace at most once.
+function handoff() {
+  if (handedOff) return;
+  handedOff = true;
+  location.reload();
+}
 function pokeDocument() {
   var now = Date.now();
   if (now - lastRetry < 10000) return;
@@ -809,11 +815,12 @@ function pokeDocument() {
   })
     .then(function (r) { return r.ok ? r.text() : ''; })
     .then(function (html) {
-      if (html && html.indexOf('正在启动工作区') === -1) location.reload();
+      if (!failed && html && html.indexOf('正在启动工作区') === -1) handoff();
     })
     .catch(function () {});
 }
 function poll() {
+  if (handedOff) return;
   var w = waited();
   if (!failed) {
     if (w >= 60) hint.textContent = '启动时间较长（' + w + ' 秒），仍在自动重试…';
@@ -823,12 +830,14 @@ function poll() {
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
       if (!d) { pokeDocument(); return; }
-      if (typeof d.boot === 'number' && d.boot > 0) { location.reload(); return; }
       if (typeof d.error === 'string' && d.error !== '') {
         failed = d.error;
         hint.textContent = '启动失败：' + d.error + '，仍在自动重试…';
         pokeDocument();
+        return;
       }
+      if (failed) { failed = ''; hint.textContent = ''; }
+      if (typeof d.boot === 'number' && d.boot > 0) { handoff(); return; }
     })
     .catch(function () { pokeDocument(); });
   setTimeout(poll, 2000);
@@ -1450,7 +1459,10 @@ async function handleControl(req, res, url) {
     // `readyBoot` answers 0 until an instance can actually forward a request.
     const boot = readyBoot(session.subject);
     const failure = launchFailure(session.subject);
-    json(res, 200, failure === undefined ? { boot } : { boot, error: failure });
+    // A durable boot identity is not readiness when the last launch failed:
+    // publishing it made the waiting page reload into a workspace that still
+    // cannot serve a document, once per poll, for as long as the failure lasted.
+    json(res, 200, failure === undefined ? { boot } : { boot: 0, error: failure });
     return;
   }
 
@@ -2559,16 +2571,18 @@ async function proxyRequest(req, res) {
       });
     });
 
+    let clientGone = false;
     upstream.on('error', (error) => {
       console.error(`upstream ${String(instance.port)} failed:`, error.message);
-      // The record only proves the process existed, not that it still answers:
-      // retire it so the next request probes again or launches a replacement.
-      invalidateInstance(record.subject);
+      // A tab closing its own request destroys the upstream and can surface as
+      // the same error. Only a failure the client did not cause retires the
+      // record, or every navigation would look like an unreachable instance.
+      if (!clientGone) invalidateInstance(record.subject);
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('实例不可用');
       resolve();
     });
-    res.on('close', () => { upstream.destroy(); resolve(); });
+    res.on('close', () => { clientGone = true; upstream.destroy(); resolve(); });
     req.pipe(upstream);
   }).finally(release);
 }
@@ -2623,12 +2637,13 @@ async function proxyUpgrade(req, socket, head) {
     upstream.pipe(socket);
     socket.pipe(upstream);
   });
+  let clientGone = false;
   upstream.on('error', () => {
-    invalidateInstance(session.subject);
+    if (!clientGone) invalidateInstance(session.subject);
     socket.destroy();
   });
-  socket.on('error', () => upstream.destroy());
-  socket.on('close', () => upstream.destroy());
+  socket.on('error', () => { clientGone = true; upstream.destroy(); });
+  socket.on('close', () => { clientGone = true; upstream.destroy(); });
 }
 
 const server = createServer((req, res) => {

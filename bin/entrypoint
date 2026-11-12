@@ -57,16 +57,52 @@ frontend_matches_work() {
     && frontend_rule_works "$1" -p udp -m conntrack --ctorigdstport 53 -j ACCEPT \
     && frontend_rule_works "$1" -m mark --mark 0x1 -j ACCEPT
 }
+# Record the command that actually installed the conntrack/mark matches, not
+# just the alternatives symlink: vh-jail calls it explicitly, so a platform
+# reset or a failed switch cannot send the next tenant launch back to nft.
+FRONTEND_FILE=/run/vh-iptables-frontend
+if ! : > "$FRONTEND_FILE" 2>/dev/null; then
+  FRONTEND_FILE=""
+  echo "boot probe: cannot record the iptables frontend; the jail uses the ambient command" >&2
+fi
+record_frontend() {
+  if [ -n "$FRONTEND_FILE" ]; then
+    printf '%s %s\n' "$1" "$2" >> "$FRONTEND_FILE" 2>/dev/null || true
+  fi
+  return 0
+}
+# The ambient command is an alternatives symlink. Record the binary it resolves
+# to, not the symlink: a platform reset can move that symlink back to nft, and
+# the recorded name must keep working for every later tenant launch.
+resolved_frontend() {
+  local value base
+  # readlink -f follows all the way to xtables-legacy-multi, which is not an
+  # iptables command at all. The alternatives Value names the real frontend.
+  value="$(update-alternatives --query "$1" 2>/dev/null | sed -n 's/^Value: //p' | head -n 1 || true)"
+  if [ -n "$value" ]; then
+    base="${value##*/}"
+    if [ "$base" != "$1" ] && command -v "$base" >/dev/null 2>&1; then
+      printf '%s\n' "$base"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$1"
+}
 for family in iptables ip6tables; do
-  frontend_matches_work "$family" && continue
+  if frontend_matches_work "$family"; then
+    record_frontend "$family" "$(resolved_frontend "$family")"
+    continue
+  fi
   if command -v "${family}-legacy" >/dev/null 2>&1 \
      && frontend_matches_work "${family}-legacy"; then
+    record_frontend "$family" "${family}-legacy"
     if update-alternatives --set "$family" "/usr/sbin/${family}-legacy" >/dev/null 2>&1; then
       echo "${family}: switched to the legacy frontend (this kernel cannot load the nf_tables matches)"
     else
-      echo "${family}: the legacy frontend works but update-alternatives --set failed; rules are still routed to nft and will fail" >&2
+      echo "${family}: the legacy frontend works; update-alternatives --set failed, the jail calls it explicitly" >&2
     fi
   else
+    record_frontend "$family" "$family"
     echo "${family}: neither frontend can install conntrack/mark on this kernel; network isolation will be unavailable (fail-open)" >&2
   fi
 done
