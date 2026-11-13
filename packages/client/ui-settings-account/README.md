@@ -116,3 +116,5 @@ Default-model initialization runs after publishing and accepting the sign-in fra
 Read-only onboarding settings and a failed initial account stream leave the workspace accessible. A failed initial settings read exposes Retry, which reissues the shared settings read. Overlapping onboarding and Platform overlays release background interaction only after their last owner unmounts.
 
 VOS administrators can confirm a stop of an eligible old container by its full ID from a Full access (VOS operations) conversation. Refresh inventory to check the result before restarting the current app.
+
+For VOS operations, use the application ID from inventory for status or restart. A repair proposal awaits confirmation and reports `executed: false`. If a proposal already exists, HTTP 409 `confirmation-pending` includes its `action`, `id` and remaining `expiresIn` in seconds. Confirm or cancel in the conversation. An expired or consumed confirmation returns 409 `confirmation-unavailable`. A Docker ID sent to application status returns 400 `app-id-required`; use inventory for container state or logs for its output.

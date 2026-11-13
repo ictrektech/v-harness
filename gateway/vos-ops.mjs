@@ -143,7 +143,7 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
   }
 
   async function target(action, id, token, base) {
-    if (action === 'restart' && APP_ID.test(id)) {
+    if (action === 'restart' && APP_ID.test(id) && !CONTAINER_ID.test(id)) {
       const a = (await inventory(token, base)).find(a => a.appId === id);
       if (!a || a.state !== 'installed' || id === 'com.ictrek.v-harness') throw stale();
       return a;
@@ -230,12 +230,19 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           const { action, id } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
           if (!ACTIONS.has(action) || typeof id !== 'string') throw new OpsError(400, 'invalid-target');
           for (const [k, p] of proposals) if (p.expires <= now()) proposals.delete(k);
-          if (proposals.has(key)) throw new OpsError(409, 'confirmation-pending');
+          const reportPending = () => {
+            const pending = proposals.get(key);
+            if (!pending || pending.expires <= now()) return false;
+            respond(res, 409, { error: 'confirmation-pending', action: pending.action, id: pending.id,
+              expiresIn: Math.ceil((pending.expires - now()) / 1000) });
+            return true;
+          };
+          if (reportPending()) return;
           if (proposals.size >= 128) throw new OpsError(429, 'too-many-grants');
           const item = await target(action, id, token, base);
-          if (proposals.has(key)) throw new OpsError(409, 'confirmation-pending');
+          if (reportPending()) return;
           proposals.set(key, { action, id, item, confirmation: randomBytes(32).toString('hex'), expires: now() + 120000 });
-          respond(res, 200, { action, id, pending: true, expiresIn: 120 });
+          respond(res, 200, { action, id, pending: true, executed: false, expiresIn: 120 });
           return;
         }
         if (!agent && path === '/proposal' && req.method === 'GET') {
@@ -247,7 +254,9 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         if (!agent && path === '/confirm-proposal' && req.method === 'POST') {
           const { confirmation, targetId, approved } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
           const p = proposals.get(key);
-          if (!p || p.confirmation !== confirmation || p.expires <= now()) throw stale();
+          if (!p || p.confirmation !== confirmation || p.expires <= now()) {
+            throw new OpsError(409, 'confirmation-unavailable');
+          }
           if (approved !== true && approved !== false) throw new OpsError(400, 'invalid-body');
           if (approved && targetId !== p.id) throw new OpsError(400, 'confirmation-mismatch');
           proposals.delete(key);
@@ -283,6 +292,7 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       }
       if (path === '/status' && req.method === 'GET') {
         const id = url.searchParams.get('id');
+        if (CONTAINER_ID.test(id ?? '') || IMAGE_ID.test(id ?? '')) throw new OpsError(400, 'app-id-required');
         if (!APP_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
         const app = await platform(token, '/v1000/app/status?' + new URLSearchParams({ app_id: id }), undefined, base);
         const workflow = app.workflow;

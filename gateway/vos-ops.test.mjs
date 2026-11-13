@@ -118,7 +118,13 @@ test('Full access diagnoses directly and only a browser may confirm its specific
   state.admin = false;
   assert.equal((await read()).status, 403);
   state.admin = true;
-  assert.equal((await send('/proposal', { action: 'restart', id: appId }, undefined, {}, agent)).status, 200);
+  const propose = () => send('/proposal', { action: 'restart', id: appId }, undefined, {}, agent);
+  assert.deepEqual(await propose(), { status: 200,
+    body: { action: 'restart', id: appId, pending: true, executed: false, expiresIn: 120 } });
+  assert.deepEqual(await propose(), { status: 409,
+    body: { error: 'confirmation-pending', action: 'restart', id: appId, expiresIn: 120 } });
+  assert.deepEqual(await send('/status?id=' + containerId, null, undefined, {}, agent),
+    { status: 400, body: { error: 'app-id-required' } });
   assert.deepEqual(state.calls, []);
   const suffix = '?sessionId=session-1';
   const preview = (await send('/proposal' + suffix)).body.proposal;
@@ -126,7 +132,8 @@ test('Full access diagnoses directly and only a browser may confirm its specific
   assert.equal((await send('/confirm-proposal' + suffix, body, undefined, {}, agent)).status, 403);
   assert.equal((await send('/confirm-proposal' + suffix, { ...body, targetId: 'wrong' })).status, 400);
   assert.equal((await send('/confirm-proposal' + suffix, body)).body.taskId, 'task');
-  assert.equal((await send('/confirm-proposal' + suffix, body)).status, 409);
+  assert.deepEqual(await send('/confirm-proposal' + suffix, body),
+    { status: 409, body: { error: 'confirmation-unavailable' } });
   assert.deepEqual(state.calls, [['/v1000/app/restart_async', { app_id: appId }]]);
   state.sessionAllowed = false;
   assert.equal((await read()).status, 403);

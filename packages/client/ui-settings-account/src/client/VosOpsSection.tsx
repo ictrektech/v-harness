@@ -9,6 +9,9 @@ const en = {
   restart: 'Restart application', stopContainer: 'Stop old container', removeContainer: 'Remove stopped old container', removeImage: 'Remove untagged image',
   confirm: 'Confirm this operation', cancel: 'Cancel', confirmation: 'Check the exact target below. This confirmation expires in 60 seconds.',
   accepted: 'Operation accepted. Refresh the inventory to check progress.',
+  pending: 'Awaiting your confirmation. The operation has not run.',
+  targetChanged: 'The target changed or is no longer eligible. Refresh inventory and request a new proposal.',
+  confirmationUnavailable: 'This confirmation expired or was already used. Check the current state before requesting another.',
   failed: 'The request failed. Refresh the inventory or authorize again if the session expired.',
   forbidden: 'VOS system administrator permission and an active diagnostics grant are required.',
   cleanup: 'Container cleanup deletes its writable layer and keeps volumes. Image cleanup is limited to untagged images with no container references.',
@@ -24,6 +27,9 @@ const zh: Record<keyof typeof en, string> = {
   restart: '重启应用', stopContainer: '停止旧版容器', removeContainer: '删除已退出的旧版容器', removeImage: '删除无标签镜像',
   confirm: '确认执行', cancel: '取消', confirmation: '请核对下面的具体对象。此次确认 60 秒后失效。',
   accepted: '操作已受理。刷新清单查看进度。',
+  pending: '等待你确认。操作尚未执行。',
+  targetChanged: '目标已变化或不再符合条件。请刷新清单并重新发起提议。',
+  confirmationUnavailable: '这次确认已过期或已使用。请先检查当前状态，再发起新提议。',
   failed: '请求失败。请刷新清单；若授权已过期，请重新授权。',
   forbidden: '需要 VOS 系统管理员权限和有效的诊断授权。',
   cleanup: '删除容器会删除其可写层并保留卷。仅可清理无标签且没有容器引用的镜像。',
@@ -58,7 +64,12 @@ async function request<T>(path: string, grant?: string, body?: object): Promise<
       ...(body ? { 'content-type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   })
-  if (!response.ok) throw new Error(String(response.status))
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null)
+    if (failure?.error === 'target-changed') throw new Error('targetChanged')
+    if (failure?.error === 'confirmation-unavailable') throw new Error('confirmationUnavailable')
+    throw new Error(String(response.status))
+  }
   return response.json() as Promise<T>
 }
 
@@ -88,7 +99,7 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
         setAppStatus(undefined)
         setMessage('forbidden')
       } else {
-        setMessage('failed')
+        setMessage(status === 'targetChanged' ? 'targetChanged' : 'failed')
       }
     } finally {
       setBusy(false)
@@ -199,7 +210,7 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
 export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-ops'> & PropsRuntime<'shell.overlay'>) {
   const sessionId = useSessions(s => Object.values(s.byId).find(row => (row.retainedBy.mainView ?? 0) > 0)?.id)
   const [pending, setPending] = useState<{ sessionId: string; proposal: Preview }>()
-  const [result, setResult] = useState<{ sessionId: string; ok: boolean; taskId?: string }>()
+  const [result, setResult] = useState<{ sessionId: string; message: VosOpsKey; taskId?: string }>()
   const [busy, setBusy] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null)
   const proposal = pending?.sessionId === sessionId ? pending?.proposal : undefined
@@ -234,9 +245,11 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     try {
       const response = await request<{ taskId?: string }>('confirm-proposal?sessionId=' + encodeURIComponent(sessionId),
         undefined, { confirmation: proposal.confirmation, approved, targetId })
-      if (approved) setResult({ sessionId, ok: true, ...(response.taskId ? { taskId: response.taskId } : {}) })
-    } catch {
-      setResult({ sessionId, ok: false })
+      if (approved) setResult({ sessionId, message: 'accepted', ...(response.taskId ? { taskId: response.taskId } : {}) })
+    } catch (error) {
+      const code = error instanceof Error ? error.message : ''
+      const message = code === 'targetChanged' || code === 'confirmationUnavailable' ? code : 'failed'
+      setResult({ sessionId, message })
     } finally {
       setPending(undefined)
       setBusy(false)
@@ -249,7 +262,7 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     else setResult(undefined)
   }} style={{ maxWidth: 'min(640px, 90vw)', maxHeight: '80vh', overflow: 'auto', padding: '1.25rem' }}>
     <h3>{t('proposalTitle')}</h3>
-    {outcome && <p role="status">{t(outcome.ok ? 'accepted' : 'failed')} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
+    {outcome && <p role="status">{t(outcome.message)} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
     {proposal ? <form key={proposal.confirmation} onSubmit={event => {
       event.preventDefault()
       const input = event.currentTarget.elements.namedItem('targetId')
@@ -261,6 +274,7 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
       }
       void settle(true, input.value)
     }}>
+      <p>{t('pending')}</p>
       <p>{t(actionLabel(proposal.action))}</p>
       <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(proposal.target, null, 2)}</pre>
       <label>{t('targetId')} <input name="targetId" required autoComplete="off" onInput={e => e.currentTarget.setCustomValidity('')} /></label>{' '}

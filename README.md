@@ -77,3 +77,5 @@ For agents, follow [AGENTS.md](AGENTS.md).
 Third-party dependencies and their licenses are disclosed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 VOS administrators can confirm a stop of an eligible old container by its full ID from a Full access (VOS operations) conversation. Refresh inventory to check the result before restarting the current app.
+
+For VOS operations, use the application ID from inventory for status or restart. A repair proposal awaits confirmation and reports `executed: false`. If a proposal already exists, HTTP 409 `confirmation-pending` includes its `action`, `id` and remaining `expiresIn` in seconds. Confirm or cancel in the conversation. An expired or consumed confirmation returns 409 `confirmation-unavailable`. A Docker ID sent to application status returns 400 `app-id-required`; use inventory for container state or logs for its output.
