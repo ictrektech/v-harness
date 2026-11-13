@@ -20,6 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
 import { CONTRACT_FILE_NAME, readCapabilityContract } from './contract.ts'
+import { registerVosOps } from './vos-ops.ts'
 import { startCapabilityServers } from './servers.ts'
 
 export { CAPABILITY_SOCKETS, CONTRACT_FILE_NAME, CONTRACT_VERSION, readCapabilityContract } from './contract.ts'
@@ -60,6 +61,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const contract = readCapabilityContract(join(dshHome, CONTRACT_FILE_NAME))
   if (contract === undefined) return
   const gatewayUrl = config.gatewayUrl ?? defaultGatewayUrl()
+  ctx.inject(['tools', 'permissionPresets'], toolCtx => registerVosOps(toolCtx, gatewayUrl, contract.key))
   await ctx.effect(async () => {
     const servers = await startCapabilityServers({
       directory: dshHome,

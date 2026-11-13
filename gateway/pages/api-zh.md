@@ -78,7 +78,7 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 | 方法与路径 | 输入和输出 |
 |---|---|
-| POST /authorize | 请求 `{}`。返回 `grant`（不透明字符串）及 `expiresIn: 900`（秒），并替换同一会话的先前授权。 |
+| POST /authorize | 请求 `{}`，或传可选字符串 `agentSessionId`（当前租户的「完全访问（VOS 运维）」会话 ID，1–128 个字母、数字、下划线或连字符）。返回 `grant`（不透明字符串）及 `expiresIn: 900`（秒），并替换同一会话的先前授权。 |
 | POST /close | 请求 `{}`。撤销此授权及其待确认操作，返回 `closed: true`。 |
 | GET /inventory | 无参数。返回 `apps`、`containers`、`publishedPorts`、`unusedImages`、`unreferencedTaggedImages` 五个数组，无结果时为空数组。 |
 | GET /status | 必填查询参数 `id` 为应用 ID，最多 128 字符，字母或数字开头，其余还可用点、下划线和连字符。返回 `appId`、`version`、`state`、`lastError` 和 `workflow`。 |
@@ -93,3 +93,5 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 无标签镜像条目包括字符串 `id`、数字 `created`（Unix 秒）和 `bytes`（字节）；带标签镜像条目以字符串数组 `tags` 代替 `created`，仅供查看。容器清理不移除卷，镜像清理不会强制删除或清理父层。
 
 错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target` 或 `confirmation-mismatch`，请核对 JSON、操作和完整 ID；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
+
+内置工具 `vos_diagnostics` 支持 `query` 为 `inventory`、`status`、`logs`，后二者需字符串 `id`，格式同表。返回诊断 JSON 文本，最长 49,152 字符。工具只在该会话选择 `vos-full-access` 后出现，网关还检查管理员授予该会话的 15 分钟授权、浏览器登录和当前会话权限。清理与重启仍使用设置页确认。

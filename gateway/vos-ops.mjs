@@ -1,5 +1,5 @@
-// Browser-only VOS operations. This module is deliberately absent from the
-// Agent capability registry and accepts no caller-supplied Docker API paths.
+// VOS operations. The Agent transport is read-only; writes require browser
+// confirmation. No route accepts caller-supplied Docker API paths.
 import { randomBytes } from 'node:crypto';
 import { request } from 'node:http';
 
@@ -122,7 +122,7 @@ function logText(data) {
   return lines.join('');
 }
 
-export function createVosOps({ sessionFor, tokenFor, userinfoUrl, readBody, respond, daemon = dockerJson,
+export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, userinfoUrl, readBody, respond, daemon = dockerJson,
   daemonCall = engine, platform = vos, now = Date.now, audit = console.info }) {
   const grants = new Map();
   const grantTtl = 15 * 60 * 1000;
@@ -163,13 +163,14 @@ export function createVosOps({ sessionFor, tokenFor, userinfoUrl, readBody, resp
     throw new OpsError(400, 'invalid-target');
   }
 
-  return async function handle(req, res, url) {
+  async function handle(req, res, url, agent) {
     const path = url.pathname.slice(OPS_PATH.length);
     try {
       // All requests carry a non-simple header. This route never enables CORS.
-      if (req.headers['x-vh-ops'] !== '1' ||
-          (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) throw denied();
-      const session = sessionFor(req);
+      if (!agent && (req.headers['x-vh-ops'] !== '1' ||
+          (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin'))) throw denied();
+      if (agent && (req.method !== 'GET' || !['/inventory', '/status', '/logs'].includes(path))) throw denied();
+      const session = agent?.session ?? sessionFor(req);
       if (!session) throw new OpsError(401, 'sign-in-required');
       const token = await tokenFor(session);
       if (!token) throw new OpsError(401, 'sign-in-required');
@@ -178,16 +179,26 @@ export function createVosOps({ sessionFor, tokenFor, userinfoUrl, readBody, resp
       if (permissions.is_super_admin !== true) throw denied();
       const { sid } = session;
       const grantKey = req.headers['x-vh-ops-grant'];
-      const grant = grants.get(grantKey);
+      const grant = agent ? [...grants.values()].find(g => g.subject === session.subject &&
+        g.agentSessionId === agent.sessionId && g.expires > now()) : grants.get(grantKey);
       if (path === '/authorize' && req.method === 'POST') {
+        const { agentSessionId } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
+        if (agentSessionId !== undefined && (typeof agentSessionId !== 'string' ||
+            !/^[a-zA-Z0-9_-]{1,128}$/.test(agentSessionId) ||
+            !await agentSessionAllowed(session.subject, agentSessionId))) throw denied();
         for (const [key, value] of grants) if (value.expires <= now() || value.sid === sid) grants.delete(key);
         if (grants.size >= 128) throw new OpsError(429, 'too-many-grants');
         const key = randomBytes(32).toString('hex');
-        grants.set(key, { sid, expires: now() + grantTtl });
+        grants.set(key, { sid, subject: session.subject, expires: now() + grantTtl, agentSessionId,
+          userAgent: String(req.headers['user-agent'] ?? '') });
         respond(res, 200, { grant: key, expiresIn: grantTtl / 1000 });
         return;
       }
-      if (!grant || grant.sid !== sid || grant.expires <= now()) throw denied();
+      if (!grant || grant.expires <= now()) throw denied();
+      if (agent) {
+        if (!agent.browserAlive(grant.sid, grant.userAgent) ||
+            !await agentSessionAllowed(session.subject, agent.sessionId)) throw denied();
+      } else if (grant.sid !== sid) throw denied();
 
       if (path === '/inventory' && req.method === 'GET') {
         const [apps, containers, images] = await Promise.all([
@@ -274,5 +285,6 @@ export function createVosOps({ sessionFor, tokenFor, userinfoUrl, readBody, resp
       const status = error instanceof OpsError ? error.status : 502;
       respond(res, status, { error: error instanceof OpsError ? error.message : 'upstream-unavailable' });
     }
-  };
+  }
+  return handle;
 }

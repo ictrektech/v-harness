@@ -64,6 +64,8 @@ export interface PresetSpec {
   name?: string
   /** One user-facing sentence on what the preset means; omitted when not configured. */
   description?: string
+  /** Exclude an explicit session opt-in from default selection and automatic inference. */
+  sessionOnly?: boolean
 }
 
 /**
@@ -179,6 +181,7 @@ export class PermissionPresetService extends TypertRemoteService {
       approval: z.union(APPROVAL_POLICIES as ApprovalPolicy[]).required(),
       name: z.string(),
       description: z.string(),
+      sessionOnly: z.boolean(),
     })).default({
       'workspace-write': {
         sandbox: 'workspace-write', approval: 'ask',
@@ -220,10 +223,10 @@ export class PermissionPresetService extends TypertRemoteService {
     if (defaultPreset === CUSTOM_PRESET) {
       throw new Error('permission: composed sandbox and approval defaults match no preset; configure defaultPreset explicitly')
     }
-    this.resolve(defaultPreset)
+    if (this.resolve(defaultPreset).sessionOnly) throw new Error('permission: a session-only preset cannot be the default')
     this.defaultSettings = () => {
       const defaultPreset = config.defaultPreset.get() ?? inferredDefault
-      if (!Object.hasOwn(this.presets, defaultPreset)) throw new Error(`permission: unknown default preset "${defaultPreset}"`)
+      if (!Object.hasOwn(this.presets, defaultPreset) || this.presets[defaultPreset]?.sessionOnly) throw new Error(`permission: unknown default preset "${defaultPreset}"`)
       return { defaultPreset }
     }
   }
@@ -292,7 +295,7 @@ export class PermissionPresetService extends TypertRemoteService {
   catalog(): PermissionCatalog {
     return {
       options: this.names.map(name => this.optionOf(name)),
-      defaultOptions: Object.keys(this.presets).map(name => this.optionOf(name)),
+      defaultOptions: Object.keys(this.presets).filter(name => !this.presets[name]?.sessionOnly).map(name => this.optionOf(name)),
       defaultPreset: this.defaultSettings().defaultPreset,
     }
   }
@@ -355,7 +358,7 @@ export class PermissionPresetService extends TypertRemoteService {
       if (state.preset === AUTO_PRESET && spec?.sandbox === sandbox && approval === 'never') return AUTO_PRESET
     }
     for (const [name, spec] of Object.entries(this.presets)) {
-      if (matches(spec)) return name
+      if (!spec.sessionOnly && matches(spec)) return name
     }
     return CUSTOM_PRESET
   }

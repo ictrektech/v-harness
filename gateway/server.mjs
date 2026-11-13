@@ -29,13 +29,14 @@ import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'n
 import { IdentityGate, mayServe } from './identity-gate.mjs';
 import {
   CAPABILITY_ENV,
+  capabilityContractFor,
   readAuthoritativeContract,
   rememberCapabilityContract,
   removeCapabilityContract,
 } from './capability-registry.mjs';
 import { startOwnedCapabilities } from './capability-ownership.mjs';
 import { capabilitiesPluginShipped } from './plugins.mjs';
-import { EGRESS_PREFIX, handleEgress } from './egress.mjs';
+import { EGRESS_PREFIX, egressRefusal, handleEgress } from './egress.mjs';
 
 import {
   WorkspaceError,
@@ -2687,6 +2688,14 @@ const handleVosOps = createVosOps({
     const record = await findUser(USERS_FILE, session.subject);
     return record ? accessTokenFor(record.namespace) : undefined;
   },
+  async agentSessionAllowed(subject, sessionId) {
+    const instance = liveInstance(subject);
+    if (!instance?.cookie) return false;
+    const projection = await callSessionController(
+      `http://${instanceAddress(instance.uid)}:${instance.port}`, instance.cookie, 'session/projections', { sessionId },
+    ).catch(() => undefined);
+    return projection?.kind === 'sequenced' && projection.values?.permissions?.currentValue === 'vos-full-access';
+  },
   userinfoUrl,
   readBody: readJsonBody,
   respond: json,
@@ -2701,6 +2710,22 @@ const server = createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' });
       res.end(text);
     }).catch(() => json(res, 500, { error: 'internal' }));
+    return;
+  }
+  if (path.startsWith(OPS_PATH + '/agent/')) {
+    const contract = !AUTH_DISABLED && !egressRefusal({
+      headers: req.headers, remoteAddress: req.socket.remoteAddress, capability: 'vos-ops',
+    }) ? capabilityContractFor(req.headers['x-vh-capability-key']) : undefined;
+    const sessionId = req.headers['x-vh-ops-session'];
+    if (!contract || typeof sessionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
+      json(res, 403, { error: 'forbidden' });
+      return;
+    }
+    url.pathname = OPS_PATH + path.slice((OPS_PATH + '/agent').length);
+    void handleVosOps(req, res, url, {
+      session: { subject: contract.subject }, sessionId,
+      browserAlive: (sid, userAgent) => sessions.loadSession(sid, userAgent)?.subject === contract.subject,
+    });
     return;
   }
   if (path.startsWith(OPS_PATH + '/')) {

@@ -16,11 +16,12 @@ const container = {
 };
 
 function fixture() {
-  const state = { admin: true, sid: 'a', now: 1, containers: [{ ...container }], images: [
+  const state = { admin: true, sessionAllowed: true, sid: 'a', now: 1, containers: [{ ...container }], images: [
     { Id: imageId, RepoTags: [], RepoDigests: [], Created: 1, Size: 100 },
   ], calls: [] };
   const handle = createVosOps({
     sessionFor: () => ({ sid: state.sid, subject: 'test' }), tokenFor: () => 'test',
+    agentSessionAllowed: async (_subject, id) => id === 'session-1' && state.sessionAllowed,
     userinfoUrl: () => 'http://example.test', readBody: async req => req.body, now: () => state.now, audit: () => {},
     respond: (res, status, body) => Object.assign(res, { status, body }),
     async platform(_token, path, body) {
@@ -37,11 +38,11 @@ function fixture() {
       return Buffer.from('sample log');
     },
   });
-  return { state, async send(path, body, grant, headers = {}) {
+  return { state, async send(path, body, grant, headers = {}, agent) {
     const res = {};
     await handle({ method: body ? 'POST' : 'GET', body, headers: {
       'x-vh-ops': '1', 'x-vh-ops-grant': grant, ...headers,
-    } }, res, new URL(OPS_PATH + path, 'http://example.test'));
+    } }, res, new URL(OPS_PATH + path, 'http://example.test'), agent);
     return res;
   } };
 }
@@ -106,4 +107,25 @@ test('uses the VOS restart workflow and can explicitly close the grant', async (
   assert.deepEqual(state.calls, [['/v1000/app/restart_async', { app_id: appId }]]);
   assert.equal((await send('/close', {}, grant)).status, 200);
   assert.equal((await send('/inventory', null, grant)).status, 403);
+});
+
+test('Agent reads require a session-specific grant and current preset, and writes stay in the browser', async () => {
+  const { send, state } = fixture();
+  const agent = {
+    session: { subject: 'test' }, sessionId: 'session-1',
+    browserAlive: sid => sid === state.sid,
+  };
+  const read = (as = agent) => send('/inventory', null, undefined, {}, as);
+  assert.equal((await read()).status, 403);
+  assert.equal((await send('/authorize', { agentSessionId: 'session-2' })).status, 403);
+  const { body: { grant } } = await send('/authorize', { agentSessionId: 'session-1' });
+  assert.equal((await read()).status, 200);
+  assert.equal((await read({ ...agent, sessionId: 'session-2' })).status, 403);
+  assert.equal((await read({ ...agent, session: { subject: 'different' } })).status, 403);
+  assert.equal((await send('/preview', { action: 'restart', id: appId }, grant, {}, agent)).status, 403);
+  state.sessionAllowed = false;
+  assert.equal((await read()).status, 403);
+  state.sessionAllowed = true;
+  state.sid = 'b';
+  assert.equal((await read()).status, 403);
 });

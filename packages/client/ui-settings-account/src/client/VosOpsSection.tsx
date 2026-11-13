@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 
 const en = {
   title: 'VOS operations', description: 'A VOS system administrator can open a 15-minute read-only session. Every restart or cleanup needs separate confirmation.',
@@ -13,6 +13,7 @@ const en = {
   forbidden: 'VOS system administrator permission and an active diagnostics grant are required.',
   cleanup: 'Container cleanup deletes its writable layer and keeps volumes. Image cleanup is limited to untagged images with no container references.',
   port: 'Filter by host port', closeLogs: 'Close logs', status: 'View status',
+  session: 'Include the current Full access session',
   targetId: 'Type the exact target ID', close: 'End diagnostics', tagged: 'Tagged images with no container references',
 } satisfies Record<string, string>
 const zh: Record<keyof typeof en, string> = {
@@ -27,6 +28,7 @@ const zh: Record<keyof typeof en, string> = {
   forbidden: '需要 VOS 系统管理员权限和有效的诊断授权。',
   cleanup: '删除容器会删除其可写层并保留卷。仅可清理无标签且没有容器引用的镜像。',
   port: '按宿主机端口筛选', closeLogs: '关闭日志', status: '查看状态',
+  session: '同时授权当前完全访问会话',
   targetId: '输入完整的目标 ID', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
 }
 
@@ -49,13 +51,15 @@ async function request<T>(path: string, grant?: string, body?: object): Promise<
     method: body ? 'POST' : 'GET', cache: 'no-store', credentials: 'same-origin',
     headers: { 'x-vh-ops': '1', ...(grant ? { 'x-vh-ops-grant': grant } : {}),
       ...(body ? { 'content-type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
+    ...(body ? { body: JSON.stringify(body) } : {}),
   })
   if (!response.ok) throw new Error(String(response.status))
   return response.json() as Promise<T>
 }
 
-export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
+export function VosOpsSection({ t, useSessions }: PropsLocale<'settings.vh-ops'> & PropsRuntime<'settings.section'>) {
+  const currentSession = useSessions(s => Object.values(s.byId).find(row => (row.retainedBy.mainView ?? 0) > 0)?.id)
+  const [includeSession, setIncludeSession] = useState(false)
   const [grant, setGrant] = useState<string>()
   const [inventory, setInventory] = useState<Inventory>()
   const [preview, setPreview] = useState<Preview>()
@@ -88,7 +92,7 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
     }
   }
   const authorize = () => run(async () => {
-    const result = await request<{ grant: string }>('authorize', undefined, {})
+    const result = await request<{ grant: string }>('authorize', undefined, includeSession && currentSession ? { agentSessionId: currentSession } : {})
     setGrant(result.grant)
     setPreview(undefined)
     setLog(undefined)
@@ -115,6 +119,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
 
   return <div>
     <p>{t('description')}</p>
+    {currentSession && <label>
+      <input type="checkbox" checked={includeSession} onChange={event => setIncludeSession(event.target.checked)} />
+      {t('session')}
+    </label>}{' '}
     {button('authorize', authorize)}{' '}
     {grant && button('refresh', () => run(async () => {
       setPreview(undefined)

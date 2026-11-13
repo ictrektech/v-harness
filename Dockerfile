@@ -154,6 +154,7 @@ RUN set -eu; for spec in \
       api/workspace-controller:dsh-api-workspace-controller \
       boot/plugin-manager:dsh-plugin-manager \
       interaction/user-questions:dsh-user-questions \
+      interaction/permission-presets:dsh-permission-presets \
       sandbox/sandbox:dsh-sandbox \
       sandbox/sandbox-local:dsh-sandbox-local \
       sandbox/sandbox-policy:dsh-sandbox-policy; do \

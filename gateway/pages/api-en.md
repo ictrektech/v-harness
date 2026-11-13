@@ -78,7 +78,7 @@ Open Settings → VOS operations. This browser API uses the same-origin base `/_
 
 | Method and path | Input and output |
 |---|---|
-| POST /authorize | Body `{}`. Returns opaque string `grant` and `expiresIn: 900` seconds. Replaces the previous grant for the same session. |
+| POST /authorize | Body `{}` or optional string `agentSessionId` (a Full access (VOS operations) session ID in the current tenant, 1–128 letters, digits, underscores or hyphens). Returns opaque string `grant` and `expiresIn: 900` seconds. Replaces the previous grant for the same session. |
 | POST /close | Body `{}`. Revokes the grant and its pending preview. Returns `closed: true`. |
 | GET /inventory | No parameters. Returns arrays `apps`, `containers`, `publishedPorts`, `unusedImages` and `unreferencedTaggedImages`. Arrays can be empty. |
 | GET /status | Required query `id` is the app ID, at most 128 characters, starting with a letter or number and optionally containing dots, underscores and hyphens thereafter. Returns `appId`, `version`, `state`, `lastError` and `workflow`. |
@@ -93,3 +93,5 @@ Container records have string fields `id`, `name`, `image`, `imageId`, `state` a
 Untagged image records have string `id`, numeric `created` (Unix seconds) and `bytes` (bytes). Tagged records substitute string array `tags` for `created` and are informational. Container cleanup retains volumes. Image cleanup uses neither force nor parent pruning.
 
 Failures return `{"error":"<code>"}`. For 400 `invalid-body`, `invalid-target` or `confirmation-mismatch`, check the JSON, action and complete ID. For 401 `sign-in-required`, sign in again. For 403 `forbidden`, check the role, same-origin request and active grant. For 404 `not-found`, refresh. For 409 `target-changed`, refresh and preview again. For 429 `too-many-grants`, wait for grants to expire. For 502 `vos-request-failed`, `docker-unavailable`, `response-too-large` or `upstream-unavailable`, inspect the VOS or Docker service. Restart acceptance precedes completion. Refresh app status before retrying a timed-out request.
+
+The built-in `vos_diagnostics` tool accepts `query` values `inventory`, `status` and `logs`. The last two require string `id` in the formats above. Results are diagnostic JSON text, limited to 49,152 characters. The tool is available in the `vos-full-access` session preset. The gateway checks the 15-minute administrator grant for that session, browser login and current session preset. Confirm cleanup and restart in Settings.
