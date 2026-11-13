@@ -23,7 +23,7 @@ const en = {
   hostStart: 'Start host container', hostStop: 'Stop host container',
   hostRestart: 'Restart host container', hostRemove: 'Remove host container',
   proposalTitle: 'VOS repair confirmation',
-  targetId: 'Type the exact target ID', close: 'End diagnostics', tagged: 'Tagged images with no container references',
+  skip: 'Skip', close: 'End diagnostics', tagged: 'Tagged images with no container references',
 } satisfies Record<string, string>
 const zh: Record<keyof typeof en, string> = {
   title: 'VOS 运维', description: 'VOS 系统管理员可开启 15 分钟的只读诊断。每次重启或清理都需单独确认。',
@@ -47,7 +47,7 @@ const zh: Record<keyof typeof en, string> = {
   hostStart: '启动宿主机容器', hostStop: '停止宿主机容器',
   hostRestart: '重启宿主机容器', hostRemove: '删除宿主机容器',
   proposalTitle: '确认 VOS 修复',
-  targetId: '输入完整的目标 ID', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
+  skip: '跳过', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
 }
 
 export const vosOpsEn = en
@@ -133,10 +133,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
     setPreview(undefined)
     setPreview(await request<Preview>('preview', grant, { action, id }))
   })
-  const execute = (pending: Preview, fields: FormData) => run(async () => {
+  const execute = (pending: Preview) => run(async () => {
     setPreview(undefined)
     const result = await request<{ taskId: string | null }>('execute', grant, {
-      confirmation: pending.confirmation, targetId: fields.get('targetId'),
+      confirmation: pending.confirmation, targetId: pending.targetId,
     })
     setMessage('accepted')
     if (result.taskId) setTask(result.taskId)
@@ -166,16 +166,8 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       <h3>{t(actionLabel(preview.action))}</h3>
       <p>{t('confirmation')}</p>
       <pre style={pre}>{JSON.stringify(preview.target, null, 2)}</pre>
-      <form onSubmit={event => {
-        event.preventDefault()
-        const fields = new FormData(event.currentTarget)
-        event.currentTarget.reset()
-        void execute(preview, fields)
-      }}>
-        <label>{t('targetId')} <input name="targetId" autoComplete="off" required maxLength={128} /></label>{' '}
-        <button type="submit" disabled={busy}>{t('confirm')}</button>{' '}
-        {button('cancel', () => setPreview(undefined))}
-      </form>
+      {button('confirm', () => void execute(preview))}{' '}
+      {button('skip', () => setPreview(undefined))}
     </section>}
     {inventory && <>
       <h3>{t('applications')}</h3>
@@ -263,12 +255,12 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     if (element && !element.open) element.showModal()
   }, [proposal?.confirmation, outcome])
 
-  const settle = async (approved: boolean, targetId?: FormDataEntryValue | null) => {
+  const settle = async (approved: boolean) => {
     if (!sessionId || !proposal || busy) return
     setBusy(true)
     try {
       const response = await request<{ taskId?: string }>('confirm-proposal?sessionId=' + encodeURIComponent(sessionId),
-        undefined, { confirmation: proposal.confirmation, approved, targetId })
+        undefined, { confirmation: proposal.confirmation, approved, ...(approved ? { targetId: proposal.targetId } : {}) })
       if (approved) setResult({ sessionId, message: 'accepted', ...(response.taskId ? { taskId: response.taskId } : {}) })
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
@@ -314,24 +306,13 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
   }} style={{ maxWidth: 'min(640px, 90vw)', maxHeight: '80vh', overflow: 'auto', padding: '1.25rem' }}>
     <h3>{t('proposalTitle')}</h3>
     {outcome && <p role="status">{t(outcome.message)} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
-    {proposal ? <form key={proposal.confirmation} onSubmit={event => {
-      event.preventDefault()
-      const input = event.currentTarget.elements.namedItem('targetId')
-      if (!(input instanceof HTMLInputElement)) return
-      if (input.value !== proposal.targetId) {
-        input.setCustomValidity(t('targetId'))
-        input.reportValidity()
-        return
-      }
-      void settle(true, input.value)
-    }}>
+    {proposal ? <section key={proposal.confirmation}>
       <p>{t('pending')}</p>
       <p>{t(actionLabel(proposal.action))}</p>
       <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(proposal.target, null, 2)}</pre>
-      <label>{t('targetId')} <input name="targetId" required autoComplete="off" onInput={e => e.currentTarget.setCustomValidity('')} /></label>{' '}
-      <button type="submit" disabled={busy}>{t('confirm')}</button>{' '}
-      <button type="button" disabled={busy} onClick={() => void settle(false)}>{t('cancel')}</button>
-    </form> : <button type="button" onClick={() => setResult(undefined)}>{t('cancel')}</button>}
+      <button type="button" disabled={busy} onClick={() => void settle(true)}>{t('confirm')}</button>{' '}
+      <button type="button" disabled={busy} onClick={() => void settle(false)}>{t('skip')}</button>
+    </section> : <button type="button" onClick={() => setResult(undefined)}>{t('cancel')}</button>}
   </dialog>}
   </>
 }
