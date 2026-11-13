@@ -276,7 +276,7 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     try {
       const response = await request<{ taskId?: string; results?: RemovalResult[] }>('confirm-proposal?sessionId=' + encodeURIComponent(sessionId),
         undefined, { confirmation: proposal.confirmation, approved, ...(approved ? ('targetIds' in proposal ? { targetIds: proposal.targetIds } : { targetId: proposal.targetId }) : {}) })
-      if (approved) setResult({ sessionId, message: 'accepted', results: response.results, ...(response.taskId ? { taskId: response.taskId } : {}) })
+      if (approved) setResult({ sessionId, message: 'accepted', ...(response.results ? { results: response.results } : {}), ...(response.taskId ? { taskId: response.taskId } : {}) })
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
       const message = code === 'targetChanged' || code === 'confirmationUnavailable' ? code : 'failed'
