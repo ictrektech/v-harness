@@ -71,3 +71,25 @@ Errors contain one string field, `error`, for example `{"error":"invalid-token"}
 | 504 | `controller-timeout` | The internal RPC exceeded 30 seconds. Check the session before retrying. |
 
 VOS UserInfo has an 8-second request timeout. A cold tenant may take additional time to start before the controller call. Leave time for startup in your HTTP client. After a timed-out create, check the UI for the new session before creating another.
+
+## VOS operations console
+
+Open Settings → VOS operations. This browser API uses the same-origin base `/__vh/vos-ops`, optionally under `/app/com.ictrek.v-harness`. It requires the v-harness session cookie created from VOS login and checks `system_admin` against VOS on every request. Send `X-VH-Ops: 1` and, except for authorization, `X-VH-Ops-Grant`. POST bodies are JSON objects. Responses are JSON with caching disabled. The console API has no cross-origin or Agent Bearer entry.
+
+| Method and path | Input and output |
+|---|---|
+| POST /authorize | Body `{}`. Returns opaque string `grant` and `expiresIn: 900` seconds. Replaces the previous grant for the same session. |
+| POST /close | Body `{}`. Revokes the grant and its pending preview. Returns `closed: true`. |
+| GET /inventory | No parameters. Returns arrays `apps`, `containers`, `publishedPorts`, `unusedImages` and `unreferencedTaggedImages`. Arrays can be empty. |
+| GET /status | Required query `id` is the app ID, at most 128 characters, starting with a letter or number and optionally containing dots, underscores and hyphens thereafter. Returns `appId`, `version`, `state`, `lastError` and `workflow`. |
+| GET /logs | Required query `id` is the full 64-character lowercase hexadecimal container ID. Returns `id` and UTF-8 `text` with timestamps and up to 150 lines, limited to 512 KiB before decoding. |
+| POST /preview | Required strings `action` and `id`. Actions are `restart` (app ID), `remove-container` (full container ID) and `remove-image` (`sha256:` followed by 64 lowercase hex characters). Returns opaque `confirmation`, `expiresIn: 60` seconds, `action`, `targetId` and the matching inventory record as `target`. A new preview replaces the previous one. |
+| POST /execute | Required strings `confirmation` and `targetId`. After checking the preview, send its confirmation and the complete target ID. Returns `action`, `id` and `taskId` (the VOS restart task ID, or null for cleanup). Check application status for restart progress. Confirmation is single-use. Check status and preview again after a failed attempt. |
+
+App records have string fields `appId`, `installationId`, `version`, `state`, `lastError` (empty when there is no error). VOS application states are `not_installed`, `installing`, `installed`, `stopping`, `stopped`, `starting`, `upgrading`, `uninstalling`, `uninstalled`, `restarting` and `error`, shown as returned by VOS. Other apps in `installed` can be submitted for restart, subject to VOS checks. `workflow` is null or an object with string fields `taskId`, `status`, `failure` (empty without a failure) and nullable string `stage`. Workflow states are `Running`, `Completed`, `Failed`, `Cancelled`, `Terminated`, `TimedOut` and `ContinuedAsNew`.
+
+Container records have string fields `id`, `name`, `image`, `imageId`, `state` and `status`; boolean `cleanup`; `stack` with string fields `appId`, `version` and `project`; and a `ports` array. Container states come from Docker. Cleanup requires `exited` and rechecks app ownership and version. Port records have numeric `hostPort` and `containerPort`, string `protocol` (Docker values tcp, udp and sctp), and string `address`. The host-wide `publishedPorts` also include container name `container` and nullable string `appId`.
+
+Untagged image records have string `id`, numeric `created` (Unix seconds) and `bytes` (bytes). Tagged records substitute string array `tags` for `created` and are informational. Container cleanup retains volumes. Image cleanup uses neither force nor parent pruning.
+
+Failures return `{"error":"<code>"}`. For 400 `invalid-body`, `invalid-target` or `confirmation-mismatch`, check the JSON, action and complete ID. For 401 `sign-in-required`, sign in again. For 403 `forbidden`, check the role, same-origin request and active grant. For 404 `not-found`, refresh. For 409 `target-changed`, refresh and preview again. For 429 `too-many-grants`, wait for grants to expire. For 502 `vos-request-failed`, `docker-unavailable`, `response-too-large` or `upstream-unavailable`, inspect the VOS or Docker service. Restart acceptance precedes completion. Refresh app status before retrying a timed-out request.

@@ -31,3 +31,14 @@ The first visit opens in Classic Agent mode. DS Bot is preinstalled and can be e
 - **Plugin downloads**. Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
 
 Open **Settings → API documentation** for VOS OAuth2 authentication, session creation, task submission, reading results and handling errors.
+
+## VOS operations
+
+Open Account menu → Settings → VOS operations. The signed-in VOS system administrator selects **Authorize diagnostics** to start a 15-minute session. Use **End diagnostics** to close it early. Other roles see a permission error.
+
+- For a startup failure, check the app state, latest error and VOS workflow, then open the latest 150 lines from the relevant main-stack container. Logs are capped at 512 KiB. Unsupported log drivers or oversized responses return an error.
+- Enter a host port to find the container and protocol associated with a Docker published port. The list excludes host processes, host-network listeners and unpublished ports.
+- The container list shows the associated app version. Cleanup is available for identifiable exited main-stack containers of a different version of an app still installed on this device. Removal deletes the container's writable layer and keeps volumes. Unreferenced tagged images are listed for investigation. Image removal is limited to images with no tags, digests or container references.
+- To restart an app or clean up an object, review the preview and type the complete app, container or image ID. A preview is valid once for 60 seconds. If the target changes, preview it again. VOS runs the restart and the console shows the accepted task ID.
+
+The operations API is for this settings page. See Settings → API documentation for its request and response contract. The Agent session API has no operations methods.

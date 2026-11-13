@@ -20,6 +20,7 @@ import { BrowserLogin } from './browser-login.ts'
 import { AccountOnboarding } from './AccountOnboarding.tsx'
 import { AccountPlatformHost, type AccountPlatformHostInjected } from './AccountPlatformHost.tsx'
 import { ApiDocsSection, apiDocsEn, apiDocsZh, type ApiDocsKey } from './ApiDocsSection.tsx'
+import { VosOpsSection, vosOpsEn, vosOpsZh, type VosOpsKey } from './VosOpsSection.tsx'
 import { AccountMenu } from './AccountMenu.tsx'
 import { createPlatformPages, type PlatformPages } from './platform-pages.ts'
 import { AccountSection, type AccountSnapshot, type AccountSectionInjected } from './AccountSection.tsx'
@@ -39,7 +40,7 @@ export type { AccountKey } from './locales.ts'
 export type { AccountUi, AccountUiState, AccountNotificationsOwnerProps } from './account-ui.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface LocaleNamespaceMap { 'settings.account': AccountKey; 'settings.vh-api': ApiDocsKey }
+  interface LocaleNamespaceMap { 'settings.account': AccountKey; 'settings.vh-api': ApiDocsKey; 'settings.vh-ops': VosOpsKey }
 }
 
 /** Services required by account settings. */
@@ -58,6 +59,12 @@ export function apply(ctx: Context): void {
       name: 'settings.section', id: 'vh-api', order: 90, label: () => apiDocs('title'),
       locale: 'settings.vh-api',
     }, ApiDocsSection))
+    ctx.effect(() => ctx.locale.register('settings.vh-ops', { en: vosOpsEn, zh: vosOpsZh }), 'VOS operations')
+    const vosOps = ctx.locale.bind('settings.vh-ops')
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section', id: 'vh-ops', order: 91, label: () => vosOps('title'),
+      locale: 'settings.vh-ops',
+    }, VosOpsSection))
   }
   let snapshot: AccountSnapshot = {
     view: undefined, details: undefined, avatar: undefined, failed: false, loginVisible: false, desktopOnboardingVisible: desktop,

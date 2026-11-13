@@ -116,7 +116,8 @@ import {
 } from './session.mjs';
 import { DECODABLE_ENCODINGS, injectShell } from './shell-inject.mjs';
 import { findUser, listUsers, upsertUser } from './users.mjs';
-import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
+import { VosAuthError, userinfoUrl, verifyVosToken } from './vos-auth.mjs';
+import { createVosOps, OPS_PATH } from './vos-ops.mjs';
 import { AGENT_API_PREFIX, callSessionController, handleAgentApi, unavailableIdentity, unavailableInstance } from './agent-api.mjs';
 import {
   closeWeknoraCapabilities,
@@ -2680,6 +2681,17 @@ const agentApiDependencies = {
   },
 };
 
+const handleVosOps = createVosOps({
+  sessionFor: req => AUTH_DISABLED ? undefined : authenticate(req),
+  async tokenFor(session) {
+    const record = await findUser(USERS_FILE, session.subject);
+    return record ? accessTokenFor(record.namespace) : undefined;
+  },
+  userinfoUrl,
+  readBody: readJsonBody,
+  respond: json,
+});
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const path = stripPrefix(url.pathname);
@@ -2689,6 +2701,11 @@ const server = createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' });
       res.end(text);
     }).catch(() => json(res, 500, { error: 'internal' }));
+    return;
+  }
+  if (path.startsWith(OPS_PATH + '/')) {
+    url.pathname = path;
+    void handleVosOps(req, res, url);
     return;
   }
   if (path.startsWith(AGENT_API_PREFIX)) {
