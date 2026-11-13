@@ -2713,8 +2713,11 @@ const server = createServer((req, res) => {
     return;
   }
   if (path.startsWith(OPS_PATH + '/agent/')) {
-    const contract = !AUTH_DISABLED && !egressRefusal({
-      headers: req.headers, remoteAddress: req.socket.remoteAddress, capability: 'vos-ops',
+    // Node fetch sends Sec-Fetch-Mode: cors even on loopback. Browsers also
+    // send site metadata; retain those checks, the loopback fence and the key.
+    const { 'sec-fetch-mode': mode, ...headers } = req.headers;
+    const contract = !AUTH_DISABLED && (mode === undefined || mode === 'cors') && !egressRefusal({
+      headers, remoteAddress: req.socket.remoteAddress, capability: 'vos-ops',
     }) ? capabilityContractFor(req.headers['x-vh-capability-key']) : undefined;
     const sessionId = req.headers['x-vh-ops-session'];
     if (!contract || typeof sessionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
