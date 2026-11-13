@@ -78,13 +78,15 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 | 方法与路径 | 输入和输出 |
 |---|---|
-| POST /authorize | 请求 `{}`，或传可选字符串 `agentSessionId`（当前租户的「完全访问（VOS 运维）」会话 ID，1–128 个字母、数字、下划线或连字符）。返回 `grant`（不透明字符串）及 `expiresIn: 900`（秒），并替换同一会话的先前授权。 |
+| POST /authorize | 请求 `{}`。返回 `grant`（不透明字符串）及 `expiresIn: 900`（秒），并替换同一会话的先前授权。 |
 | POST /close | 请求 `{}`。撤销此授权及其待确认操作，返回 `closed: true`。 |
 | GET /inventory | 无参数。返回 `apps`、`containers`、`publishedPorts`、`unusedImages`、`unreferencedTaggedImages` 五个数组，无结果时为空数组。 |
 | GET /status | 必填查询参数 `id` 为应用 ID，最多 128 字符，字母或数字开头，其余还可用点、下划线和连字符。返回 `appId`、`version`、`state`、`lastError` 和 `workflow`。 |
 | GET /logs | 必填查询参数 `id` 为 64 位小写十六进制完整容器 ID。返回 `id` 和 `text`，后者为最近最多 150 行 UTF-8 日志，含时间戳，原始响应上限 512 KiB。 |
 | POST /preview | 必填字符串 `action` 和 `id`。支持 `restart`（应用 ID）、`remove-container`（完整容器 ID）、`remove-image`（`sha256:` 加 64 位小写十六进制）。返回 `confirmation`（不透明字符串）、`expiresIn: 60`、`action`、`targetId`、`target`（相应清单条目）。每个授权同时只有一个预览。 |
 | POST /execute | 必填字符串 `confirmation` 和 `targetId`。核对具体对象后提交预览中的确认码和完整 ID。返回 `action`、`id` 和 `taskId`（重启任务 ID，清理时为 null）。受理重启后可重新查看应用状态。确认码单次使用，失败后应重新查看状态及预览。 |
+| GET /proposal | 查询参数 `sessionId` 为会话 ID。返回 `proposal`（无待确认操作为 null，否则包含 `action`、`targetId`、`target` 和 `confirmation`）。 |
+| POST /confirm-proposal | 查询参数 `sessionId`。请求体含 `confirmation`、布尔 `approved`，确认时还需 `targetId`。返回同 /execute，取消时返回 `cancelled: true`。 |
 
 `apps` 条目字段为字符串 `appId`、`installationId`、`version`、`state`、`lastError`（无错误为空字符串）。VOS 应用状态为 `not_installed`、`installing`、`installed`、`stopping`、`stopped`、`starting`、`upgrading`、`uninstalling`、`uninstalled`、`restarting`、`error`；按平台原值显示。可重启 `installed` 的其他应用，VOS 可拒绝不允许的状态。状态响应的 `workflow` 可为 null；否则包含字符串 `taskId`、`status`、`failure`（无失败为空字符串）及字符串或 null 的 `stage`。工作流状态为 `Running`、`Completed`、`Failed`、`Cancelled`、`Terminated`、`TimedOut`、`ContinuedAsNew`。
 
@@ -94,4 +96,4 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target` 或 `confirmation-mismatch`，请核对 JSON、操作和完整 ID；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
 
-内置工具 `vos_diagnostics` 支持 `query` 为 `inventory`、`status`、`logs`，后二者需字符串 `id`，格式同表。返回诊断 JSON 文本，最长 49,152 字符。工具只在该会话选择 `vos-full-access` 后出现，网关还检查管理员授予该会话的 15 分钟授权、浏览器登录和当前会话权限。清理与重启仍使用设置页确认。
+内置工具 `vos_diagnostics` 支持 `inventory`、`status`、`logs`、`propose`。后三项需字符串 `id`，格式同表；`propose` 另需 `action`。返回诊断 JSON 文本，最长 49,152 字符。VOS 系统管理员选择 `vos-full-access` 即可使用。会话确认接口无需设置页授权头；`sessionId` 是当前租户的会话 ID，1–128 个字母、数字、下划线或连字符。每个会话最多一个待确认提议，120 秒有效，已有提议时返回 409 `confirmation-pending`。

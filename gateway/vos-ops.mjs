@@ -125,6 +125,7 @@ function logText(data) {
 export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, userinfoUrl, readBody, respond, daemon = dockerJson,
   daemonCall = engine, platform = vos, now = Date.now, audit = console.info }) {
   const grants = new Map();
+  const proposals = new Map();
   const grantTtl = 15 * 60 * 1000;
 
   async function inventory(token, base) {
@@ -163,15 +164,40 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     throw new OpsError(400, 'invalid-target');
   }
 
+  async function execute(pending, token, base, session, stillAllowed, res) {
+    const { action, id, item } = pending;
+    const current = await target(action, id, token, base);
+    const latestPermissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
+    if (latestPermissions.is_super_admin !== true) throw denied();
+    if (JSON.stringify(current) !== JSON.stringify(item) || !await stillAllowed()) throw stale();
+    audit('VOS ops attempt', JSON.stringify({ subject: session.subject, action, id }));
+    let taskId = null;
+    if (action === 'restart') {
+      const task = await platform(token, '/v1000/app/restart_async', { app_id: id }, base);
+      taskId = task.task_id;
+    } else if (action === 'remove-container') {
+      await daemonCall('DELETE', `/containers/${id}?force=0&v=0`);
+    } else {
+      await daemonCall('DELETE', `/images/${id}?force=0&noprune=1`);
+    }
+    audit('VOS ops accepted', JSON.stringify({ subject: session.subject, action, id, taskId }));
+    respond(res, 200, { action, id, taskId });
+  }
+
   async function handle(req, res, url, agent) {
     const path = url.pathname.slice(OPS_PATH.length);
     try {
       // All requests carry a non-simple header. This route never enables CORS.
       if (!agent && (req.headers['x-vh-ops'] !== '1' ||
           (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin'))) throw denied();
-      if (agent && (req.method !== 'GET' || !['/inventory', '/status', '/logs'].includes(path))) throw denied();
+      if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs'].includes(path)) ||
+          (req.method === 'POST' && path === '/proposal'))) throw denied();
       const session = agent?.session ?? sessionFor(req);
       if (!session) throw new OpsError(401, 'sign-in-required');
+      const sessionScoped = agent || path === '/proposal' || path === '/confirm-proposal';
+      const sessionId = agent?.sessionId ?? url.searchParams.get('sessionId');
+      if (sessionScoped && (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId ?? '') ||
+          !await agentSessionAllowed(session.subject, sessionId))) throw denied();
       const token = await tokenFor(session);
       if (!token) throw new OpsError(401, 'sign-in-required');
       const base = userinfoUrl();
@@ -179,26 +205,49 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       if (permissions.is_super_admin !== true) throw denied();
       const { sid } = session;
       const grantKey = req.headers['x-vh-ops-grant'];
-      const grant = agent ? [...grants.values()].find(g => g.subject === session.subject &&
-        g.agentSessionId === agent.sessionId && g.expires > now()) : grants.get(grantKey);
+      const grant = grants.get(grantKey);
       if (path === '/authorize' && req.method === 'POST') {
-        const { agentSessionId } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
-        if (agentSessionId !== undefined && (typeof agentSessionId !== 'string' ||
-            !/^[a-zA-Z0-9_-]{1,128}$/.test(agentSessionId) ||
-            !await agentSessionAllowed(session.subject, agentSessionId))) throw denied();
         for (const [key, value] of grants) if (value.expires <= now() || value.sid === sid) grants.delete(key);
         if (grants.size >= 128) throw new OpsError(429, 'too-many-grants');
         const key = randomBytes(32).toString('hex');
-        grants.set(key, { sid, subject: session.subject, expires: now() + grantTtl, agentSessionId,
-          userAgent: String(req.headers['user-agent'] ?? '') });
+        grants.set(key, { sid, expires: now() + grantTtl });
         respond(res, 200, { grant: key, expiresIn: grantTtl / 1000 });
         return;
       }
-      if (!grant || grant.expires <= now()) throw denied();
-      if (agent) {
-        if (!agent.browserAlive(grant.sid, grant.userAgent) ||
-            !await agentSessionAllowed(session.subject, agent.sessionId)) throw denied();
-      } else if (grant.sid !== sid) throw denied();
+      if (sessionScoped) {
+        const key = JSON.stringify([session.subject, sessionId]);
+        if (path === '/proposal' && agent) {
+          const { action, id } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
+          if (!ACTIONS.has(action) || typeof id !== 'string') throw new OpsError(400, 'invalid-target');
+          for (const [k, p] of proposals) if (p.expires <= now()) proposals.delete(k);
+          if (proposals.has(key)) throw new OpsError(409, 'confirmation-pending');
+          if (proposals.size >= 128) throw new OpsError(429, 'too-many-grants');
+          const item = await target(action, id, token, base);
+          if (proposals.has(key)) throw new OpsError(409, 'confirmation-pending');
+          proposals.set(key, { action, id, item, confirmation: randomBytes(32).toString('hex'), expires: now() + 120000 });
+          respond(res, 200, { action, id, pending: true, expiresIn: 120 });
+          return;
+        }
+        if (!agent && path === '/proposal' && req.method === 'GET') {
+          const p = proposals.get(key);
+          respond(res, 200, { proposal: p && p.expires > now()
+            ? { action: p.action, targetId: p.id, target: p.item, confirmation: p.confirmation } : null });
+          return;
+        }
+        if (!agent && path === '/confirm-proposal' && req.method === 'POST') {
+          const { confirmation, targetId, approved } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
+          const p = proposals.get(key);
+          if (!p || p.confirmation !== confirmation || p.expires <= now()) throw stale();
+          if (approved !== true && approved !== false) throw new OpsError(400, 'invalid-body');
+          if (approved && targetId !== p.id) throw new OpsError(400, 'confirmation-mismatch');
+          proposals.delete(key);
+          if (!approved) { respond(res, 200, { cancelled: true }); return; }
+          await execute(p, token, base, session, () => sessionFor(req)?.sid === sid &&
+            agentSessionAllowed(session.subject, sessionId), res);
+          return;
+        }
+        if (!agent) throw denied();
+      } else if (!grant || grant.expires <= now() || grant.sid !== sid) throw denied();
 
       if (path === '/inventory' && req.method === 'GET') {
         const [apps, containers, images] = await Promise.all([
@@ -260,24 +309,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         if (!pending || pending.confirmation !== confirmation || pending.expires <= now()) throw stale();
         if (targetId !== pending.id) throw new OpsError(400, 'confirmation-mismatch');
         delete grant.pending;
-        const { action, id, item } = pending;
-        const current = await target(action, id, token, base);
-        const latestPermissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
-        if (latestPermissions.is_super_admin !== true) throw denied();
-        if (JSON.stringify(current) !== JSON.stringify(item) || grants.get(grantKey) !== grant ||
-            grant.expires <= now() || sessionFor(req)?.sid !== sid) throw stale();
-        audit('VOS ops attempt', JSON.stringify({ subject: session.subject, action, id }));
-        let taskId = null;
-        if (action === 'restart') {
-          const task = await platform(token, '/v1000/app/restart_async', { app_id: id }, base);
-          taskId = task.task_id;
-        } else if (action === 'remove-container') {
-          await daemonCall('DELETE', `/containers/${id}?force=0&v=0`);
-        } else {
-          await daemonCall('DELETE', `/images/${id}?force=0&noprune=1`);
-        }
-        audit('VOS ops accepted', JSON.stringify({ subject: session.subject, action, id, taskId }));
-        respond(res, 200, { action, id, taskId });
+        await execute(pending, token, base, session, () => grants.get(grantKey) === grant &&
+          grant.expires > now() && sessionFor(req)?.sid === sid, res);
         return;
       }
       respond(res, 404, { error: 'not-found' });

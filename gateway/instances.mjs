@@ -106,6 +106,7 @@ const retired = new Set();
 
 /** @type {Map<string, Promise<unknown>>} */
 const launchChains = new Map();
+const ensuring = new Map();
 
 /**
  * Why the last launch of one tenant failed, when it did.
@@ -1055,7 +1056,18 @@ async function launch(options) {
  * }} options
  * @returns {Promise<Instance>}
  */
-export async function ensureInstance(options) {
+export function ensureInstance(options) {
+  const subject = options.record.subject;
+  const pending = ensuring.get(subject);
+  if (pending) return pending;
+  const attempt = ensureOneInstance(options).finally(() => {
+    if (ensuring.get(subject) === attempt) ensuring.delete(subject);
+  });
+  ensuring.set(subject, attempt);
+  return attempt;
+}
+
+async function ensureOneInstance(options) {
   const { record, stateRoot } = options;
   const account = record.account ?? record.linuxName;
   const existing = instances.get(record.subject);
@@ -1341,11 +1353,11 @@ export async function stopInstance(subject) {
  * @param {string} subject - the tenant whose upstream failed.
  * @returns {void}
  */
-export function invalidateInstance(subject) {
+export function invalidateInstance(subject, expected) {
   const now = Date.now();
   if (now - (invalidatedAt.get(subject) ?? 0) < INVALIDATE_THROTTLE_MS) return;
   const instance = instances.get(subject);
-  if (instance === undefined) return;
+  if (instance === undefined || (expected !== undefined && expected !== instance)) return;
   invalidatedAt.set(subject, now);
   instances.delete(subject);
   bootStamps.delete(subject);
@@ -1373,6 +1385,7 @@ export function invalidateInstance(subject) {
 export function stopAll() {
   instances.clear();
   launchChains.clear();
+  ensuring.clear();
   launchFailures.clear();
   invalidatedAt.clear();
   retired.clear();

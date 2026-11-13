@@ -272,7 +272,9 @@ test('readyBoot stays 0 until an instance can actually serve requests', async ()
     assert.equal(readyBoot(subject), 0, 'but no instance is serving yet');
 
     server = await tenantServer(record.port, cookie);
-    const adopted = await ensureInstance(options);
+    const concurrent = Array.from({ length: 12 }, () => ensureInstance(options));
+    assert.ok(concurrent.every(pending => pending === concurrent[0]));
+    const adopted = await concurrent[0];
     assert.equal(adopted.adopted, true);
     assert.equal(readyBoot(subject), bootedAt, 'adoption makes the document ready');
 

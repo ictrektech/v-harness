@@ -2581,7 +2581,7 @@ async function proxyRequest(req, res) {
       // A tab closing its own request destroys the upstream and can surface as
       // the same error. Only a failure the client did not cause retires the
       // record, or every navigation would look like an unreachable instance.
-      if (!clientGone) invalidateInstance(record.subject);
+      if (!clientGone) invalidateInstance(record.subject, instance);
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('实例不可用');
       resolve();
@@ -2643,7 +2643,7 @@ async function proxyUpgrade(req, socket, head) {
   });
   let clientGone = false;
   upstream.on('error', () => {
-    if (!clientGone) invalidateInstance(session.subject);
+    if (!clientGone) invalidateInstance(session.subject, instance);
     socket.destroy();
   });
   socket.on('error', () => { clientGone = true; upstream.destroy(); });
@@ -2727,7 +2727,6 @@ const server = createServer((req, res) => {
     url.pathname = OPS_PATH + path.slice((OPS_PATH + '/agent').length);
     void handleVosOps(req, res, url, {
       session: { subject: contract.subject }, sessionId,
-      browserAlive: (sid, userAgent) => sessions.loadSession(sid, userAgent)?.subject === contract.subject,
     });
     return;
   }

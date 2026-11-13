@@ -21,7 +21,7 @@ import { BrowserLogin } from './browser-login.ts'
 import { AccountOnboarding } from './AccountOnboarding.tsx'
 import { AccountPlatformHost, type AccountPlatformHostInjected } from './AccountPlatformHost.tsx'
 import { ApiDocsSection, apiDocsEn, apiDocsZh, type ApiDocsKey } from './ApiDocsSection.tsx'
-import { VosOpsSection, vosOpsEn, vosOpsZh, type VosOpsKey } from './VosOpsSection.tsx'
+import { VosOpsConfirmation, VosOpsSection, vosOpsEn, vosOpsZh, type VosOpsKey } from './VosOpsSection.tsx'
 import { AccountMenu } from './AccountMenu.tsx'
 import { createPlatformPages, type PlatformPages } from './platform-pages.ts'
 import { AccountSection, type AccountSnapshot, type AccountSectionInjected } from './AccountSection.tsx'
@@ -66,6 +66,9 @@ export function apply(ctx: Context): void {
       name: 'settings.section', id: 'vh-ops', order: 91, label: () => vosOps('title'),
       locale: 'settings.vh-ops',
     }, VosOpsSection))
+    ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+      name: 'shell.overlay', id: 'vh-ops-confirmation', locale: 'settings.vh-ops',
+    }, VosOpsConfirmation))
   }
   let snapshot: AccountSnapshot = {
     view: undefined, details: undefined, avatar: undefined, failed: false, loginVisible: false, desktopOnboardingVisible: desktop,

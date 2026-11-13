@@ -109,23 +109,25 @@ test('uses the VOS restart workflow and can explicitly close the grant', async (
   assert.equal((await send('/inventory', null, grant)).status, 403);
 });
 
-test('Agent reads require a session-specific grant and current preset, and writes stay in the browser', async () => {
+test('Full access diagnoses directly and only a browser may confirm its specific proposal', async () => {
   const { send, state } = fixture();
-  const agent = {
-    session: { subject: 'test' }, sessionId: 'session-1',
-    browserAlive: sid => sid === state.sid,
-  };
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
   const read = (as = agent) => send('/inventory', null, undefined, {}, as);
-  assert.equal((await read()).status, 403);
-  assert.equal((await send('/authorize', { agentSessionId: 'session-2' })).status, 403);
-  const { body: { grant } } = await send('/authorize', { agentSessionId: 'session-1' });
   assert.equal((await read()).status, 200);
   assert.equal((await read({ ...agent, sessionId: 'session-2' })).status, 403);
-  assert.equal((await read({ ...agent, session: { subject: 'different' } })).status, 403);
-  assert.equal((await send('/preview', { action: 'restart', id: appId }, grant, {}, agent)).status, 403);
-  state.sessionAllowed = false;
+  state.admin = false;
   assert.equal((await read()).status, 403);
-  state.sessionAllowed = true;
-  state.sid = 'b';
+  state.admin = true;
+  assert.equal((await send('/proposal', { action: 'restart', id: appId }, undefined, {}, agent)).status, 200);
+  assert.deepEqual(state.calls, []);
+  const suffix = '?sessionId=session-1';
+  const preview = (await send('/proposal' + suffix)).body.proposal;
+  const body = { confirmation: preview.confirmation, targetId: appId, approved: true };
+  assert.equal((await send('/confirm-proposal' + suffix, body, undefined, {}, agent)).status, 403);
+  assert.equal((await send('/confirm-proposal' + suffix, { ...body, targetId: 'wrong' })).status, 400);
+  assert.equal((await send('/confirm-proposal' + suffix, body)).body.taskId, 'task');
+  assert.equal((await send('/confirm-proposal' + suffix, body)).status, 409);
+  assert.deepEqual(state.calls, [['/v1000/app/restart_async', { app_id: appId }]]);
+  state.sessionAllowed = false;
   assert.equal((await read()).status, 403);
 });
