@@ -1,5 +1,6 @@
 /** VOS-authenticated access to a tenant's DSH session controller. */
 import { randomUUID } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 
 export const AGENT_API_PREFIX = '/__vh/api/v1/';
 const IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/;
@@ -110,20 +111,30 @@ export async function handleAgentApi(req, res, url, { authenticate, readBody, ca
 
 export async function callSessionController(origin, cookie, endpoint, request) {
   const rpcId = randomUUID();
-  let response;
+  const target = new URL('/api/' + endpoint, origin);
+  const signal = AbortSignal.timeout(30_000);
+  const body = JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args: { request } } });
   let envelope;
   try {
-    response = await fetch(new URL('/api/' + endpoint, origin), {
-      method: 'POST',
-      redirect: 'error',
-      headers: { host: `127.0.0.1:${new URL(origin).port}`, cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args: { request } } }),
-      signal: AbortSignal.timeout(30_000),
+    const response = await new Promise((resolve, reject) => {
+      // The tenant binds its auth cookie to this authority, as in the UI proxy.
+      const upstream = httpRequest(target, {
+        method: 'POST', signal,
+        headers: { host: `127.0.0.1:${target.port}`, cookie, 'content-type': 'application/json' },
+      }, resolve);
+      upstream.on('error', reject);
+      upstream.end(body);
     });
-    if (!response.ok) throw new ApiError(502, 'controller-unavailable');
-    envelope = await response.json();
+    if (response.statusCode !== 200) {
+      response.resume();
+      throw new ApiError(502, 'controller-unavailable');
+    }
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch (error) {
-    if (error?.name === 'TimeoutError') throw new ApiError(504, 'controller-timeout');
+    if (signal.aborted) throw new ApiError(504, 'controller-timeout');
+    console.warn('Agent API controller transport failed:', endpoint, error?.code ?? error?.name);
     throw new ApiError(502, 'controller-unavailable');
   }
   if (envelope?.type !== 'server-response' || envelope.rpcId !== rpcId) {
