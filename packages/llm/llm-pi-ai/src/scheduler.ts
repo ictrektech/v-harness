@@ -35,16 +35,16 @@ export function applyScheduler(ctx: Context): boolean {
       const response = await fetch(`${base}/v1/models`, {
         headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000),
       })
-      if (!response.ok) throw new LlmError(`V-Scheduler model discovery: HTTP ${response.status}`, 'MODEL_DISCOVERY_FAILED')
+      if (!response.ok) throw new LlmError(`V-Scheduler model discovery: HTTP ${response.status}`, 'DISCOVERY_FAILED')
       const payload: unknown = await response.json()
       if (!payload || typeof payload !== 'object' || !('data' in payload) || !Array.isArray(payload.data)) {
-        throw new LlmError('Invalid V-Scheduler model catalog', 'MODEL_DISCOVERY_FAILED')
+        throw new LlmError('Invalid V-Scheduler model catalog', 'DISCOVERY_FAILED')
       }
       const models = new Map<string, PiAiModelProfile[]>()
       for (const row of payload.data) {
         if (!row || typeof row !== 'object' || typeof row.id !== 'string' || typeof row.api !== 'string'
           || !ROUTES.some(([, api]) => api === row.api) || !Array.isArray(row.input) || !row.input.every((item: unknown) => item === 'text' || item === 'image')) {
-          throw new LlmError('Invalid V-Scheduler model descriptor', 'MODEL_DISCOVERY_FAILED')
+          throw new LlmError('Invalid V-Scheduler model descriptor', 'DISCOVERY_FAILED')
         }
         const group = models.get(row.api) ?? []
         group.push({ id: row.id, name: typeof row.name === 'string' ? row.name : row.id, input: row.input })
