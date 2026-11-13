@@ -2699,7 +2699,8 @@ const server = createServer((req, res) => {
     });
     return;
   }
-  if (url.pathname.startsWith('/__vh/')) {
+  if (path.startsWith('/__vh/')) {
+    url.pathname = path;
     void handleControl(req, res, url).catch((error) => {
       console.error('control handler failed:', error);
       if (!res.headersSent) json(res, 500, { error: 'internal' });
