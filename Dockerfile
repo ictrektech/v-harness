@@ -218,6 +218,7 @@ RUN mkdir -p /tmp/registry-plugins \
  && rm -rf /tmp/registry-plugins \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
  && node gateway/agent-plugins/set-market-default.mjs /build/agent-plugins/node_modules/dshmarket/lib/routes.js \
+ && node gateway/agent-plugins/set-bot-models.mjs /build/agent-plugins/node_modules/ds-bot/client.js \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
 
 # ============================================================

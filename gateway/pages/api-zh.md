@@ -97,3 +97,5 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target` 或 `confirmation-mismatch`，请核对 JSON、操作和完整 ID；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
 
 内置工具 `vos_diagnostics` 支持 `inventory`、`status`、`logs`、`propose`。后三项需字符串 `id`，格式同表；`propose` 另需 `action`。返回诊断 JSON 文本，最长 49,152 字符。VOS 系统管理员选择 `vos-full-access` 即可使用。会话确认接口无需设置页授权头；`sessionId` 是当前租户的会话 ID，1–128 个字母、数字、下划线或连字符。每个会话最多一个待确认提议，120 秒有效，已有提议时返回 409 `confirmation-pending`。
+
+在 DS Bot 中打开「设置 → 模型」。「V-Scheduler」区可从现有目录选择默认模型，也可刷新列表。「自定义模型供应商」仅统计在 DS Bot 中添加的供应商，仍可点击「添加供应商」配置。Agent API 的模型接口保持原有契约。
