@@ -1,4 +1,4 @@
-import { en } from './locales.ts'
+import { accessEn, en } from './locales.ts'
 
 /** Machine value of the preset that requires an explicit GUI risk gate. */
 export const FULL_ACCESS_PRESET = 'danger-full-access'
@@ -11,6 +11,7 @@ export type PermissionPresetLabelKey =
   | 'preset.readOnly'
   | 'preset.workspaceWrite'
   | 'preset.fullAccess'
+  | 'vos.label'
 
 const PRESET_LABEL_KEYS = new Map<string, PermissionPresetLabelKey>([
   ['read-only', 'preset.readOnly'],
@@ -22,6 +23,7 @@ const DEFAULT_PRESET_LABELS: Record<PermissionPresetLabelKey, string> = {
   'preset.readOnly': en['preset.readOnly'],
   'preset.workspaceWrite': en['preset.workspaceWrite'],
   'preset.fullAccess': en['preset.fullAccess'],
+  'vos.label': accessEn['vos.label'],
 }
 
 /**
@@ -46,6 +48,7 @@ export function displayPermissionPreset(
   name: string,
   t?: (key: PermissionPresetLabelKey) => string,
 ): string {
+  if (value === 'vos-full-access') return t?.('vos.label') ?? DEFAULT_PRESET_LABELS['vos.label']
   const key = PRESET_LABEL_KEYS.get(value)
   if (key !== undefined && (name === value || name === DEFAULT_PRESET_LABELS[key])) {
     return t?.(key) ?? DEFAULT_PRESET_LABELS[key]

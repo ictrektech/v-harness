@@ -89,7 +89,8 @@ function optionsOf(
       ...(option.value === AUTO_REVIEW_PRESET ? { badge: t('auto.badge') } : {}),
       ...(option.value === AUTO_REVIEW_PRESET
         ? { detail: t('auto.description') }
-        : option.description !== undefined ? { detail: option.description } : {}),
+        : option.value === 'vos-full-access' ? { detail: t('vos.description') }
+          : option.description !== undefined ? { detail: option.description } : {}),
       ...(option.value === currentValue ? { active: true } : {}),
       ...(option.value === FULL_ACCESS_PRESET || option.value === AUTO_REVIEW_PRESET
         ? {

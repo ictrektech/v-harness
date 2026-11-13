@@ -12,6 +12,7 @@ export const zh = {
   'preset.readOnly': '仅可查看',
   'preset.workspaceWrite': '工作区内修改',
   'preset.fullAccess': '完全权限',
+  'vos.label': '完全访问（VOS 运维）',
   'confirm.title': '确认启用完全权限？',
   'confirm.description': '启用完全权限后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。',
   'confirm.acknowledge': '我已了解风险，并愿意继续',
@@ -31,6 +32,7 @@ export const en = {
   'preset.readOnly': 'Read Only',
   'preset.workspaceWrite': 'Workspace Write',
   'preset.fullAccess': 'Full access',
+  'vos.label': 'Full access (VOS operations)',
   'confirm.title': 'Enable Full access?',
   'confirm.description': 'Full access lets new sessions reduce confirmation steps and perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust subsequent tasks.',
   'confirm.acknowledge': 'I understand the risks and want to continue',
@@ -40,6 +42,8 @@ export const en = {
 
 /** Simplified Chinese dictionary for the current-session popup gate. */
 export const accessZh = {
+  'vos.label': '完全访问（VOS 运维）',
+  'vos.description': '在此会话中使用 VOS 运维。每次更改均需确认。',
   'mode': '访问模式，当前：{name}',
   'close': '关闭',
   'preset.readOnly': '仅可查看',
@@ -64,6 +68,8 @@ export type PermissionAccessKey = keyof typeof accessZh
 
 /** English dictionary for the current-session popup gate. */
 export const accessEn = {
+  'vos.label': 'Full access (VOS operations)',
+  'vos.description': 'Use VOS operations in this conversation. Each change requires confirmation.',
   'mode': 'Access mode, current: {name}',
   'close': 'Close',
   'preset.readOnly': 'Read Only',
@@ -85,6 +91,7 @@ export const accessEn = {
 
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  'vos.label': en['vos.label'],
   'title': '権限',
   'description': '新しいセッションのデフォルトの権限モードを選択',
   'loading': '読み込み中',
@@ -101,6 +108,7 @@ export const ja = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  'vos.label': en['vos.label'],
   'title': 'Permiso',
   'description': 'Elija el modo de permiso predeterminado para nuevas sesiones',
   'loading': 'Cargando',
@@ -117,6 +125,7 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  'vos.label': en['vos.label'],
   'title': 'Autorisation',
   'description': "Choisissez le mode d'autorisation par défaut pour les nouvelles sessions",
   'loading': 'Chargement',
@@ -133,6 +142,7 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  'vos.label': en['vos.label'],
   'title': 'Erlaubnis',
   'description': 'Wählen Sie den Standardberechtigungsmodus für neue Sitzungen',
   'loading': 'Laden',
@@ -149,6 +159,7 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  'vos.label': en['vos.label'],
   'title': 'Разрешение',
   'description': 'Выберите режим разрешений по умолчанию для новых сеансов',
   'loading': 'Загрузка',
@@ -165,6 +176,7 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  'vos.label': en['vos.label'],
   'title': 'Permissão',
   'description': 'Escolha o modo de permissão padrão para novas sessões',
   'loading': 'Carregando',
@@ -181,6 +193,8 @@ export const pt = {
 
 /** Japanese copy, checked against the English keys. */
 export const accessJa = {
+  'vos.label': accessEn['vos.label'],
+  'vos.description': accessEn['vos.description'],
   'mode': 'アクセスモード、現在: {name}',
   'close': '閉じる',
   'preset.readOnly': '読み取り専用',
@@ -202,6 +216,8 @@ export const accessJa = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const accessEs = {
+  'vos.label': accessEn['vos.label'],
+  'vos.description': accessEn['vos.description'],
   'mode': 'Modo de acceso, actual: {name}',
   'close': 'Cerrar',
   'preset.readOnly': 'Sólo lectura',
@@ -223,6 +239,8 @@ export const accessEs = {
 
 /** French dictionary, checked against the English keys. */
 export const accessFr = {
+  'vos.label': accessEn['vos.label'],
+  'vos.description': accessEn['vos.description'],
   'mode': "Mode d'accès, actuel : {name}",
   'close': 'Fermer',
   'preset.readOnly': 'Lecture seule',
@@ -244,6 +262,8 @@ export const accessFr = {
 
 /** German dictionary, checked against the English keys. */
 export const accessDe = {
+  'vos.label': accessEn['vos.label'],
+  'vos.description': accessEn['vos.description'],
   'mode': 'Zugriffsmodus, aktuell: {name}',
   'close': 'Schließen',
   'preset.readOnly': 'Nur lesen',
@@ -265,6 +285,8 @@ export const accessDe = {
 
 /** Russian dictionary, checked against the English keys. */
 export const accessRu = {
+  'vos.label': accessEn['vos.label'],
+  'vos.description': accessEn['vos.description'],
   'mode': 'Режим доступа, текущий: {name}',
   'close': 'Закрыть',
   'preset.readOnly': 'Только чтение',
@@ -286,6 +308,8 @@ export const accessRu = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const accessPt = {
+  'vos.label': accessEn['vos.label'],
+  'vos.description': accessEn['vos.description'],
   'mode': 'Modo de acesso, atual: {name}',
   'close': 'Fechar',
   'preset.readOnly': 'Somente leitura',

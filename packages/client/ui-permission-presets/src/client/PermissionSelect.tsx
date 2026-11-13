@@ -55,6 +55,7 @@ function optionDescription(
   option: PresetOption,
   t: PermissionSelectProps['t'],
 ): string | undefined {
+  if (option.value === 'vos-full-access') return t('vos.description')
   return option.value === AUTO_REVIEW ? t('auto.description') : option.description
 }
 

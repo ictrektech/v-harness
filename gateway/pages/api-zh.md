@@ -111,3 +111,5 @@ VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开�
 浏览器通过 `GET /__vh/vos-ops/host-mode?sessionId=<会话ID>` 读取 `{available:true,enabled:boolean}`。对同一路径发送 `POST`，JSON 为 `{enabled:true}` 或 `{enabled:false}`，可开启或关闭。使用当前 VOS 登录会话和同源请求头 `X-VH-Ops: 1`。会话 ID 格式同上，切换模式时会话须存在于当前账号。退出登录、撤销管理员角色或网关重启都会终止授权。
 
 会话工具 `vos_host_containers` 的 `operation` 取值为 `list`、`logs`、`start`、`stop`、`restart`、`remove`。除 `list` 外，`id` 均为 64 位小写十六进制容器 ID。清单沿用上面的容器记录，非 VOS 主栈容器的 `stack` 为 null。日志沿用 VOS 诊断的行数和字节限制。写操作通过现有会话确认流程提交 `host-start`、`host-stop`、`host-restart`、`host-remove`。启动接受 `created` 或 `exited`，停止和重启接受 `running` 或 `restarting`，删除接受 `created`、`exited` 或 `dead`。确认成功返回 `action`、`id`、`taskId:null`。参数无效返回 400，未登录返回 401，角色或会话未授权返回 403，日志目标不存在返回 404，目标已变化或不符合条件返回 409，授权数达到上限返回 429，Docker 调用失败返回 502。
+
+输入框的 VOS 运维权限名称随当前界面语言切换。

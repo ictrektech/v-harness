@@ -83,3 +83,5 @@ For VOS operations, use the application ID from inventory for status or restart.
 ### Host management
 
 A VOS system administrator opens a conversation, selects **Host management**, and confirms **Enable host management**. The Agent can then list host Docker containers, read their recent logs and propose starting, stopping, restarting or removing a container by full ID. Review each proposed target in the conversation before confirming. Removal requires a stopped container and preserves volumes. Select **Turn off host management** to end access early. The grant expires after 30 minutes and is checked against the administrator role and the VOS browser session on each call. See Settings → API documentation.
+
+The VOS operations permission label in the composer follows the active interface language, including when the language changes in an existing conversation.
