@@ -43,4 +43,4 @@ Open Account menu → Settings → VOS operations. The signed-in VOS system admi
 
 A VOS system administrator can select **Full access (VOS operations)** in a conversation to diagnose directly. When the Agent proposes a restart or cleanup, the conversation displays the target and asks for confirmation. The workspace sandbox remains active. See Settings → API documentation for supported operations.
 
-In DS Bot, open Settings → Models. The **V-Scheduler** section lets you select a default model from the existing catalog and refresh the list. **Custom model providers** lists only providers added in DS Bot. Use **Add a provider** to configure one. The Agent API model contract is unchanged.
+In DS Bot, open Settings → Models. The **V-Scheduler** section lets you select a default model from the existing catalog and refresh the list. **Custom model providers** lists only providers added in DS Bot. Use **Add a provider** to configure one. **Advanced settings** remains available. The Agent API model contract is unchanged.

@@ -15,7 +15,7 @@ replaceOnce(
                   (0, import_react48.createElement)("h3", null, "V-Scheduler"),
                   dsh.renderSlot("settings.section", { close }, { only: "models" }))
               : null,
-            shown === "models" && !advanced ? (0, import_react48.createElement)(ProvidersPage, { actions, run: run2, Section: SetSection, advanced: null }) : null,`,
+            shown === "models" && !advanced ? (0, import_react48.createElement)(ProvidersPage, { actions, run: run2, Section: SetSection, advanced: hasSection(dsh, "models") ? () => actions.openSettings("models", "advanced") : null }) : null,`,
 );
 replaceOnce(
   'title: t("Model providers · {count}", { count: view.providers.length })',
