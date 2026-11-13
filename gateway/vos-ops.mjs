@@ -15,6 +15,8 @@ const HOST_ACTIONS = new Map([
   ['host-restart', ['running', 'restarting']],
   ['host-remove', ['created', 'exited', 'dead']],
 ]);
+const CLEANUP_ACTIONS = new Set(['remove-container', 'host-remove', 'remove-image']);
+const MAX_CLEANUP_TARGETS = 20;
 const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image']);
 
 class OpsError extends Error {
@@ -103,7 +105,7 @@ function summarizeContainer(c, apps) {
       hostPort: p.PublicPort, containerPort: p.PrivatePort, protocol: p.Type, address: p.IP ?? '',
     })),
     stoppable: retired && stack.appId !== 'com.ictrek.v-harness' && ['running', 'restarting'].includes(c.State),
-    cleanup: retired && c.State === 'exited',
+    cleanup: retired && ['created', 'exited'].includes(c.State),
   };
 }
 
@@ -151,15 +153,17 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     }));
   }
 
-  async function target(action, id, token, base) {
+  async function target(action, id, token, base, snapshot) {
     if (HOST_ACTIONS.has(action)) {
       if (!CONTAINER_ID.test(id)) throw new OpsError(400, 'invalid-target');
-      const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
+      const container = (snapshot?.containers ?? await daemon('/containers/json?all=1')).find(c => c.Id === id);
       if (!container || !HOST_ACTIONS.get(action).includes(container.State) ||
           mainStack(container)?.appId === 'com.ictrek.v-harness' ||
           (process.env.VH_SELF_CONTAINER || hostname()) === container.Id.slice(0, 12) ||
           process.env.VH_SELF_CONTAINER === container.Id) throw stale();
-      return summarizeContainer(container, []);
+      const summary = summarizeContainer(container, []);
+      if (action === 'host-remove') delete summary.status;
+      return summary;
     }
     if (action === 'restart' && APP_ID.test(id) && !CONTAINER_ID.test(id)) {
       const a = (await inventory(token, base)).find(a => a.appId === id);
@@ -167,8 +171,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       return a;
     }
     if (['stop-container', 'remove-container'].includes(action) && CONTAINER_ID.test(id)) {
-      const apps = await inventory(token, base);
-      const containers = await daemon('/containers/json?all=1');
+      const apps = snapshot?.apps ?? await inventory(token, base);
+      const containers = snapshot?.containers ?? await daemon('/containers/json?all=1');
       const c = containers.find(c => c.Id === id);
       const item = c && summarizeContainer(c, apps);
       if (action === 'stop-container') {
@@ -178,10 +182,12 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           ports: item.ports, installedVersion: app.version, installationId: app.installationId };
       }
       if (!item?.cleanup || item.stack.appId === 'com.ictrek.v-harness') throw stale();
+      delete item.status;
       return item;
     }
     if (action === 'remove-image' && IMAGE_ID.test(id)) {
-      const [containers, images] = await Promise.all([daemon('/containers/json?all=1'), daemon('/images/json?all=1')]);
+      const [containers, images] = snapshot ? [snapshot.containers, snapshot.images] :
+        await Promise.all([daemon('/containers/json?all=1'), daemon('/images/json?all=1')]);
       const item = candidates(images, containers).find(i => i.id === id);
       if (!item) throw stale();
       return item;
@@ -189,11 +195,43 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     throw new OpsError(400, 'invalid-target');
   }
 
+  async function cleanupTargets(action, ids, token, base) {
+    const [containers, apps, images] = await Promise.all([
+      daemon('/containers/json?all=1'),
+      action === 'remove-container' ? inventory(token, base) : [],
+      action === 'remove-image' ? daemon('/images/json?all=1') : [],
+    ]);
+    return Promise.all(ids.map(id => target(action, id, token, base, { containers, apps, images })));
+  }
+
+  function removeTarget(action, id) {
+    const path = action === 'remove-image'
+      ? `/images/${id}?force=0&noprune=1`
+      : `/containers/${id}?force=0&v=0`;
+    return daemonCall('DELETE', path);
+  }
+
   async function execute(pending, token, base, session, stillAllowed, res) {
-    const { action, id, item } = pending;
+    const { action, id, item, ids, items } = pending;
     const latestPermissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
     if (latestPermissions.is_super_admin !== true) throw denied();
     if (!await stillAllowed()) throw stale();
+    if (ids) {
+      const current = await cleanupTargets(action, ids, token, base);
+      if (JSON.stringify(current) !== JSON.stringify(items) || !await stillAllowed()) throw stale();
+      const results = await Promise.all(ids.map(async targetId => {
+        audit('VOS ops attempt', JSON.stringify({ subject: session.subject, action, id: targetId }));
+        try {
+          await removeTarget(action, targetId);
+          audit('VOS ops accepted', JSON.stringify({ subject: session.subject, action, id: targetId, taskId: null }));
+          return { id: targetId, removed: true };
+        } catch (error) {
+          return { id: targetId, removed: false, error: error instanceof OpsError ? error.message : 'docker-unavailable' };
+        }
+      }));
+      respond(res, 200, { action, results });
+      return;
+    }
     const current = await target(action, id, token, base);
     if (JSON.stringify(current) !== JSON.stringify(item)) throw stale();
     audit('VOS ops attempt', JSON.stringify({ subject: session.subject, action, id }));
@@ -207,10 +245,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       await daemonCall('POST', `/containers/${id}/restart?t=30`);
     } else if (action === 'stop-container' || action === 'host-stop') {
       await daemonCall('POST', `/containers/${id}/stop?t=30`);
-    } else if (action === 'remove-container' || action === 'host-remove') {
-      await daemonCall('DELETE', `/containers/${id}?force=0&v=0`);
     } else {
-      await daemonCall('DELETE', `/images/${id}?force=0&noprune=1`);
+      await removeTarget(action, id);
     }
     audit('VOS ops accepted', JSON.stringify({ subject: session.subject, action, id, taskId }));
     respond(res, 200, { action, id, taskId });
@@ -289,8 +325,12 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       }
       if (sessionScoped) {
         if (path === '/proposal' && agent) {
-          const { action, id } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
-          if (typeof id !== 'string' || !(ACTIONS.has(action) || HOST_ACTIONS.has(action))) {
+          const { action, id, ids } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
+          if (!(ACTIONS.has(action) || HOST_ACTIONS.has(action)) ||
+              (ids === undefined ? typeof id !== 'string' :
+                id !== undefined || !CLEANUP_ACTIONS.has(action) || !Array.isArray(ids) ||
+                ids.length < 1 || ids.length > MAX_CLEANUP_TARGETS ||
+                new Set(ids).size !== ids.length || ids.some(value => typeof value !== 'string'))) {
             throw new OpsError(400, 'invalid-target');
           }
           if (HOST_ACTIONS.has(action) ? !hostEnabled() : !await vosEnabled()) throw denied();
@@ -298,34 +338,41 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           const reportPending = () => {
             const pending = proposals.get(key);
             if (!pending || pending.expires <= now()) return false;
-            respond(res, 409, { error: 'confirmation-pending', action: pending.action, id: pending.id,
+            respond(res, 409, { error: 'confirmation-pending', action: pending.action,
+              ...(pending.ids ? { ids: pending.ids } : { id: pending.id }),
               expiresIn: Math.ceil((pending.expires - now()) / 1000) });
             return true;
           };
           if (reportPending()) return;
           if (proposals.size >= 128) throw new OpsError(429, 'too-many-grants');
-          const item = await target(action, id, token, base);
+          const targets = ids
+            ? { ids, items: await cleanupTargets(action, ids, token, base) }
+            : { id, item: await target(action, id, token, base) };
           if (reportPending()) return;
           if (HOST_ACTIONS.has(action) && !hostEnabled()) throw denied();
-          proposals.set(key, { action, id, item, confirmation: randomBytes(32).toString('hex'), expires: now() + 120000 });
-          respond(res, 200, { action, id, pending: true, executed: false, expiresIn: 120 });
+          proposals.set(key, { action, ...targets, confirmation: randomBytes(32).toString('hex'), expires: now() + 120000 });
+          respond(res, 200, { action, ...(ids ? { ids } : { id }), pending: true, executed: false, expiresIn: 120 });
           return;
         }
         if (!agent && path === '/proposal' && req.method === 'GET') {
           const p = proposals.get(key);
           respond(res, 200, { proposal: p && p.expires > now() && (!HOST_ACTIONS.has(p.action) || hostEnabled())
-            ? { action: p.action, targetId: p.id, target: p.item, confirmation: p.confirmation } : null });
+            ? { action: p.action, ...(p.ids ? { targetIds: p.ids, targets: p.items } : { targetId: p.id, target: p.item }),
+                confirmation: p.confirmation } : null });
           return;
         }
         if (!agent && path === '/confirm-proposal' && req.method === 'POST') {
-          const { confirmation, targetId, approved } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
+          const { confirmation, targetId, targetIds, approved } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
           const p = proposals.get(key);
           if (!p || p.confirmation !== confirmation || p.expires <= now()) {
             throw new OpsError(409, 'confirmation-unavailable');
           }
           if (HOST_ACTIONS.has(p.action) && !hostEnabled()) throw denied();
           if (approved !== true && approved !== false) throw new OpsError(400, 'invalid-body');
-          if (approved && targetId !== p.id) throw new OpsError(400, 'confirmation-mismatch');
+          if (approved && (p.ids
+            ? targetId !== undefined || !Array.isArray(targetIds) || targetIds.length !== p.ids.length ||
+              p.ids.some((id, index) => id !== targetIds[index])
+            : targetIds !== undefined || targetId !== p.id)) throw new OpsError(400, 'confirmation-mismatch');
           proposals.delete(key);
           if (!approved) { respond(res, 200, { cancelled: true }); return; }
           await execute(p, token, base, session, async () => sessionFor(req)?.sid === sid &&

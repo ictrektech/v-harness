@@ -205,3 +205,43 @@ test('host mode requires an administrator and browser opt-in for one conversatio
   state.now += 30 * 60 * 1000;
   assert.equal((await list()).status, 403);
 });
+
+
+test('one cleanup confirmation covers exited and created containers and rejects a changed batch', async () => {
+  const { send, state } = fixture();
+  const secondId = 'd'.repeat(64);
+  state.containers.push({ ...container, Id: secondId, State: 'created' });
+  const ids = [containerId, secondId];
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  const query = '?sessionId=session-1';
+  const propose = () => send('/proposal', { action: 'remove-container', ids }, undefined, {}, agent);
+  const confirmation = async () => (await send('/proposal' + query)).body.proposal;
+  const confirm = (p, targetIds = ids) => send('/confirm-proposal' + query, {
+    approved: true, confirmation: p.confirmation, targetIds,
+  });
+
+  assert.equal((await propose()).status, 200);
+  assert.equal((await propose()).status, 409);
+  const first = await confirmation();
+  assert.deepEqual(first.targetIds, ids);
+  assert.equal(first.targets.length, 2);
+  assert.equal((await confirm(first, [containerId])).status, 400);
+  assert.deepEqual(state.calls, []);
+  state.containers[1].State = 'running';
+  assert.equal((await confirm(first)).status, 409);
+  assert.deepEqual(state.calls, []);
+
+  state.containers[1].State = 'created';
+  assert.equal((await propose()).status, 200);
+  const skipped = await confirmation();
+  assert.equal((await send('/confirm-proposal' + query, {
+    approved: false, confirmation: skipped.confirmation,
+  })).body.cancelled, true);
+  assert.deepEqual(state.calls, []);
+
+  assert.equal((await propose()).status, 200);
+  const last = await confirmation();
+  assert.deepEqual((await confirm(last)).body.results, ids.map(id => ({ id, removed: true })));
+  assert.deepEqual(state.calls, ids.map(id => ['DELETE', `/containers/${id}?force=0&v=0`]));
+  assert.equal((await confirm(last)).status, 409);
+});

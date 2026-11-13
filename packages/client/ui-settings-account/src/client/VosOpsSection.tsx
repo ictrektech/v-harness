@@ -6,7 +6,7 @@ const en = {
   authorize: 'Authorize diagnostics', refresh: 'Refresh inventory', busy: 'Working…',
   applications: 'Installed applications', containers: 'VOS application containers', ports: 'Published Docker ports',
   images: 'Unused untagged images', none: 'None found', logs: 'Read recent logs',
-  restart: 'Restart application', stopContainer: 'Stop old container', removeContainer: 'Remove stopped old container', removeImage: 'Remove untagged image',
+  restart: 'Restart application', stopContainer: 'Stop old container', removeContainer: 'Remove old container', removeImage: 'Remove untagged image',
   confirm: 'Confirm this operation', cancel: 'Cancel', confirmation: 'Check the exact target below. This confirmation expires in 60 seconds.',
   accepted: 'Operation accepted. Refresh the inventory to check progress.',
   pending: 'Awaiting your confirmation. The operation has not run.',
@@ -23,6 +23,9 @@ const en = {
   hostStart: 'Start host container', hostStop: 'Stop host container',
   hostRestart: 'Restart host container', hostRemove: 'Remove host container',
   proposalTitle: 'VOS repair confirmation',
+  targetList: 'Targets', removed: 'Removed', removalFailed: 'Removal failed',
+  targetIdLabel: 'ID', targetName: 'Container', targetImage: 'Image', targetVersion: 'Version',
+
   skip: 'Skip', close: 'End diagnostics', tagged: 'Tagged images with no container references',
 } satisfies Record<string, string>
 const zh: Record<keyof typeof en, string> = {
@@ -30,7 +33,7 @@ const zh: Record<keyof typeof en, string> = {
   authorize: '授权诊断', refresh: '刷新清单', busy: '正在处理…',
   applications: '已安装应用', containers: 'VOS 应用容器', ports: 'Docker 发布端口',
   images: '无标签且未使用的镜像', none: '未发现', logs: '查看近期日志',
-  restart: '重启应用', stopContainer: '停止旧版容器', removeContainer: '删除已退出的旧版容器', removeImage: '删除无标签镜像',
+  restart: '重启应用', stopContainer: '停止旧版容器', removeContainer: '删除未运行的旧版容器', removeImage: '删除无标签镜像',
   confirm: '确认执行', cancel: '取消', confirmation: '请核对下面的具体对象。此次确认 60 秒后失效。',
   accepted: '操作已受理。刷新清单查看进度。',
   pending: '等待你确认。操作尚未执行。',
@@ -47,6 +50,9 @@ const zh: Record<keyof typeof en, string> = {
   hostStart: '启动宿主机容器', hostStop: '停止宿主机容器',
   hostRestart: '重启宿主机容器', hostRemove: '删除宿主机容器',
   proposalTitle: '确认 VOS 修复',
+  targetList: '操作目标', removed: '已删除', removalFailed: '删除失败',
+  targetIdLabel: '标识符', targetName: '容器', targetImage: '镜像', targetVersion: '版本',
+
   skip: '跳过', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
 }
 
@@ -65,6 +71,8 @@ type Inventory = {
   unusedImages: { id: string; created: number; bytes: number }[]
   unreferencedTaggedImages: { id: string; tags: string[]; bytes: number }[]
 }
+type RemovalResult = { id: string; removed: boolean }
+type TargetSummary = { id?: string; appId?: string; name?: string; image?: string; version?: string; stack?: { version: string } }
 type Preview = { action: Action; confirmation: string; targetId: string; target: unknown }
 
 function actionLabel(action: Action): VosOpsKey {
@@ -214,6 +222,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
   </div>
 }
 
+type ConversationProposal = Preview | {
+  action: Action; confirmation: string; targetIds: string[]; targets: TargetSummary[]
+}
+
 /** Render a server-owned proposal in the active conversation. */
 export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-ops'> & PropsRuntime<'shell.overlay'>) {
   const sessionId = useSessions(s => Object.values(s.byId).find(row => (row.retainedBy.mainView ?? 0) > 0)?.id)
@@ -221,10 +233,11 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
   const [hostPrompt, setHostPrompt] = useState(false)
   const [hostError, setHostError] = useState(false)
   const [hostBusy, setHostBusy] = useState(false)
-  const [pending, setPending] = useState<{ sessionId: string; proposal: Preview }>()
-  const [result, setResult] = useState<{ sessionId: string; message: VosOpsKey; taskId?: string }>()
+  const [pending, setPending] = useState<{ sessionId: string; proposal: ConversationProposal }>()
+  const [result, setResult] = useState<{ sessionId: string; message: VosOpsKey; taskId?: string; results?: RemovalResult[] }>()
   const [busy, setBusy] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null)
+  const settled = useRef<string>(undefined)
   const proposal = pending?.sessionId === sessionId ? pending?.proposal : undefined
   const outcome = result?.sessionId === sessionId ? result : undefined
 
@@ -238,8 +251,9 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
       try {
         const mode = await request<{ enabled: boolean }>('host-mode?sessionId=' + encodeURIComponent(sessionId)).catch(() => undefined)
         if (active) setHostMode(mode ? { sessionId, enabled: mode.enabled } : undefined)
-        const data = await request<{ proposal: Preview | null }>('proposal?sessionId=' + encodeURIComponent(sessionId))
-        if (active) setPending(data.proposal ? { sessionId, proposal: data.proposal } : undefined)
+        const data = await request<{ proposal: ConversationProposal | null }>('proposal?sessionId=' + encodeURIComponent(sessionId))
+        if (active) setPending(data.proposal && data.proposal.confirmation !== settled.current
+          ? { sessionId, proposal: data.proposal } : undefined)
       } catch {
         if (active) setPending(undefined)
       } finally {
@@ -258,10 +272,11 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
   const settle = async (approved: boolean) => {
     if (!sessionId || !proposal || busy) return
     setBusy(true)
+    settled.current = proposal.confirmation
     try {
-      const response = await request<{ taskId?: string }>('confirm-proposal?sessionId=' + encodeURIComponent(sessionId),
-        undefined, { confirmation: proposal.confirmation, approved, ...(approved ? { targetId: proposal.targetId } : {}) })
-      if (approved) setResult({ sessionId, message: 'accepted', ...(response.taskId ? { taskId: response.taskId } : {}) })
+      const response = await request<{ taskId?: string; results?: RemovalResult[] }>('confirm-proposal?sessionId=' + encodeURIComponent(sessionId),
+        undefined, { confirmation: proposal.confirmation, approved, ...(approved ? ('targetIds' in proposal ? { targetIds: proposal.targetIds } : { targetId: proposal.targetId }) : {}) })
+      if (approved) setResult({ sessionId, message: 'accepted', results: response.results, ...(response.taskId ? { taskId: response.taskId } : {}) })
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
       const message = code === 'targetChanged' || code === 'confirmationUnavailable' ? code : 'failed'
@@ -306,10 +321,24 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
   }} style={{ maxWidth: 'min(640px, 90vw)', maxHeight: '80vh', overflow: 'auto', padding: '1.25rem' }}>
     <h3>{t('proposalTitle')}</h3>
     {outcome && <p role="status">{t(outcome.message)} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
+    {outcome?.results && <ul>{outcome.results.map(item => <li key={item.id}>
+      {t(item.removed ? 'removed' : 'removalFailed')} · <code>{item.id}</code>
+    </li>)}</ul>}
     {proposal ? <section key={proposal.confirmation}>
       <p>{t('pending')}</p>
       <p>{t(actionLabel(proposal.action))}</p>
-      <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(proposal.target, null, 2)}</pre>
+      <ul aria-label={t('targetList')} style={{ overflowWrap: 'anywhere' }}>
+        {('targets' in proposal ? proposal.targets : [proposal.target as TargetSummary]).map((target, index) => {
+          const id = 'targetIds' in proposal ? proposal.targetIds[index] : proposal.targetId
+          const version = target.stack?.version ?? target.version
+          return <li key={id}>
+            {target.name && <div>{t('targetName')} · {target.name}</div>}
+            {target.image && <div>{t('targetImage')} · {target.image}</div>}
+            {version && <div>{t('targetVersion')} · {version}</div>}
+            <div>{t('targetIdLabel')} · <code>{id}</code></div>
+          </li>
+        })}
+      </ul>
       <button type="button" disabled={busy} onClick={() => void settle(true)}>{t('confirm')}</button>{' '}
       <button type="button" disabled={busy} onClick={() => void settle(false)}>{t('skip')}</button>
     </section> : <button type="button" onClick={() => setResult(undefined)}>{t('cancel')}</button>}

@@ -52,3 +52,7 @@ For VOS operations, use the application ID from inventory for status or restart.
 ### Host management
 
 A VOS system administrator opens a conversation, selects **Host management**, and confirms **Enable host management**. The Agent can then list host Docker containers, read their recent logs and propose starting, stopping, restarting or removing a container by full ID. Review each proposed target in the conversation before confirming. Removal requires a stopped container and preserves volumes. Select **Turn off host management** to end access early. The grant expires after 30 minutes and is checked against the administrator role and the VOS browser session on each call. See Settings → API documentation.
+
+### Batch cleanup
+
+Ask the Agent to collect all cleanup targets in one proposal. The confirmation window follows the VOS interface language and lists every target. Select **Confirm this operation** or **Skip** once for the batch. The result shows which objects were removed. VOS operations accepts recognized retired containers in `created` or `exited` state. The API reference describes batch limits and errors.

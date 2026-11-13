@@ -90,7 +90,7 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 `apps` 条目字段为字符串 `appId`、`installationId`、`version`、`state`、`lastError`（无错误为空字符串）。VOS 应用状态为 `not_installed`、`installing`、`installed`、`stopping`、`stopped`、`starting`、`upgrading`、`uninstalling`、`uninstalled`、`restarting`、`error`；按平台原值显示。可重启 `installed` 的其他应用，VOS 可拒绝不允许的状态。状态响应的 `workflow` 可为 null；否则包含字符串 `taskId`、`status`、`failure`（无失败为空字符串）及字符串或 null 的 `stage`。工作流状态为 `Running`、`Completed`、`Failed`、`Cancelled`、`Terminated`、`TimedOut`、`ContinuedAsNew`。
 
-`containers` 条目包含字符串 `id`、`name`、`image`、`imageId`、`state`、`status`，以及布尔 `cleanup`、`stack`（字符串 `appId`、`version`、`project`）和 `ports` 数组。容器状态取 Docker 原值，清理要求 `exited` 且归属与版本通过复核。端口条目包括数字 `hostPort`、`containerPort`，字符串 `protocol`（Docker 的 tcp、udp、sctp 值）、`address`。全机 `publishedPorts` 还带容器名称 `container` 和字符串或 null 的 `appId`。
+`containers` 条目包含字符串 `id`、`name`、`image`、`imageId`、`state`、`status`，以及布尔 `cleanup`、`stack`（字符串 `appId`、`version`、`project`）和 `ports` 数组。容器状态取 Docker 原值，清理接受 `created` 或 `exited` 且归属与版本通过复核。端口条目包括数字 `hostPort`、`containerPort`，字符串 `protocol`（Docker 的 tcp、udp、sctp 值）、`address`。全机 `publishedPorts` 还带容器名称 `container` 和字符串或 null 的 `appId`。
 
 无标签镜像条目包括字符串 `id`、数字 `created`（Unix 秒）和 `bytes`（字节）；带标签镜像条目以字符串数组 `tags` 代替 `created`，仅供查看。容器清理不移除卷，镜像清理不会强制删除或清理父层。
 
@@ -113,3 +113,7 @@ VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开�
 会话工具 `vos_host_containers` 的 `operation` 取值为 `list`、`logs`、`start`、`stop`、`restart`、`remove`。除 `list` 外，`id` 均为 64 位小写十六进制容器 ID。清单沿用上面的容器记录，非 VOS 主栈容器的 `stack` 为 null。日志沿用 VOS 诊断的行数和字节限制。写操作通过现有会话确认流程提交 `host-start`、`host-stop`、`host-restart`、`host-remove`。启动接受 `created` 或 `exited`，停止和重启接受 `running` 或 `restarting`，删除接受 `created`、`exited` 或 `dead`。确认成功返回 `action`、`id`、`taskId:null`。参数无效返回 400，未登录返回 401，角色或会话未授权返回 403，日志目标不存在返回 404，目标已变化或不符合条件返回 409，授权数达到上限返回 429，Docker 调用失败返回 502。
 
 输入框的 VOS 运维权限名称随当前界面语言切换。
+
+### 批量清理接口
+
+`remove-container`、`host-remove` 或 `remove-image` 可用 `ids` 替代 `id`，提交 1–20 个同类型、不重复的完整 ID。新提议及 409 `confirmation-pending` 按输入顺序返回 `ids`。`GET /proposal` 返回 `targetIds` 和 `targets`。批准时向 `POST /confirm-proposal` 提交同顺序的 `targetIds`，不匹配返回 400。跳过时提交 `approved:false` 和确认令牌。删除前重新校验所有目标，目标变化或不符合条件时返回 409，整批均不执行。成功响应包含 `action` 和按顺序排列的 `results`，每项包含 `id`、布尔值 `removed`，失败项还包含 `error`。保留数据卷。
