@@ -29,3 +29,5 @@ The first visit opens in Classic Agent mode. DS Bot is preinstalled and can be e
 - **IM Bot**. Open Settings → IM Bot, choose a channel, and follow its QR code or credential setup. Assign a workspace and model, set conversation access, then send a test message from the chat app once connected. If the connection fails, check platform permissions, credentials, and network access. [Upstream channel guide](https://github.com/xmanrui/dsh-im)
 - Both plugins use the signed-in VOS user's isolated environment. Media Desk's `/media-desk/*` routes serve its own browser UI and ship with the plugin. IM platform connections are managed by each channel adapter.
 - **Plugin downloads**. Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
+
+Open **Settings → API documentation** for VOS OAuth2 authentication, session creation, task submission, reading results and handling errors.

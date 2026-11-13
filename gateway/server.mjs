@@ -116,6 +116,7 @@ import {
 import { DECODABLE_ENCODINGS, injectShell } from './shell-inject.mjs';
 import { findUser, listUsers, upsertUser } from './users.mjs';
 import { VosAuthError, verifyVosToken } from './vos-auth.mjs';
+import { AGENT_API_PREFIX, callSessionController, handleAgentApi, unavailableIdentity, unavailableInstance } from './agent-api.mjs';
 import {
   closeWeknoraCapabilities,
   ensureWeknoraCapability,
@@ -2036,7 +2037,7 @@ async function startCapabilities(record, control = {}) {
 
 /**
  * Resolve the instance for one authenticated request, starting it if needed.
- * @param {import('./session.mjs').SessionPayload} session
+ * @param {{ subject: string }} session
  * @returns {Promise<{ port: number, cookie: string | undefined } | undefined>}
  */
 async function instanceFor(session) {
@@ -2646,8 +2647,61 @@ async function proxyUpgrade(req, socket, head) {
   socket.on('close', () => { clientGone = true; upstream.destroy(); });
 }
 
+const agentApiDependencies = {
+  json,
+  readBody: readJsonBody,
+  async authenticate(req) {
+    const token = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization ?? '')?.[1];
+    if (!token) return undefined;
+    let identity;
+    try {
+      identity = await verifyVosToken(token, { acceptLanguage: req.headers['accept-language'] });
+    } catch (error) {
+      if (!(error instanceof VosAuthError)) throw error;
+      if (error.code === 'vos-userinfo-unreachable' || error.code === 'vos-invalid-userinfo' || (error.status ?? 0) >= 500) {
+        throw unavailableIdentity();
+      }
+      return undefined;
+    }
+    const { record } = await upsertUser(USERS_FILE, identity);
+    // Keep an existing browser refresh grant. An API-only user supplies a
+    // fresh bearer again when the previous token expires.
+    if (!hasUsableTokens(record.namespace)) {
+      rememberTokens(record.namespace, { access: token, expiresAt: expiryFromToken(token) });
+    }
+    return record;
+  },
+  async call(record, endpoint, request) {
+    let instance;
+    try {
+      instance = await instanceFor({ subject: record.subject });
+    } catch {
+      throw unavailableInstance();
+    }
+    if (!instance?.cookie) throw unavailableInstance();
+    return callSessionController(`http://${instanceAddress(instance.uid)}:${instance.port}`, instance.cookie, endpoint, request);
+  },
+};
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
+  const path = stripPrefix(url.pathname);
+  if (req.method === 'GET' && (path === '/__vh/api-docs/zh' || path === '/__vh/api-docs/en')) {
+    const language = path.endsWith('/zh') ? 'zh' : 'en';
+    void readFile(new URL('./pages/api-' + language + '.md', import.meta.url), 'utf8').then(text => {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' });
+      res.end(text);
+    }).catch(() => json(res, 500, { error: 'internal' }));
+    return;
+  }
+  if (path.startsWith(AGENT_API_PREFIX)) {
+    url.pathname = path;
+    void handleAgentApi(req, res, url, agentApiDependencies).catch(() => {
+      if (!res.headersSent) json(res, 500, { error: 'internal' });
+      else res.destroy();
+    });
+    return;
+  }
   if (url.pathname.startsWith('/__vh/')) {
     void handleControl(req, res, url).catch((error) => {
       console.error('control handler failed:', error);

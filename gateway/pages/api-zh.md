@@ -1,0 +1,73 @@
+# v-harness API v1
+
+用 VOS 账号从脚本创建会话、提交任务并读取结果。API 会话使用该账号的 v-harness 工作区和「设置 → 模型」中选定的默认模型。使用前请在 V-Scheduler 配置该账号可用的模型。能进入 v-harness 的普通 VOS 账号即可调用。
+
+## 获取 VOS 访问令牌
+
+访问同一台 VOS 设备的 `https://<vos-host>:1180/v1000/oauth2/.well-known/openid-configuration`。外部集成使用 VOS 管理员注册的 OAuth2 客户端和回调地址。嵌入 v-harness 的集成可以使用安装时注册的公开客户端 `com.ictrek.v-harness`。
+
+1. 生成随机 `state` 和 43–128 个 URL 安全字符的 PKCE verifier。对 verifier 求 SHA-256，再用无填充 Base64URL 编码得到 challenge。
+2. 在浏览器打开发现文档的 `authorization_endpoint`，相对地址以 VOS 源站为基准。传入 `client_id`、已注册的 `redirect_uri`、`response_type=code`、`scope=openid profile email`、`state`、`code_challenge` 和 `code_challenge_method=S256`，登录 VOS 并完成授权。
+3. 核对回调的 `state`。向 `token_endpoint` 提交表单 POST，传入 `grant_type=authorization_code`、回调 `code`、`client_id`、相同的 `redirect_uri` 和 `code_verifier`。机密客户端按其注册方式认证客户端身份。读取返回的 `access_token` 和有效期 `expires_in`（秒）。
+4. 访问令牌过期后，如果平台发放了刷新令牌，向同一端点提交表单 `grant_type=refresh_token`、`client_id` 和 `refresh_token`。保存更新的刷新令牌。没有刷新令牌时重新走浏览器授权。
+
+每次调用 v-harness API 都带上 `Authorization: Bearer <access_token>`。网关逐次请求 VOS UserInfo，并根据校验后的账号 subject 选择租户。会话和工作区 ID 均归该账号所有。使用 HTTPS，令牌放在请求头，避免写入 URL 和日志。
+
+## 提交任务
+
+VOS 基地址为 `https://<vos-host>:1180/app/com.ictrek.v-harness/__vh/api/v1`。单独对外提供的 v-harness 网关用其源站加 `/__vh/api/v1`。响应均为 JSON。POST 需要 `Content-Type: application/json`，请求体上限为 8 KiB，包含 JSON 编码开销。
+
+```bash
+BASE='https://<vos-host>:1180/app/com.ictrek.v-harness/__vh/api/v1'
+# 将通过 OAuth 换得的访问令牌写入环境变量 VOS_ACCESS_TOKEN。
+SESSION=$(curl -fsS "$BASE/sessions" -H "Authorization: Bearer $VOS_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}' | jq -er .sessionId)
+REQUEST_ID=$(uuidgen)
+curl -fsS "$BASE/sessions/$SESSION/prompts" -H "Authorization: Bearer $VOS_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg id "$REQUEST_ID" --arg text '总结这个工作区的用途。' '{requestId:$id,text:$text}')"
+curl -fsS "$BASE/sessions/$SESSION/events" -H "Authorization: Bearer $VOS_ACCESS_TOKEN"
+```
+
+每隔几秒读取一次事件。在新会话中每次提交一条任务，先等待与请求 ID 对应的 `prompt-recorded`，再等 `turn-ended`。按序号读取该轮的 `assistant-text`。需要交互时，可以在 v-harness 界面打开该会话继续。客户端断开后，已接收的任务仍可运行。
+
+## 请求和响应字段
+
+| 方法和路径 | 输入 | 成功响应 |
+| --- | --- | --- |
+| `POST /sessions` | JSON 对象。可选 `workspaceId` 选择当前账号的已有工作区。发送 `{}` 使用部署默认会话目录。 | `201 {"sessionId":"session-…"}`。每次成功创建一个新会话。 |
+| `POST /sessions/{sessionId}/prompts` | 必填字符串 `requestId` 和非空白字符串 `text`。任务进入会话队列。 | `202 {"requestId":"…","accepted":true}`。提交结果不确定时，用同一请求 ID 和文本重试。 |
+| `GET /sessions/{sessionId}/events` | 可选整数 `throughSeq`（含该序号，最小 −1，默认当前日志末尾）和 `beforeSeq`（不含该序号，最小 0，默认该日志切点末尾）。二者均为安全整数。 | 空日志返回 `200 {"cursor":-1,"beforeSeq":null,"events":[]}`。`cursor` 是含该序号的日志切点。非空的 `beforeSeq` 用于翻到更早的一页。 |
+
+ID 区分大小写，允许 1–128 个 ASCII 字母、数字、下划线或连字符。可选字段省略时使用表中的默认值。未知字段、未知查询参数、显式 null 和空 ID 均拒绝。每页最多覆盖 50 条用户或助手消息以及关联记录。向前翻页时把返回的 `cursor` 作为 `throughSeq`，并传入返回的 `beforeSeq`。实时轮询时省略二者，按 `seq` 去重。筛选后 `events` 可能为空，同时仍有更早的一页。
+
+事件按时间顺序返回。每项都有 `seq`（从零开始的日志序号）、`time`（Unix 毫秒）和 `type`。
+
+| 类型 | 额外字段 |
+| --- | --- |
+| `prompt-recorded` | 字符串 `requestId`。任务已写入持久日志。 |
+| `assistant-text` | 整数 `turn` 和字符串 `text`。一条已提交助手消息的文本。 |
+| `turn-ended` | 整数 `turn` 和 `outcome`。`completed` 正常完成，`aborted` 已取消，`blocked` 在策略或交互边界停止，`error` 失败，`max-tokens` 达到输出上限，`interrupted` 进程中断后补记结束，`forked` 在分叉处关闭，`other` 为插件定义的结果。 |
+
+API 轮询返回已提交文本。工具事件、附件和逐字输出可在会话界面查看。
+
+## 错误和重试
+
+错误响应包含一个字符串字段 `error`，例如 `{"error":"invalid-token"}`。405 响应的 `Allow` 给出可用方法。
+
+| HTTP | 错误 | 处理 |
+| --- | --- | --- |
+| 400 | `invalid-request` | 检查 JSON 字段、ID 和分页参数。 |
+| 401 | `invalid-token` | 刷新或重新授权 VOS 账号，再重试。 |
+| 404 | `route-not-found`、`resource-not-found` | 检查路径，或使用当前账号拥有的 ID。 |
+| 405 | `method-not-allowed` | 使用 `Allow` 指定的方法。 |
+| 409 | `session-busy` | 等会话可用，再用同一请求 ID 重试任务。 |
+| 413 | `body-too-large` | 缩小 JSON 请求体。 |
+| 415 | `json-required` | 设置 `Content-Type: application/json`。 |
+| 422 | `operation-rejected` | 在 v-harness 打开会话，检查工作区和模型设置。 |
+| 500 | `internal` | 查看网关健康状态或联系管理员。 |
+| 502 | `identity-unavailable`、`controller-unavailable` | 检查 VOS UserInfo 或租户会话控制器，再退避重试。 |
+| 503 | `instance-unavailable` | 等待租户启动，再退避重试。 |
+| 504 | `controller-timeout` | 内部 RPC 超过 30 秒。重试前先检查会话。 |
+
+VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前额外等待，请为客户端预留启动时间。创建会话超时后，先到界面确认是否已创建，再决定是否重试。

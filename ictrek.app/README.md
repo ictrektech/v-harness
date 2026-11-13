@@ -30,7 +30,7 @@
 
 首次登录使用租户工作目录作为默认工作区的目录基准，不依赖容器中不存在的桌面 Documents/XDG 服务；已有工作区不改名或迁移。
 
-镜像内置自媒体工作台 `dsh-media-desk@2.6.2` 和 IM 机器人 `@xmanrui/dsh-im@5.10.0`。网关在新用户首次启动、已有用户升级后首次启动时，将插件及其依赖声明同步到各自的 Web profile。镜像使用 DSH `0.2.2-rc.1` 作为运行时，定制组件从同步到同一上游版本的 fork 源码构建。操作入口见 [中文使用说明](src/README.zh-CN.md) 和 [English usage guide](src/README.en.md)。
+镜像内置自媒体工作台 `dsh-media-desk@2.7.1` 和 IM 机器人 `@xmanrui/dsh-im@5.10.0`。网关在新用户首次启动、已有用户升级后首次启动时，将插件及其依赖声明同步到各自的 Web profile。镜像使用 DSH `0.2.2-rc.2` 作为运行时，定制组件从同步到同一上游版本的 fork 源码构建。操作入口见 [中文使用说明](src/README.zh-CN.md) 和 [English usage guide](src/README.en.md)。
 
 | 路径 | 用途 |
 |---|---|
@@ -73,3 +73,7 @@ Node 24 基镜像按架构上传到 ictrek SWR，标签为 `node:24-bookworm-sli
 ## 已知限制
 
 - 模型统一在 V-Scheduler 中管理；设置页通过 VOS 应用抽屉跳转，保留平台身份上下文，并提供刷新及默认模型下拉框。推理沿用当前 VOS 用户身份。纯文本补全模型不支持工具调用。
+
+## API 使用
+
+「设置 → API 文档」内置 VOS OAuth2 登录、会话、任务和事件说明。[中文 API 文档](../gateway/pages/api-zh.md) · [English API reference](../gateway/pages/api-en.md)
