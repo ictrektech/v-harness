@@ -75,6 +75,7 @@ import {
   hasUsableTokens,
   initTokenStore,
   rememberTokens,
+  rememberApiAccessToken,
 } from './vos-token-store.mjs';
 import {
   closeAlbumCapabilities,
@@ -2664,11 +2665,7 @@ const agentApiDependencies = {
       return undefined;
     }
     const { record } = await upsertUser(USERS_FILE, identity);
-    // Keep an existing browser refresh grant. An API-only user supplies a
-    // fresh bearer again when the previous token expires.
-    if (!hasUsableTokens(record.namespace)) {
-      rememberTokens(record.namespace, { access: token, expiresAt: expiryFromToken(token) });
-    }
+    rememberApiAccessToken(record.namespace, token);
     return record;
   },
   async call(record, endpoint, request) {

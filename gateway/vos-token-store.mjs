@@ -184,6 +184,18 @@ export function rememberTokens(namespace, tokenSet) {
   persist();
 }
 
+/** Record a verified API bearer while retaining a browser's refresh grant. */
+export function rememberApiAccessToken(namespace, access) {
+  const current = tokens.get(namespace);
+  if (current && current.expiresAt - TOKEN_EXPIRY_MARGIN_MS > Date.now()
+      && (current.access === access || current.refresh)) return;
+  rememberTokens(namespace, {
+    access,
+    expiresAt: expiryFromToken(access),
+    ...(current?.refresh ? { refresh: current.refresh } : {}),
+  });
+}
+
 /**
  * Drop one user's credentials: sign-out, an `invalid_grant` refresh, or a VOS
  * revocation. Transient refresh failures never reach this function.

@@ -149,6 +149,19 @@ RUN set -eu; for spec in api/session-controller:dsh-api-session-controller api/r
       cp -R "packages/$source/lib/." "/build/plugins/$name/lib/"; \
     done
 
+# Carry the fork's Host policy and its matching workspace RPC artifacts.
+RUN set -eu; for spec in \
+      api/workspace-controller:dsh-api-workspace-controller \
+      boot/plugin-manager:dsh-plugin-manager \
+      interaction/user-questions:dsh-user-questions \
+      sandbox/sandbox:dsh-sandbox \
+      sandbox/sandbox-local:dsh-sandbox-local \
+      sandbox/sandbox-policy:dsh-sandbox-policy; do \
+      source="${spec%:*}"; name="${spec#*:}"; \
+      mkdir -p "/build/plugins/$name"; \
+      cp -R "packages/$source/package.json" "packages/$source/lib" "/build/plugins/$name/"; \
+    done
+
 # ============================================================
 # Stage: agent-side tool plugins built from this repository
 # ============================================================
