@@ -179,16 +179,16 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
 # copied only when a profile has no copy yet — the same rule that keeps a
 # published package from being shadowed by this payload. Peers are not
 # installed: dsh supplies them from the installation at runtime.
-ARG DSMARKET_VERSION=1.73.17
-ARG DS_BOT_VERSION=0.3.2
+ARG DSMARKET_VERSION=1.73.19
+ARG DS_BOT_VERSION=0.3.6
 # The IM bridge (WeCom/Feishu/DingTalk/QQ/Telegram/...), a third-party registry
 # package that ships to every tenant like the market and the bot. Its runtime
 # dependencies (IM SDKs, mail/IMAP clients) ride along with the closure below.
 ARG DSH_IM_VERSION=5.10.0
 # The MCP connection manager (authorization, tool governance, diagnostics),
 # also a registry package that ships to every tenant.
-ARG DSH_MCP_CONNECTOR_VERSION=0.2.100
-ARG DSH_MEDIA_DESK_VERSION=2.6.2
+ARG DSH_MCP_CONNECTOR_VERSION=0.2.102
+ARG DSH_MEDIA_DESK_VERSION=2.7.1
 # The connector registers its sidebar row with a label *function*, which the
 # surface re-evaluates on every projection, so that one row repaints whenever
 # the plugin's store moves — every other plugin registers a string and stays
@@ -212,7 +212,7 @@ RUN mkdir -p /tmp/registry-plugins \
 FROM ${BASE_IMAGE}
 
 # Media Desk requires DSH 0.2.1-rc.5 or newer.
-ARG DSH_VERSION=0.2.2-rc.1
+ARG DSH_VERSION=0.2.2-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.

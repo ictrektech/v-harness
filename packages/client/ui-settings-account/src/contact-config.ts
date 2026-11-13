@@ -1,16 +1,12 @@
-/** Public contact and bonus notice options shared by Host and Client. */
+/** Public contact options shared by Host and Client. */
 import z from '@deepseek-ai/schemastery'
 
-/** Questionnaire destination, bonus notice timings, and sign-in visibility shared by Host and Client. */
 export interface ContactConfig {
   /** HTTPS questionnaire URL; override for a test form. */
   contactFormUrl: string
   /** Questionnaire source option; empty until Harness is supported by the form. */
   contactSource: string
-  /** First delay before retrying a failed bonus acknowledgement. */
-  bonusAckRetryDelayMs: number
   /** Ceiling for the acknowledgement retry backoff. */
-  bonusAckRetryMaxDelayMs: number
   /** Hide the DeepSeek sign-in entry; deployments that authenticate elsewhere set it. */
   hideSignIn: boolean
 }
@@ -18,8 +14,6 @@ export interface ContactConfig {
 export const ContactConfigFields = {
   contactFormUrl: z.string().pattern(/^https:\/\/[^/\s]+\//).default('https://trtgsjkv6r.feishu.cn/share/base/form/shrcnlCoGElW7MQznGy9r3YYXcg?hide_uid=1&hide_device_info=1&hide_harness_version=1'),
   contactSource: z.string().default(''),
-  bonusAckRetryDelayMs: z.number().min(1).default(1_000),
-  bonusAckRetryMaxDelayMs: z.number().min(1).default(60_000),
   hideSignIn: z.boolean().default(false),
 }
 /** Validate public questionnaire options. */
