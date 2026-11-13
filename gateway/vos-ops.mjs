@@ -2,12 +2,19 @@
 // confirmation. No route accepts caller-supplied Docker API paths.
 import { randomBytes } from 'node:crypto';
 import { request } from 'node:http';
+import { hostname } from 'node:os';
 
 export const OPS_PATH = '/__vh/vos-ops';
 const APP_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/;
 const MAX_BYTES = 16 * 1024 * 1024;
+const HOST_ACTIONS = new Map([
+  ['host-start', ['created', 'exited']],
+  ['host-stop', ['running', 'restarting']],
+  ['host-restart', ['running', 'restarting']],
+  ['host-remove', ['created', 'exited', 'dead']],
+]);
 const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image']);
 
 class OpsError extends Error {
@@ -123,9 +130,11 @@ function logText(data) {
   return lines.join('');
 }
 
-export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, userinfoUrl, readBody, respond, daemon = dockerJson,
+export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, sessionExists = async () => false, browserSessionActive = () => false,
+  userinfoUrl, readBody, respond, daemon = dockerJson,
   daemonCall = engine, platform = vos, now = Date.now, audit = console.info }) {
   const grants = new Map();
+  const hostModes = new Map();
   const proposals = new Map();
   const grantTtl = 15 * 60 * 1000;
 
@@ -143,6 +152,15 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
   }
 
   async function target(action, id, token, base) {
+    if (HOST_ACTIONS.has(action)) {
+      if (!CONTAINER_ID.test(id)) throw new OpsError(400, 'invalid-target');
+      const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
+      if (!container || !HOST_ACTIONS.get(action).includes(container.State) ||
+          mainStack(container)?.appId === 'com.ictrek.v-harness' ||
+          (process.env.VH_SELF_CONTAINER || hostname()) === container.Id.slice(0, 12) ||
+          process.env.VH_SELF_CONTAINER === container.Id) throw stale();
+      return summarizeContainer(container, []);
+    }
     if (action === 'restart' && APP_ID.test(id) && !CONTAINER_ID.test(id)) {
       const a = (await inventory(token, base)).find(a => a.appId === id);
       if (!a || a.state !== 'installed' || id === 'com.ictrek.v-harness') throw stale();
@@ -183,9 +201,13 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     if (action === 'restart') {
       const task = await platform(token, '/v1000/app/restart_async', { app_id: id }, base);
       taskId = task.task_id;
-    } else if (action === 'stop-container') {
+    } else if (action === 'host-start') {
+      await daemonCall('POST', `/containers/${id}/start`);
+    } else if (action === 'host-restart') {
+      await daemonCall('POST', `/containers/${id}/restart?t=30`);
+    } else if (action === 'stop-container' || action === 'host-stop') {
       await daemonCall('POST', `/containers/${id}/stop?t=30`);
-    } else if (action === 'remove-container') {
+    } else if (action === 'remove-container' || action === 'host-remove') {
       await daemonCall('DELETE', `/containers/${id}?force=0&v=0`);
     } else {
       await daemonCall('DELETE', `/images/${id}?force=0&noprune=1`);
@@ -200,20 +222,61 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       // All requests carry a non-simple header. This route never enables CORS.
       if (!agent && (req.headers['x-vh-ops'] !== '1' ||
           (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin'))) throw denied();
-      if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs'].includes(path)) ||
+      if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs', '/host-mode', '/host-containers', '/host-logs'].includes(path)) ||
           (req.method === 'POST' && path === '/proposal'))) throw denied();
       const session = agent?.session ?? sessionFor(req);
       if (!session) throw new OpsError(401, 'sign-in-required');
-      const sessionScoped = agent || path === '/proposal' || path === '/confirm-proposal';
+      const sessionScoped = agent || path.startsWith('/host-') || path === '/proposal' || path === '/confirm-proposal';
       const sessionId = agent?.sessionId ?? url.searchParams.get('sessionId');
-      if (sessionScoped && (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId ?? '') ||
-          !await agentSessionAllowed(session.subject, sessionId))) throw denied();
+      const key = JSON.stringify([session.subject, sessionId]);
+      const mode = hostModes.get(key);
+      const hostEnabled = () => Boolean(mode && hostModes.get(key) === mode && mode.expires > now() &&
+        browserSessionActive(mode.sid, session.subject) && (agent || mode.sid === session.sid));
+      const conversation = () => sessionExists(session.subject, sessionId);
+      const vosEnabled = () => agentSessionAllowed(session.subject, sessionId);
+      if (sessionScoped && !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId ?? '')) throw denied();
+      if (sessionScoped && !path.startsWith('/host-') &&
+          !(hostEnabled() ? await conversation() : await vosEnabled())) throw denied();
+      if (agent && path.startsWith('/host-') && !hostEnabled()) throw denied();
       const token = await tokenFor(session);
       if (!token) throw new OpsError(401, 'sign-in-required');
       const base = userinfoUrl();
       const permissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
       if (permissions.is_super_admin !== true) throw denied();
       const { sid } = session;
+      if (path === '/host-mode') {
+        if (req.method === 'GET') {
+          respond(res, 200, { available: true, enabled: hostEnabled() });
+          return;
+        }
+        if (agent || req.method !== 'POST' || !await conversation()) throw denied();
+        const { enabled } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
+        if (typeof enabled !== 'boolean') throw new OpsError(400, 'invalid-body');
+        if (enabled) {
+          for (const [k, active] of hostModes) if (active.expires <= now()) hostModes.delete(k);
+          if (hostModes.size >= 128 && !hostModes.has(key)) throw new OpsError(429, 'too-many-grants');
+          hostModes.set(key, { sid, expires: now() + 30 * 60 * 1000 });
+        } else {
+          hostModes.delete(key);
+          if (HOST_ACTIONS.has(proposals.get(key)?.action)) proposals.delete(key);
+        }
+        respond(res, 200, { available: true, enabled });
+        return;
+      }
+      if (path === '/host-containers' || path === '/host-logs') {
+        if (!agent || req.method !== 'GET' || !hostEnabled() || !await conversation()) throw denied();
+        if (path === '/host-containers') {
+          const containers = await daemon('/containers/json?all=1');
+          respond(res, 200, { containers: containers.filter(c => CONTAINER_ID.test(c.Id))
+            .map(c => summarizeContainer(c, [])) });
+        } else {
+          const id = url.searchParams.get('id');
+          if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
+          const data = await daemonCall('GET', `/containers/${id}/logs?stdout=1&stderr=1&timestamps=1&tail=150`, 512 * 1024);
+          respond(res, 200, { id, text: logText(data) });
+        }
+        return;
+      }
       const grantKey = req.headers['x-vh-ops-grant'];
       const grant = grants.get(grantKey);
       if (path === '/authorize' && req.method === 'POST') {
@@ -225,10 +288,12 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         return;
       }
       if (sessionScoped) {
-        const key = JSON.stringify([session.subject, sessionId]);
         if (path === '/proposal' && agent) {
           const { action, id } = await readBody(req).catch(() => { throw new OpsError(400, 'invalid-body'); });
-          if (!ACTIONS.has(action) || typeof id !== 'string') throw new OpsError(400, 'invalid-target');
+          if (typeof id !== 'string' || !(ACTIONS.has(action) || HOST_ACTIONS.has(action))) {
+            throw new OpsError(400, 'invalid-target');
+          }
+          if (HOST_ACTIONS.has(action) ? !hostEnabled() : !await vosEnabled()) throw denied();
           for (const [k, p] of proposals) if (p.expires <= now()) proposals.delete(k);
           const reportPending = () => {
             const pending = proposals.get(key);
@@ -241,13 +306,14 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           if (proposals.size >= 128) throw new OpsError(429, 'too-many-grants');
           const item = await target(action, id, token, base);
           if (reportPending()) return;
+          if (HOST_ACTIONS.has(action) && !hostEnabled()) throw denied();
           proposals.set(key, { action, id, item, confirmation: randomBytes(32).toString('hex'), expires: now() + 120000 });
           respond(res, 200, { action, id, pending: true, executed: false, expiresIn: 120 });
           return;
         }
         if (!agent && path === '/proposal' && req.method === 'GET') {
           const p = proposals.get(key);
-          respond(res, 200, { proposal: p && p.expires > now()
+          respond(res, 200, { proposal: p && p.expires > now() && (!HOST_ACTIONS.has(p.action) || hostEnabled())
             ? { action: p.action, targetId: p.id, target: p.item, confirmation: p.confirmation } : null });
           return;
         }
@@ -257,12 +323,13 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           if (!p || p.confirmation !== confirmation || p.expires <= now()) {
             throw new OpsError(409, 'confirmation-unavailable');
           }
+          if (HOST_ACTIONS.has(p.action) && !hostEnabled()) throw denied();
           if (approved !== true && approved !== false) throw new OpsError(400, 'invalid-body');
           if (approved && targetId !== p.id) throw new OpsError(400, 'confirmation-mismatch');
           proposals.delete(key);
           if (!approved) { respond(res, 200, { cancelled: true }); return; }
-          await execute(p, token, base, session, () => sessionFor(req)?.sid === sid &&
-            agentSessionAllowed(session.subject, sessionId), res);
+          await execute(p, token, base, session, async () => sessionFor(req)?.sid === sid &&
+            (HOST_ACTIONS.has(p.action) ? hostEnabled() && await conversation() : await vosEnabled()), res);
           return;
         }
         if (!agent) throw denied();

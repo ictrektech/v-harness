@@ -73,6 +73,7 @@ const LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
  * @returns {Promise<{
  *   createSession: (identity: { subject: string, account: string, userAgent: string }, now?: number) => string,
  *   loadSession: (sid: string | undefined, userAgent: string, now?: number) => Session | undefined,
+ *   isActive: (sid: string, subject: string, now?: number) => boolean,
  *   revokeSession: (sid: string) => void,
  *   revokeSubject: (subject: string) => void,
  *   close: () => void,
@@ -153,6 +154,10 @@ export async function openSessionStore(path, { ttlMs }) {
   return {
     createSession,
     loadSession,
+    isActive(sid, subject, now = Date.now()) {
+      const row = bySid.get(sid);
+      return Boolean(row && row.subject === subject && !row.revoked && row.expires_at > now);
+    },
     revokeSession: (sid) => { revokeOne.run(sid); proved.delete(sid); },
     revokeSubject: (subject) => { revokeSubject.run(subject); },
     prove: (sid, now = Date.now()) => { proved.set(sid, now); },

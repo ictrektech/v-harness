@@ -16,6 +16,12 @@ const en = {
   forbidden: 'VOS system administrator permission and an active diagnostics grant are required.',
   cleanup: 'Container cleanup deletes its writable layer and keeps volumes. Image cleanup is limited to untagged images with no container references.',
   port: 'Filter by host port', closeLogs: 'Close logs', status: 'View status',
+  hostManagement: 'Host management',
+  hostEnable: 'Enable host management',
+  hostDisable: 'Turn off host management',
+  hostDescription: 'For this conversation, the Agent can list containers and read logs across the host. Container changes require your confirmation. Access expires in 30 minutes.',
+  hostStart: 'Start host container', hostStop: 'Stop host container',
+  hostRestart: 'Restart host container', hostRemove: 'Remove host container',
   proposalTitle: 'VOS repair confirmation',
   targetId: 'Type the exact target ID', close: 'End diagnostics', tagged: 'Tagged images with no container references',
 } satisfies Record<string, string>
@@ -34,6 +40,12 @@ const zh: Record<keyof typeof en, string> = {
   forbidden: '需要 VOS 系统管理员权限和有效的诊断授权。',
   cleanup: '删除容器会删除其可写层并保留卷。仅可清理无标签且没有容器引用的镜像。',
   port: '按宿主机端口筛选', closeLogs: '关闭日志', status: '查看状态',
+  hostManagement: '宿主机管理',
+  hostEnable: '开启宿主机管理',
+  hostDisable: '关闭宿主机管理',
+  hostDescription: '开启后，本会话的 Agent 可以查看宿主机容器和日志。修改容器需由你确认，授权 30 分钟后到期。',
+  hostStart: '启动宿主机容器', hostStop: '停止宿主机容器',
+  hostRestart: '重启宿主机容器', hostRemove: '删除宿主机容器',
   proposalTitle: '确认 VOS 修复',
   targetId: '输入完整的目标 ID', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
 }
@@ -41,7 +53,10 @@ const zh: Record<keyof typeof en, string> = {
 export const vosOpsEn = en
 export const vosOpsZh = zh
 export type VosOpsKey = keyof typeof en
-type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image'
+const hostLabels = {
+  'host-start': 'hostStart', 'host-stop': 'hostStop', 'host-restart': 'hostRestart', 'host-remove': 'hostRemove',
+} as const
+type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image' | keyof typeof hostLabels
 type Inventory = {
   apps: { appId: string; version: string; state: string; lastError: string }[]
   containers: { id: string; name: string; image: string; state: string; status: string; cleanup: boolean; stoppable: boolean;
@@ -53,6 +68,7 @@ type Inventory = {
 type Preview = { action: Action; confirmation: string; targetId: string; target: unknown }
 
 function actionLabel(action: Action): VosOpsKey {
+  if (action === 'host-start' || action === 'host-stop' || action === 'host-restart' || action === 'host-remove') return hostLabels[action]
   if (action === 'stop-container') return 'stopContainer'
   return action === 'restart' ? 'restart' : action === 'remove-container' ? 'removeContainer' : 'removeImage'
 }
@@ -209,6 +225,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
 /** Render a server-owned proposal in the active conversation. */
 export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-ops'> & PropsRuntime<'shell.overlay'>) {
   const sessionId = useSessions(s => Object.values(s.byId).find(row => (row.retainedBy.mainView ?? 0) > 0)?.id)
+  const [hostMode, setHostMode] = useState<{ sessionId: string; enabled: boolean }>()
+  const [hostPrompt, setHostPrompt] = useState(false)
+  const [hostError, setHostError] = useState(false)
+  const [hostBusy, setHostBusy] = useState(false)
   const [pending, setPending] = useState<{ sessionId: string; proposal: Preview }>()
   const [result, setResult] = useState<{ sessionId: string; message: VosOpsKey; taskId?: string }>()
   const [busy, setBusy] = useState(false)
@@ -217,11 +237,15 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
   const outcome = result?.sessionId === sessionId ? result : undefined
 
   useEffect(() => {
+    setHostPrompt(false)
+    setHostError(false)
     if (!sessionId) return
     let active = true
     let timer: ReturnType<typeof setTimeout>
     const poll = async () => {
       try {
+        const mode = await request<{ enabled: boolean }>('host-mode?sessionId=' + encodeURIComponent(sessionId)).catch(() => undefined)
+        if (active) setHostMode(mode ? { sessionId, enabled: mode.enabled } : undefined)
         const data = await request<{ proposal: Preview | null }>('proposal?sessionId=' + encodeURIComponent(sessionId))
         if (active) setPending(data.proposal ? { sessionId, proposal: data.proposal } : undefined)
       } catch {
@@ -255,8 +279,35 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
       setBusy(false)
     }
   }
-  if (!proposal && !outcome) return null
-  return <dialog ref={dialog} aria-label={t('proposalTitle')} onCancel={event => {
+  const activeHostMode = hostMode?.sessionId === sessionId ? hostMode : undefined
+  const setHostEnabled = async (enabled: boolean) => {
+    if (!sessionId || hostBusy) return
+    setHostBusy(true)
+    setHostError(false)
+    try {
+      const mode = await request<{ enabled: boolean }>('host-mode?sessionId=' + encodeURIComponent(sessionId),
+        undefined, { enabled })
+      setHostMode({ sessionId, enabled: mode.enabled })
+      setHostPrompt(false)
+    } catch {
+      setHostError(true)
+    } finally {
+      setHostBusy(false)
+    }
+  }
+  return <>
+    {activeHostMode && <aside aria-label={t('hostManagement')} style={{ position: 'fixed', top: '4rem', right: '1rem', zIndex: 10 }}>
+      {hostPrompt ? <section role="group" aria-label={t('hostManagement')}>
+        <p>{t('hostDescription')}</p>
+        <button type="button" disabled={hostBusy} onClick={() => void setHostEnabled(true)}>{t('hostEnable')}</button>{' '}
+        <button type="button" disabled={hostBusy} onClick={() => setHostPrompt(false)}>{t('cancel')}</button>
+      </section> : <button type="button" disabled={hostBusy} onClick={() => {
+        if (activeHostMode.enabled) void setHostEnabled(false)
+        else setHostPrompt(true)
+      }}>{t(activeHostMode.enabled ? 'hostDisable' : 'hostManagement')}</button>}
+      {hostError && <p role="alert">{t('failed')}</p>}
+    </aside>}
+    {(proposal || outcome) && <dialog ref={dialog} aria-label={t('proposalTitle')} onCancel={event => {
     event.preventDefault()
     if (proposal) void settle(false)
     else setResult(undefined)
@@ -281,5 +332,6 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
       <button type="submit" disabled={busy}>{t('confirm')}</button>{' '}
       <button type="button" disabled={busy} onClick={() => void settle(false)}>{t('cancel')}</button>
     </form> : <button type="button" onClick={() => setResult(undefined)}>{t('cancel')}</button>}
-  </dialog>
+  </dialog>}
+  </>
 }

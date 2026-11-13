@@ -79,3 +79,7 @@ Third-party dependencies and their licenses are disclosed in [THIRD_PARTY_NOTICE
 VOS administrators can confirm a stop of an eligible old container by its full ID from a Full access (VOS operations) conversation. Refresh inventory to check the result before restarting the current app.
 
 For VOS operations, use the application ID from inventory for status or restart. A repair proposal awaits confirmation and reports `executed: false`. If a proposal already exists, HTTP 409 `confirmation-pending` includes its `action`, `id` and remaining `expiresIn` in seconds. Confirm or cancel in the conversation. An expired or consumed confirmation returns 409 `confirmation-unavailable`. A Docker ID sent to application status returns 400 `app-id-required`; use inventory for container state or logs for its output.
+
+### Host management
+
+A VOS system administrator opens a conversation, selects **Host management**, and confirms **Enable host management**. The Agent can then list host Docker containers, read their recent logs and propose starting, stopping, restarting or removing a container by full ID. Review each proposed target in the conversation before confirming. Removal requires a stopped container and preserves volumes. Select **Turn off host management** to end access early. The grant expires after 30 minutes and is checked against the administrator role and the VOS browser session on each call. See Settings → API documentation.

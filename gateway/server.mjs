@@ -2682,6 +2682,15 @@ const agentApiDependencies = {
   },
 };
 
+async function opsPermissions(subject, sessionId) {
+  const instance = liveInstance(subject);
+  if (!instance?.cookie) return undefined;
+  const projection = await callSessionController(
+    `http://${instanceAddress(instance.uid)}:${instance.port}`, instance.cookie, 'session/projections', { sessionId },
+  ).catch(() => undefined);
+  return projection?.kind === 'sequenced' ? projection.values?.permissions : undefined;
+}
+
 const handleVosOps = createVosOps({
   sessionFor: req => AUTH_DISABLED ? undefined : authenticate(req),
   async tokenFor(session) {
@@ -2689,13 +2698,12 @@ const handleVosOps = createVosOps({
     return record ? accessTokenFor(record.namespace) : undefined;
   },
   async agentSessionAllowed(subject, sessionId) {
-    const instance = liveInstance(subject);
-    if (!instance?.cookie) return false;
-    const projection = await callSessionController(
-      `http://${instanceAddress(instance.uid)}:${instance.port}`, instance.cookie, 'session/projections', { sessionId },
-    ).catch(() => undefined);
-    return projection?.kind === 'sequenced' && projection.values?.permissions?.currentValue === 'vos-full-access';
+    return (await opsPermissions(subject, sessionId))?.currentValue === 'vos-full-access';
   },
+  async sessionExists(subject, sessionId) {
+    return Boolean(await opsPermissions(subject, sessionId));
+  },
+  browserSessionActive: (sid, subject) => sessions.isActive(sid, subject),
   userinfoUrl,
   readBody: readJsonBody,
   respond: json,

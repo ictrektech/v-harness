@@ -22,6 +22,8 @@ function fixture() {
   const handle = createVosOps({
     sessionFor: () => ({ sid: state.sid, subject: 'test' }), tokenFor: () => 'test',
     agentSessionAllowed: async (_subject, id) => id === 'session-1' && state.sessionAllowed,
+    sessionExists: async (_subject, id) => ['session-1', 'session-2'].includes(id),
+    browserSessionActive: sid => sid === state.sid,
     userinfoUrl: () => 'http://example.test', readBody: async req => req.body, now: () => state.now, audit: () => {},
     respond: (res, status, body) => Object.assign(res, { status, body }),
     async platform(_token, path, body) {
@@ -163,4 +165,43 @@ test('stops an exact retired running container only after browser confirmation',
   state.containers[0].State = 'restarting';
   assert.equal((await confirm()).status, 200);
   assert.deepEqual(state.calls, [['POST', `/containers/${containerId}/stop?t=30`]]);
+});
+
+
+test('host mode requires an administrator and browser opt-in for one conversation', async () => {
+  const { send, state } = fixture();
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  const query = '?sessionId=session-1';
+  const enable = () => send('/host-mode' + query, { enabled: true });
+  const list = (as = agent) => send('/host-containers', null, undefined, {}, as);
+  state.containers[0].Names = ['/ordinary-host-container'];
+  state.sessionAllowed = false;
+  assert.equal((await list()).status, 403);
+  state.admin = false;
+  assert.equal((await enable()).status, 403);
+  state.admin = true;
+  assert.equal((await send('/host-mode', { enabled: true }, undefined, {}, agent)).status, 403);
+  assert.equal((await enable()).body.enabled, true);
+  assert.equal((await list()).body.containers[0].name, 'ordinary-host-container');
+  assert.equal((await list({ ...agent, sessionId: 'session-2' })).status, 403);
+  const propose = () => send('/proposal', { action: 'host-start', id: containerId }, undefined, {}, agent);
+  assert.equal((await propose()).body.executed, false);
+  assert.deepEqual(state.calls, []);
+  const { body: { proposal } } = await send('/proposal' + query);
+  state.sid = 'different-login';
+  const confirm = () => send('/confirm-proposal' + query, {
+    approved: true, targetId: containerId, confirmation: proposal.confirmation,
+  });
+  assert.equal((await confirm()).status, 403);
+  state.sid = 'a';
+  assert.equal((await confirm()).status, 200);
+  assert.deepEqual(state.calls, [['POST', `/containers/${containerId}/start`]]);
+  state.admin = false;
+  assert.equal((await list()).status, 403);
+  state.admin = true;
+  assert.equal((await send('/host-mode' + query, { enabled: false })).body.enabled, false);
+  assert.equal((await list()).status, 403);
+  assert.equal((await enable()).body.enabled, true);
+  state.now += 30 * 60 * 1000;
+  assert.equal((await list()).status, 403);
 });
