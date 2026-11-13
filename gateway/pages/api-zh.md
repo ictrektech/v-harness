@@ -83,7 +83,7 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 | GET /inventory | 无参数。返回 `apps`、`containers`、`publishedPorts`、`unusedImages`、`unreferencedTaggedImages` 五个数组，无结果时为空数组。 |
 | GET /status | 必填查询参数 `id` 为应用 ID，最多 128 字符，字母或数字开头，其余还可用点、下划线和连字符。返回 `appId`、`version`、`state`、`lastError` 和 `workflow`。 |
 | GET /logs | 必填查询参数 `id` 为 64 位小写十六进制完整容器 ID。返回 `id` 和 `text`，后者为最近最多 150 行 UTF-8 日志，含时间戳，原始响应上限 512 KiB。 |
-| POST /preview | 必填字符串 `action` 和 `id`。支持 `restart`（应用 ID）、`remove-container`（完整容器 ID）、`remove-image`（`sha256:` 加 64 位小写十六进制）。返回 `confirmation`（不透明字符串）、`expiresIn: 60`、`action`、`targetId`、`target`（相应清单条目）。每个授权同时只有一个预览。 |
+| POST /preview | 必填字符串 `action` 和 `id`。支持 `restart`（应用 ID）、`remove-container`（完整容器 ID）、`stop-container`（完整容器 ID）、`remove-image`（`sha256:` 加 64 位小写十六进制）。返回 `confirmation`（不透明字符串）、`expiresIn: 60`、`action`、`targetId`、`target`（相应清单条目）。每个授权同时只有一个预览。 |
 | POST /execute | 必填字符串 `confirmation` 和 `targetId`。核对具体对象后提交预览中的确认码和完整 ID。返回 `action`、`id` 和 `taskId`（重启任务 ID，清理时为 null）。受理重启后可重新查看应用状态。确认码单次使用，失败后应重新查看状态及预览。 |
 | GET /proposal | 查询参数 `sessionId` 为会话 ID。返回 `proposal`（无待确认操作为 null，否则包含 `action`、`targetId`、`target` 和 `confirmation`）。 |
 | POST /confirm-proposal | 查询参数 `sessionId`。请求体含 `confirmation`、布尔 `approved`，确认时还需 `targetId`。返回同 /execute，取消时返回 `cancelled: true`。 |
@@ -99,3 +99,5 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 内置工具 `vos_diagnostics` 支持 `inventory`、`status`、`logs`、`propose`。后三项需字符串 `id`，格式同表；`propose` 另需 `action`。返回诊断 JSON 文本，最长 49,152 字符。VOS 系统管理员选择 `vos-full-access` 即可使用。会话确认接口无需设置页授权头；`sessionId` 是当前租户的会话 ID，1–128 个字母、数字、下划线或连字符。每个会话最多一个待确认提议，120 秒有效，已有提议时返回 409 `confirmation-pending`。
 
 在 DS Bot 中打开「设置 → 模型」。「V-Scheduler」区可从现有目录选择默认模型，也可刷新列表。「自定义模型供应商」仅统计在 DS Bot 中添加的供应商，仍可点击「添加供应商」配置。Agent API 的模型接口保持原有契约。
+
+如果旧版 VOS 容器占用端口或持有 runner 文件锁，在会话中选择「完全访问（VOS 运维）」并让 Agent 检查应用。核对「停止旧版容器」提议，输入完整容器 ID 并确认。刷新清单后，可再请求重启当前应用或单独清理已退出的容器。停止操作保留容器及数据。`stoppable` 表示容器可识别、处于运行或重启中，所属应用已安装或停止，容器版本与当前安装版本不同，且所属应用不是 v-harness。停止前会重新校验当前安装版本和安装 ID。目标变化或不符合条件时返回 409 `target-changed`。

@@ -8,7 +8,7 @@ const APP_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/;
 const MAX_BYTES = 16 * 1024 * 1024;
-const ACTIONS = new Set(['restart', 'remove-container', 'remove-image']);
+const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image']);
 
 class OpsError extends Error {
   constructor(status, code) {
@@ -24,13 +24,13 @@ const bounded = (value, size = 2000) => typeof value === 'string' ? value.slice(
 function engine(method, path, limit = MAX_BYTES) {
   return new Promise((resolve, reject) => {
     const requestOptions = { method, path, socketPath: process.env.VH_DOCKER_SOCK ?? '/var/run/docker.sock',
-      signal: AbortSignal.timeout(8000) };
+      signal: AbortSignal.timeout(method === 'POST' ? 35000 : 8000) };
     const req = request(requestOptions, res => {
       const status = res.statusCode;
       if (status < 200 || status >= 300) {
         res.resume();
-        reject(new OpsError(status === 404 ? 404 : status === 409 ? 409 : 502,
-          status === 404 ? 'not-found' : status === 409 ? 'target-changed' : 'docker-unavailable'));
+        reject(new OpsError(status === 404 ? 404 : [304, 409].includes(status) ? 409 : 502,
+          status === 404 ? 'not-found' : [304, 409].includes(status) ? 'target-changed' : 'docker-unavailable'));
         return;
       }
       const chunks = [];
@@ -88,14 +88,15 @@ function mainStack(container) {
 function summarizeContainer(c, apps) {
   const stack = mainStack(c);
   const app = stack ? apps.find(a => a.appId === stack.appId) : undefined;
+  const retired = Boolean(app && ['installed', 'stopped'].includes(app.state) && app.version !== stack.version);
   return {
     id: c.Id, name: bounded(c.Names?.[0]?.replace(/^\//, ''), 200), image: bounded(c.Image, 300),
     imageId: c.ImageID, state: bounded(c.State, 40), status: bounded(c.Status, 300), stack,
     ports: (c.Ports ?? []).filter(p => p.PublicPort).map(p => ({
       hostPort: p.PublicPort, containerPort: p.PrivatePort, protocol: p.Type, address: p.IP ?? '',
     })),
-    cleanup: Boolean(app && ['installed', 'stopped'].includes(app.state) && app.version !== stack.version
-      && c.State === 'exited'),
+    stoppable: retired && stack.appId !== 'com.ictrek.v-harness' && ['running', 'restarting'].includes(c.State),
+    cleanup: retired && c.State === 'exited',
   };
 }
 
@@ -147,11 +148,17 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       if (!a || a.state !== 'installed' || id === 'com.ictrek.v-harness') throw stale();
       return a;
     }
-    if (action === 'remove-container' && CONTAINER_ID.test(id)) {
+    if (['stop-container', 'remove-container'].includes(action) && CONTAINER_ID.test(id)) {
       const apps = await inventory(token, base);
       const containers = await daemon('/containers/json?all=1');
       const c = containers.find(c => c.Id === id);
       const item = c && summarizeContainer(c, apps);
+      if (action === 'stop-container') {
+        if (!item?.stoppable) throw stale();
+        const app = apps.find(a => a.appId === item.stack.appId);
+        return { id: item.id, name: item.name, image: item.image, imageId: item.imageId, stack: item.stack,
+          ports: item.ports, installedVersion: app.version, installationId: app.installationId };
+      }
       if (!item?.cleanup || item.stack.appId === 'com.ictrek.v-harness') throw stale();
       return item;
     }
@@ -166,15 +173,18 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
 
   async function execute(pending, token, base, session, stillAllowed, res) {
     const { action, id, item } = pending;
-    const current = await target(action, id, token, base);
     const latestPermissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
     if (latestPermissions.is_super_admin !== true) throw denied();
-    if (JSON.stringify(current) !== JSON.stringify(item) || !await stillAllowed()) throw stale();
+    if (!await stillAllowed()) throw stale();
+    const current = await target(action, id, token, base);
+    if (JSON.stringify(current) !== JSON.stringify(item)) throw stale();
     audit('VOS ops attempt', JSON.stringify({ subject: session.subject, action, id }));
     let taskId = null;
     if (action === 'restart') {
       const task = await platform(token, '/v1000/app/restart_async', { app_id: id }, base);
       taskId = task.task_id;
+    } else if (action === 'stop-container') {
+      await daemonCall('POST', `/containers/${id}/stop?t=30`);
     } else if (action === 'remove-container') {
       await daemonCall('DELETE', `/containers/${id}?force=0&v=0`);
     } else {

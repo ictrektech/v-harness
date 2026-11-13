@@ -16,7 +16,7 @@ const container = {
 };
 
 function fixture() {
-  const state = { admin: true, sessionAllowed: true, sid: 'a', now: 1, containers: [{ ...container }], images: [
+  const state = { admin: true, sessionAllowed: true, sid: 'a', installedVersion: '2.0', now: 1, containers: [{ ...container }], images: [
     { Id: imageId, RepoTags: [], RepoDigests: [], Created: 1, Size: 100 },
   ], calls: [] };
   const handle = createVosOps({
@@ -27,7 +27,7 @@ function fixture() {
     async platform(_token, path, body) {
       if (path === '/v1000/rbac/permission/my') return { is_super_admin: state.admin };
       if (path === '/v1000/app/list') return { total: 1, data: [{
-        app_id: appId, installed_app_id: 'installation', version: '2.0', state: 'installed',
+        app_id: appId, installed_app_id: 'installation', version: state.installedVersion, state: 'installed',
       }] };
       state.calls.push([path, body]);
       return { task_id: 'task' };
@@ -130,4 +130,30 @@ test('Full access diagnoses directly and only a browser may confirm its specific
   assert.deepEqual(state.calls, [['/v1000/app/restart_async', { app_id: appId }]]);
   state.sessionAllowed = false;
   assert.equal((await read()).status, 403);
+});
+
+
+test('stops an exact retired running container only after browser confirmation', async () => {
+  const { send, state } = fixture();
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  const query = '?sessionId=session-1';
+  const propose = () => send('/proposal', { action: 'stop-container', id: containerId }, undefined, {}, agent);
+  const confirm = async () => {
+    const { body: { proposal } } = await send('/proposal' + query);
+    return send('/confirm-proposal' + query, {
+      confirmation: proposal.confirmation, targetId: containerId, approved: true,
+    });
+  };
+  assert.equal((await propose()).status, 409);
+  state.containers[0].State = 'running';
+  assert.equal((await propose()).status, 200);
+  assert.deepEqual(state.calls, []);
+  state.installedVersion = '1.0';
+  assert.equal((await confirm()).status, 409);
+  assert.deepEqual(state.calls, []);
+  state.installedVersion = '2.0';
+  assert.equal((await propose()).status, 200);
+  state.containers[0].State = 'restarting';
+  assert.equal((await confirm()).status, 200);
+  assert.deepEqual(state.calls, [['POST', `/containers/${containerId}/stop?t=30`]]);
 });

@@ -105,3 +105,5 @@ None; this package neither assembles nor sends a provider request.
 Run `npx vitest run packages/host/vh-capabilities` for this package. The gateway-side contract and dual-track cases live in `gateway/capability-contract.test.mjs` and run with `node --test gateway/*.test.mjs`.
 
 </details>
+
+VOS administrators can confirm a stop of an eligible old container by its full ID from a Full access (VOS operations) conversation. Refresh inventory to check the result before restarting the current app.

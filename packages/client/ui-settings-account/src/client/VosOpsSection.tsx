@@ -6,7 +6,7 @@ const en = {
   authorize: 'Authorize diagnostics', refresh: 'Refresh inventory', busy: 'Working…',
   applications: 'Installed applications', containers: 'VOS application containers', ports: 'Published Docker ports',
   images: 'Unused untagged images', none: 'None found', logs: 'Read recent logs',
-  restart: 'Restart application', removeContainer: 'Remove stopped old container', removeImage: 'Remove untagged image',
+  restart: 'Restart application', stopContainer: 'Stop old container', removeContainer: 'Remove stopped old container', removeImage: 'Remove untagged image',
   confirm: 'Confirm this operation', cancel: 'Cancel', confirmation: 'Check the exact target below. This confirmation expires in 60 seconds.',
   accepted: 'Operation accepted. Refresh the inventory to check progress.',
   failed: 'The request failed. Refresh the inventory or authorize again if the session expired.',
@@ -21,7 +21,7 @@ const zh: Record<keyof typeof en, string> = {
   authorize: '授权诊断', refresh: '刷新清单', busy: '正在处理…',
   applications: '已安装应用', containers: 'VOS 应用容器', ports: 'Docker 发布端口',
   images: '无标签且未使用的镜像', none: '未发现', logs: '查看近期日志',
-  restart: '重启应用', removeContainer: '删除已退出的旧版容器', removeImage: '删除无标签镜像',
+  restart: '重启应用', stopContainer: '停止旧版容器', removeContainer: '删除已退出的旧版容器', removeImage: '删除无标签镜像',
   confirm: '确认执行', cancel: '取消', confirmation: '请核对下面的具体对象。此次确认 60 秒后失效。',
   accepted: '操作已受理。刷新清单查看进度。',
   failed: '请求失败。请刷新清单；若授权已过期，请重新授权。',
@@ -35,10 +35,10 @@ const zh: Record<keyof typeof en, string> = {
 export const vosOpsEn = en
 export const vosOpsZh = zh
 export type VosOpsKey = keyof typeof en
-type Action = 'restart' | 'remove-container' | 'remove-image'
+type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image'
 type Inventory = {
   apps: { appId: string; version: string; state: string; lastError: string }[]
-  containers: { id: string; name: string; image: string; state: string; status: string; cleanup: boolean;
+  containers: { id: string; name: string; image: string; state: string; status: string; cleanup: boolean; stoppable: boolean;
     stack: { appId: string; version: string; project: string } }[]
   publishedPorts: { hostPort: number; containerPort: number; protocol: string; address: string; container: string; appId: string | null }[]
   unusedImages: { id: string; created: number; bytes: number }[]
@@ -47,6 +47,7 @@ type Inventory = {
 type Preview = { action: Action; confirmation: string; targetId: string; target: unknown }
 
 function actionLabel(action: Action): VosOpsKey {
+  if (action === 'stop-container') return 'stopContainer'
   return action === 'restart' ? 'restart' : action === 'remove-container' ? 'removeContainer' : 'removeImage'
 }
 
@@ -171,6 +172,7 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
         {button('logs', () => run(async () => {
           setLog(await request<{ id: string; text: string }>('logs?id=' + container.id, grant))
         }))}{' '}
+        {container.stoppable && button('stopContainer', () => prepare('stop-container', container.id))}
         {container.cleanup && container.stack.appId !== 'com.ictrek.v-harness' &&
           button('removeContainer', () => prepare('remove-container', container.id))}
       </li>)}</ul>
