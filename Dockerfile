@@ -176,7 +176,10 @@ RUN set -eu; for spec in \
 # Hoisted layout matches the paths used by the gateway and the tenant jail.
 FROM plugins AS dsh-runtime
 COPY docs/ docs/
+COPY gateway/prepare-vos-runtime.ts gateway/prepare-vos-runtime.ts
 RUN pnpm exec tsx scripts/stage-dsh-docs.ts \
+ && pnpm exec tsx gateway/prepare-vos-runtime.ts \
+ && pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile \
  && pnpm --filter @deepseek-ai/dsh deploy --prod \
       --config.allow-unused-patches=true \
       --config.node-linker=hoisted \
