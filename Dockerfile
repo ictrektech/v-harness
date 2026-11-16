@@ -29,6 +29,7 @@ ARG BASE_IMAGE=node:24-bookworm-slim
 FROM ${BASE_IMAGE} AS plugins
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG APT_MIRROR=mirrors.huaweicloud.com
 
 ENV npm_config_registry=${NPM_REGISTRY} COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
 WORKDIR /build
@@ -115,6 +116,14 @@ RUN pnpm exec tsc -b packages/client/locale/tsconfig.json \
 # Managed VOS model discovery and settings use local Host and Client builds.
 # These land in the same /build/plugins tree the runtime stage copies, so the
 # overlay loop below finds every package it names.
+RUN if [ -n "${APT_MIRROR}" ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends build-essential python3 musl-tools \
+ && rm -rf /var/lib/apt/lists/* \
+ && pnpm exec tsx native/system/scripts/build.ts
+
 RUN pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries \
  && pnpm exec tsc -b packages/client/ui-settings-models/tsconfig.json \
  && pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle \
@@ -163,6 +172,20 @@ RUN set -eu; for spec in \
       cp -R "packages/$source/package.json" "packages/$source/lib" "/build/plugins/$name/"; \
     done
 
+# Deploy the CLI and its locked production dependencies from the built workspace.
+# Hoisted layout matches the paths used by the gateway and the tenant jail.
+FROM plugins AS dsh-runtime
+COPY docs/ docs/
+RUN pnpm exec tsx scripts/stage-dsh-docs.ts \
+ && pnpm --filter @deepseek-ai/dsh deploy --prod \
+      --config.allow-unused-patches=true \
+      --config.node-linker=hoisted \
+      --config.link-workspace-packages=true \
+      --config.hoist-workspace-packages=false \
+      --config.pnpmfile=/build/scripts/python-runtime-deploy.pnpmfile.mjs \
+      /build/dsh-runtime \
+ && node /build/dsh-runtime/lib/bin.js --version
+
 # ============================================================
 # Stage: agent-side tool plugins built from this repository
 # ============================================================
@@ -193,7 +216,7 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
 # copied only when a profile has no copy yet — the same rule that keeps a
 # published package from being shadowed by this payload. Peers are not
 # installed: dsh supplies them from the installation at runtime.
-ARG DSMARKET_VERSION=1.73.19
+ARG DSMARKET_VERSION=1.73.20
 ARG DS_BOT_VERSION=0.3.6
 # The IM bridge (WeCom/Feishu/DingTalk/QQ/Telegram/...), a third-party registry
 # package that ships to every tenant like the market and the bot. Its runtime
@@ -201,8 +224,8 @@ ARG DS_BOT_VERSION=0.3.6
 ARG DSH_IM_VERSION=5.10.0
 # The MCP connection manager (authorization, tool governance, diagnostics),
 # also a registry package that ships to every tenant.
-ARG DSH_MCP_CONNECTOR_VERSION=0.2.102
-ARG DSH_MEDIA_DESK_VERSION=2.7.1
+ARG DSH_MCP_CONNECTOR_VERSION=0.2.109
+ARG DSH_MEDIA_DESK_VERSION=2.7.2
 # The connector registers its sidebar row with a label *function*, which the
 # surface re-evaluates on every projection, so that one row repaints whenever
 # the plugin's store moves — every other plugin registers a string and stays
@@ -226,8 +249,6 @@ RUN mkdir -p /tmp/registry-plugins \
 # ============================================================
 FROM ${BASE_IMAGE}
 
-# Media Desk requires DSH 0.2.1-rc.5 or newer.
-ARG DSH_VERSION=0.2.2-rc.2
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # Build hosts behind a restricted network cannot reach deb.debian.org; the
 # mirror is overridable, and an empty value keeps the image's own sources.
@@ -307,10 +328,9 @@ RUN set -eu; \
     rm -rf /tmp/compose /tmp/compose.deb
 
 # pnpm is needed the first time a user's profile installs its bundles.
+COPY --from=dsh-runtime /build/dsh-runtime/ /usr/local/lib/node_modules/@deepseek-ai/dsh/
 RUN corepack enable \
- && npm config set registry "${NPM_REGISTRY}" \
- && npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" \
- && npm cache clean --force
+ && ln -s ../lib/node_modules/@deepseek-ai/dsh/lib/bin.js /usr/local/bin/dsh
 
 COPY gateway/ /opt/v-harness/gateway/
 COPY gateway/vos.patch.yml /usr/local/share/v-harness/vos.patch.yml

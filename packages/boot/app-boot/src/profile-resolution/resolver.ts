@@ -12,6 +12,10 @@ import type { RuntimeResolutionEntry, RuntimeResolution } from '../profile.ts'
 const WORKER_RESOLUTION_KEY = '@deepseek-ai/dsh-app-boot/profile-resolution'
 const EMPTY_ATTRIBUTES: ImportAttributes = Object.freeze({})
 
+function usesInstallationStorage(name: string): boolean {
+  return name === '@deepseek-ai/dsh-storage-domain' && process.env.VH_USE_INSTALL_STORAGE_DOMAIN === '1'
+}
+
 interface CommonJsParent {
   filename?: string | null
   parent?: CommonJsParent | null
@@ -583,9 +587,18 @@ class ResolutionRouter {
       return state
     }
 
+    const target = resolution.entries.get(name)
+    if (usesInstallationStorage(name) && target?.scope === 'installation') {
+      // VOS has one workspace and session storage service per tenant process.
+      // A bundled plugin's older copy cannot provide the same service identity.
+      const after = layer.kind === 'profile' ? layer.after : target.declarer
+      const state: ResolutionRouteState = { route: { kind: 'interception', entry: target, after } }
+      if (memo) requests.set(request, state)
+      return state
+    }
+
     if (layer.kind === 'linked') return this.routeLinked(request, name, parent, resolution, flavor, cjs)
 
-    const target = resolution.entries.get(name)
     const candidates: string[] = []
     const localSearchPaths: string[] = []
     for (const searchPath of createRequire(parent).resolve.paths(name) as string[]) {
@@ -679,7 +692,8 @@ class ResolutionRouter {
   ): ResolutionRouteState | undefined {
     const name = barePackageName(request)
     const { layer } = parentRoutes
-    if (name === undefined || layer.kind !== 'profile' || !layer.active || !resolution.localPackageNames.has(name)) return undefined
+    if (name === undefined || layer.kind !== 'profile' || !layer.active || !resolution.localPackageNames.has(name)
+      || (usesInstallationStorage(name) && resolution.entries.get(name)?.scope === 'installation')) return undefined
     const state = { route: { kind: 'native' as const } }
     parentRoutes.requests.set(request, state)
     return state

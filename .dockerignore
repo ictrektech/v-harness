@@ -40,6 +40,8 @@ gateway/*.test.mjs
 !apps/**
 !benchmarks/
 !benchmarks/**
+!docs/
+!docs/**
 !website/
 !website/**
 !python/

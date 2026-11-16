@@ -746,6 +746,7 @@ async function launch(options) {
       DSH_HOME: `${jailHome}/.dsh`,
       DSH_AGENTS_HOME: `${jailHome}/.agents`,
       DSH_PERMISSION_MODE: 'workspace-write',
+      VH_USE_INSTALL_STORAGE_DOMAIN: '1',
       // vh-jail allow-lists the gateway port on the shared loopback so the
       // instance can call back (scheduler, model proxying) under the strict
       // per-tenant 127/8 policy it installs.
