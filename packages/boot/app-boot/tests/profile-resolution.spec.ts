@@ -227,6 +227,30 @@ function lookupWinner(matrixCase: LookupCase): LookupLayer | 'interception' | 'm
 }
 
 describe('runtime resolution', { concurrent: false }, () => {
+  it.each([false, true])('keeps the VOS storage service identity with old plugin dependencies (enabled=%s)', async enabled => {
+    const previous = process.env.VH_USE_INSTALL_STORAGE_DOMAIN
+    if (enabled) process.env.VH_USE_INSTALL_STORAGE_DOMAIN = '1'
+    else delete process.env.VH_USE_INSTALL_STORAGE_DOMAIN
+    try {
+      const name = '@deepseek-ai/dsh-storage-domain'
+      const f = fixture(name)
+      const plugin = join(f.profile.dir, 'node_modules', 'test-plugin')
+      pkg(plugin, 'test-plugin', 0, { [name]: '*' })
+      pkg(join(plugin, 'node_modules', name), name, 2)
+      pkg(join(f.profile.dir, 'node_modules', name), name, 3)
+      registrations.push(installRuntimeInterception(await resolutionOf(f)))
+      const expected = enabled ? 1 : 2
+      expect(createRequire(join(plugin, 'entry.cjs'))(name)).toEqual({ marker: expected })
+      expect(await importFrom(name, pathToFileURL(join(plugin, 'entry.mjs')).href))
+        .toMatchObject({ marker: expected })
+      expect(await importFrom(name, pathToFileURL(join(f.profile.dir, 'entry.mjs')).href))
+        .toMatchObject({ marker: enabled ? 1 : 3 })
+    } finally {
+      if (previous === undefined) delete process.env.VH_USE_INSTALL_STORAGE_DOMAIN
+      else process.env.VH_USE_INSTALL_STORAGE_DOMAIN = previous
+    }
+  })
+
   it('computes an immutable runtime resolution without writing profile packages', async () => {
     const f = fixture()
     const resolution = await resolutionOf(f)

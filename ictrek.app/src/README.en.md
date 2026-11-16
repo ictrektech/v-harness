@@ -56,3 +56,9 @@ A VOS system administrator opens a conversation, selects **Host management**, an
 ### Batch cleanup
 
 Ask the Agent to collect all cleanup targets in one proposal. The confirmation window follows the VOS interface language and lists every target. Select **Confirm this operation** or **Skip** once for the batch. The result shows which objects were removed. VOS operations accepts recognized retired containers in `created` or `exited` state. The API reference describes batch limits and errors.
+
+## Framework and plugin upgrades
+
+This VOS release uses DSH 0.2.2-rc.3 built from the merged fork source, with dshmarket 1.73.20, DS Bot 0.3.6, IM 5.10.0, MCP Connector 0.2.109 and Media Desk 2.7.2. Existing plugin activation and custom settings stay per user.
+
+The tenant runtime uses its installation-owned storage service when a plugin carries an older storage module. This keeps workspace and session services on the same module identity. Session files and workspace membership stay in the persistent user directory. If history is missing after an upgrade, inspect startup errors before changing any session files. The Agent API routes and authentication contract remain unchanged.
