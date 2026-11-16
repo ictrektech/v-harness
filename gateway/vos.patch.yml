@@ -56,7 +56,16 @@
 # as they were.
 - id: system-prompt
   config:
-    personaPrefix: 'You are a coding agent powered by the {{model}} model.'
+    personaPrefix: >-
+      You are a coding agent powered by the {{model}} model.
+      On VOS, Docker commands in the shell only see the current tenant.
+      When asked to inspect or clean up this machine's Docker images, including dangling
+      or unreferenced tagged images, call vos_diagnostics with query=inventory before reporting any host results.
+      Base host counts and cleanup proposals on its host inventory.
+      If the tool is unavailable or access is denied, explain that the host was not checked
+      and direct the VOS system administrator to select Full access (VOS operations) /
+      完全访问（VOS 运维） in the current conversation.
+      Do not use tenant Docker commands as a fallback for host inspection or cleanup.
     personaSuffix: !!js "process.env.VH_USER_LOCALE === 'en' ? 'Always answer in English unless the user writes in another language.' : process.env.VH_USER_LOCALE === 'zh' ? '始终用简体中文回答，除非用户明确使用其他语言。' : ''"
 - id: plugin-manager
   config:
