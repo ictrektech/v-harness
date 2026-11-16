@@ -233,10 +233,13 @@ ARG DSH_MEDIA_DESK_VERSION=2.7.2
 # bundle patch is what sets `true`, so a profile-level override loses to it.
 # The replacement is asserted, because a version bump that renames the key must
 # fail the build rather than silently bring the row back.
-RUN mkdir -p /tmp/registry-plugins \
- && npm install --prefix /tmp/registry-plugins --no-save --ignore-scripts --legacy-peer-deps \
+RUN set -eu; \
+    mkdir -p /tmp/registry-plugins; \
+    set -- --no-save --ignore-scripts --legacy-peer-deps \
       "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" "@xmanrui/dsh-im@${DSH_IM_VERSION}" \
-      "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" "dsh-media-desk@${DSH_MEDIA_DESK_VERSION}" \
+      "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" "dsh-media-desk@${DSH_MEDIA_DESK_VERSION}"; \
+    (npm install --prefix /tmp/registry-plugins "$@" || \
+      npm install --prefix /tmp/registry-plugins --registry=https://registry.npmjs.org "$@") \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
