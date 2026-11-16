@@ -321,11 +321,11 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
 # docker-ce-cli beside the distro's docker.io. /usr/libexec/docker/cli-plugins is
 # one of the directories the CLI scans for plugins, and the jail exports /usr.
 ARG COMPOSE_VERSION=5.7.0
-ARG COMPOSE_MIRROR=https://mirrors.aliyun.com/docker-ce
+ARG COMPOSE_MIRROR=https://mirrors.huaweicloud.com/docker-ce
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     deb="docker-compose-plugin_${COMPOSE_VERSION}-1~debian.12~bookworm_${arch}.deb"; \
-    curl -fsSL -o /tmp/compose.deb "${COMPOSE_MIRROR}/linux/debian/dists/bookworm/pool/stable/${arch}/${deb}"; \
+    curl -fsSL --connect-timeout 10 --max-time 120 -o /tmp/compose.deb "${COMPOSE_MIRROR}/linux/debian/dists/bookworm/pool/stable/${arch}/${deb}"; \
     dpkg-deb -x /tmp/compose.deb /tmp/compose; \
     install -D -m 0755 /tmp/compose/usr/libexec/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose; \
     rm -rf /tmp/compose /tmp/compose.deb
