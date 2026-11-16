@@ -119,3 +119,7 @@ The composer shows the VOS operations permission label in the current interface 
 ### Batch cleanup contract
 
 For `remove-container`, `host-remove` or `remove-image`, the Agent can send `ids` with 1–20 distinct full IDs of the same target type in place of `id`. A proposal and a 409 `confirmation-pending` return `ids` in input order. `GET /proposal` returns `targetIds` and `targets` for the batch. Approval supplies the exact ordered `targetIds` in `POST /confirm-proposal`. A mismatch returns 400. Skip sends `approved:false` and the confirmation token. All targets are revalidated before deletion. A stale or ineligible target returns 409 before any deletion starts. The successful HTTP response returns `action` and ordered `results` with `id`, boolean `removed`, and `error` for failures. Volumes are preserved.
+
+## Built-in skills from a session
+
+Archify, Mnemon, PPT Design Skill and Vox Director are available to the Agent through the existing session prompt workflow. Generated files are written to the user's workspace. Mnemon stores facts under the user's persistent home directory, and Atlas Cloud video generation uses a user-provided credential. Submit a task with `POST /sessions/{sessionId}/prompts` and read its progress with `GET /sessions/{sessionId}/events`. The session API contract is unchanged.

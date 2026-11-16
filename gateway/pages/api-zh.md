@@ -119,3 +119,7 @@ VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开�
 ### 批量清理接口
 
 `remove-container`、`host-remove` 或 `remove-image` 可用 `ids` 替代 `id`，提交 1–20 个同类型、不重复的完整 ID。新提议及 409 `confirmation-pending` 按输入顺序返回 `ids`。`GET /proposal` 返回 `targetIds` 和 `targets`。批准时向 `POST /confirm-proposal` 提交同顺序的 `targetIds`，不匹配返回 400。跳过时提交 `approved:false` 和确认令牌。删除前重新校验所有目标，目标变化或不符合条件时返回 409，整批均不执行。成功响应包含 `action` 和按顺序排列的 `results`，每项包含 `id`、布尔值 `removed`，失败项还包含 `error`。保留数据卷。
+
+## 在会话中使用内置技能
+
+Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。生成文件写入用户工作区，Mnemon 将记忆存放在当前用户的持久目录里，Atlas Cloud 视频生成需要用户配置密钥。使用 `POST /sessions/{sessionId}/prompts` 提交任务，通过 `GET /sessions/{sessionId}/events` 查看进度。会话 API 约定保持现状。

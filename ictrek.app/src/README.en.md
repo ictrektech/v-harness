@@ -62,3 +62,14 @@ Ask the Agent to collect all cleanup targets in one proposal. The confirmation w
 This VOS release uses DSH 0.2.2-rc.3 built from the merged fork source, with dshmarket 1.73.20, DS Bot 0.3.6, IM 5.10.0, MCP Connector 0.2.109 and Media Desk 2.7.2. Existing plugin activation and custom settings stay per user.
 
 The tenant runtime uses its installation-owned storage service when a plugin carries an older storage module. This keeps workspace and session services on the same module identity. Session files and workspace membership stay in the persistent user directory. If history is missing after an upgrade, inspect startup errors before changing any session files. The Agent API routes and authentication contract remain unchanged.
+
+## Built-in skills
+
+Type a skill name such as `/archify` in a conversation, or describe the task. The skills and their runtimes are included in the image.
+
+- **Archify** produces interactive, standalone HTML diagrams. Keep the source JSON alongside the HTML in the workspace so you can revise the diagram later.
+- **Mnemon** stores and recalls preferences, decisions, and project facts across sessions in your VOS user's home directory. Ask v-harness to remember or forget a specific fact. Mnemon uses its local CLI and needs no cloud credential.
+- **PPT Design Skill** creates native, editable PowerPoint files and renders previews through LibreOffice. It accepts local images and can use Image Studio or a configured image provider.
+- **Vox Director** assembles narrated paper-collage videos with ffmpeg. Atlas Cloud generation requires a user-configured `ATLASCLOUD_API_KEY` and uses that account's quota. Local assembly can render prepared clips, voice-over, music, and captions.
+
+Find agent API authentication and session operations under **Settings → API documentation**. The new skills use the existing session interface.
