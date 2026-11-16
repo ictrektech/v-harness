@@ -1,7 +1,9 @@
 // VOS operations. The Agent transport is read-only; writes require browser
 // confirmation. No route accepts caller-supplied Docker API paths. Host
 // management reaches only containers of VOS application stacks, never the
-// database, model or unrelated containers that share the host.
+// database, model or unrelated containers that share the host. Log reads are
+// windowed and filtered server-side; /diagnose answers inspect facts plus an
+// error-line summary instead of raw logs.
 import { randomBytes } from 'node:crypto';
 import { request } from 'node:http';
 import { hostname } from 'node:os';
@@ -20,6 +22,25 @@ const HOST_ACTIONS = new Map([
 const CLEANUP_ACTIONS = new Set(['remove-container', 'host-remove', 'remove-image']);
 const MAX_CLEANUP_TARGETS = 20;
 const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image']);
+const LOG_QUERY = 'stdout=1&stderr=1&timestamps=1&tail=';
+const LOG_DEFAULT_TAIL = 150;
+const LOG_SCAN_TAIL = 1000;
+const LOG_MAX_RECORDS = 300;
+const LOG_MAX_CONTEXT = 50;
+const LOG_BYTES = 1024 * 1024;
+const LOG_TS = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) /;
+const LOG_RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+// Cursor values echo a Docker stamp, so only the Z form is accepted and padded
+// comparisons stay valid across RFC3339Nano's trimmed trailing zeros.
+const LOG_CURSOR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const LOG_SPAN = /^(\d{1,8})(ms|s|m|h|d)$/;
+const LOG_SPAN_MS = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 };
+const PATTERN_MAX = 200;
+const DIAGNOSE_TAIL = 2000;
+const DIAGNOSE_ERROR_GROUPS = 40;
+const DIAGNOSE_ERROR_SAMPLE = 300;
+const DIAGNOSE_HEALTH_OUTPUT = 500;
+const ERROR_LINE = /\b(?:error|fatal|panic|exception|traceback|failed|failure)\b/i;
 
 class OpsError extends Error {
   constructor(status, code) {
@@ -156,6 +177,177 @@ function logText(data) {
   return lines.join('');
 }
 
+/**
+ * Docker timestamps mark log frames; a frame may carry several lines and only
+ * its first line is stamped. Continuation lines fold into the previous record
+ * so stack traces stay whole for filtering and context.
+ */
+function logRecords(data) {
+  const records = [];
+  let current = null;
+  for (const line of logText(data).replace(/\n$/, '').split('\n')) {
+    const match = LOG_TS.exec(line);
+    if (match) {
+      current = { ts: match[1], text: line.slice(match[1].length + 1) };
+      records.push(current);
+    } else if (current) current.text += '\n' + line;
+    else if (line) {
+      current = { ts: null, text: line };
+      records.push(current);
+    }
+  }
+  return records;
+}
+
+function logSince(value, nowMs, code) {
+  if (value === null) return null;
+  if (LOG_RFC3339.test(value) && !Number.isNaN(Date.parse(value))) {
+    return { docker: value, ms: Date.parse(value) };
+  }
+  const span = LOG_SPAN.exec(value);
+  if (span) {
+    const ms = nowMs - Number(span[1]) * LOG_SPAN_MS[span[2]];
+    return { docker: new Date(ms).toISOString(), ms };
+  }
+  throw new OpsError(400, code);
+}
+
+const logNano = ts => ts.replace(/(?:\.(\d+))?Z$/, (_, frac = '') => '.' + frac.padEnd(9, '0') + 'Z');
+
+/**
+ * Parses the shared log query: since/until (RFC 3339 or a span like 30m),
+ * after (a Z-form RFC 3339 polling cursor), pattern (case-insensitive) and
+ * context (records around each match). The cursor and time bounds go to Docker
+ * as since/until; the cursor is exclusive by stamp so polling resumes exactly
+ * after the last record already seen. With any of them the Docker-side scan
+ * window widens from the default tail.
+ */
+function logFilter(url, nowMs) {
+  const since = logSince(url.searchParams.get('since'), nowMs, 'invalid-since');
+  const until = logSince(url.searchParams.get('until'), nowMs, 'invalid-until');
+  if (since && until && until.ms < since.ms) throw new OpsError(400, 'invalid-since');
+  let after = null;
+  const raw = url.searchParams.get('after');
+  if (raw !== null) {
+    if (raw.length > 40 || !LOG_CURSOR.test(raw) || Number.isNaN(Date.parse(raw))) {
+      throw new OpsError(400, 'invalid-after');
+    }
+    after = raw;
+  }
+  if (after && since) throw new OpsError(400, 'invalid-after');
+  if (after && until && until.ms < Date.parse(after)) throw new OpsError(400, 'invalid-after');
+  let pattern = null;
+  const patternRaw = url.searchParams.get('pattern');
+  if (patternRaw !== null) {
+    if (patternRaw.length < 1 || patternRaw.length > PATTERN_MAX) throw new OpsError(400, 'invalid-pattern');
+    try { pattern = new RegExp(patternRaw, 'i'); } catch { throw new OpsError(400, 'invalid-pattern'); }
+  }
+  let context = 0;
+  if (url.searchParams.has('context')) {
+    context = Number(url.searchParams.get('context'));
+    if (!Number.isInteger(context) || context < 0 || context > LOG_MAX_CONTEXT) throw new OpsError(400, 'invalid-context');
+  }
+  const lower = since ?? (after ? { docker: after } : null);
+  const query = LOG_QUERY + (lower || until || pattern ? LOG_SCAN_TAIL : LOG_DEFAULT_TAIL) +
+    (lower ? '&since=' + encodeURIComponent(lower.docker) : '') +
+    (until ? '&until=' + encodeURIComponent(until.docker) : '');
+  return { since, until, after, cursor: after === null ? null : logNano(after), pattern, context, query };
+}
+
+/**
+ * Applies the parsed filter to parsed records. Time filtering only drops
+ * records with a parsable stamp, so unlabeled frames stay visible. The after
+ * cursor is exclusive by padded stamp, so records at or before the cursor are
+ * dropped even when Docker's since is inclusive at the boundary. Context
+ * windows never cross the since/until boundary. Beyond LOG_MAX_RECORDS the
+ * earliest records are returned and `truncated` reports the remainder.
+ */
+function filterRecords(records, filter) {
+  const window = [];
+  records.forEach((record, index) => {
+    const ts = record.ts === null ? null : Date.parse(record.ts);
+    if (filter.cursor !== null && record.ts !== null && logNano(record.ts) <= filter.cursor) return;
+    if (ts !== null && !Number.isNaN(ts)) {
+      if (filter.since && ts < filter.since.ms) return;
+      if (filter.until && ts > filter.until.ms) return;
+    }
+    window.push(index);
+  });
+  const windowSet = new Set(window);
+  const picked = new Set();
+  for (const index of window) {
+    if (filter.pattern === null || filter.pattern.test(records[index].text)) picked.add(index);
+  }
+  if (filter.pattern !== null && filter.context > 0) {
+    for (const index of [...picked]) {
+      for (let offset = index - filter.context; offset <= index + filter.context; offset++) {
+        if (windowSet.has(offset)) picked.add(offset);
+      }
+    }
+  }
+  const selected = [...picked].sort((a, b) => a - b).map(index => records[index]);
+  const truncated = selected.length > LOG_MAX_RECORDS;
+  return { records: truncated ? selected.slice(0, LOG_MAX_RECORDS) : selected,
+    truncated, scanned: records.length, window: window.length };
+}
+
+function logsPayload(id, result, filter) {
+  const text = result.records.map(record => (record.ts ? record.ts + ' ' : '') + record.text).join('\n');
+  const stamped = result.records.filter(record => record.ts !== null);
+  // Polling resumes from the last returned stamp; without new records the
+  // cursor stays where the caller left it so the next poll retries the gap.
+  const next = stamped.at(-1)?.ts ?? filter.after ?? null;
+  return { id, text, truncated: result.truncated, scanned: result.scanned,
+    returned: result.records.length, first: stamped[0]?.ts ?? null, last: stamped.at(-1)?.ts ?? null, next };
+}
+
+/**
+ * Merges every stack member's parsed records into one timeline ordered by
+ * padded Docker stamps, tagging each record with its container name. Unstamped
+ * leading records travel with the container's first stamp so they stay next to
+ * the records they precede on their own stream.
+ */
+function appLogsPayload(appId, sources, filter) {
+  const rows = [];
+  for (const { name, records } of sources) {
+    let anchor = '';
+    for (const record of records) {
+      if (record.ts !== null) anchor = logNano(record.ts);
+      rows.push({ ts: record.ts, text: record.text, name, anchor });
+    }
+  }
+  rows.sort((a, b) => a.anchor < b.anchor ? -1 : a.anchor > b.anchor ? 1 : 0);
+  const result = filterRecords(rows, filter);
+  const text = result.records
+    .map(row => (row.ts ? row.ts + ' ' : '') + `[${row.name}] ${row.text}`).join('\n');
+  const stamped = result.records.filter(row => row.ts !== null);
+  const next = stamped.at(-1)?.ts ?? filter.after ?? null;
+  return { appId, containers: sources.map(source => source.name), text,
+    truncated: result.truncated, scanned: result.scanned, returned: result.records.length,
+    first: stamped[0]?.ts ?? null, last: stamped.at(-1)?.ts ?? null, next };
+}
+
+/**
+ * Collapses repeated error lines into one entry with a count and span so a
+ * recurring exception costs one row instead of hundreds.
+ */
+function errorGroups(records) {
+  const groups = new Map();
+  for (const record of records) {
+    if (!ERROR_LINE.test(record.text)) continue;
+    const key = record.text.replace(/\s+/g, ' ').trim().slice(0, 120);
+    const entry = groups.get(key) ?? { count: 0, first: null, last: null, sample: '' };
+    entry.count++;
+    if (record.ts !== null) {
+      if (entry.first === null || record.ts < entry.first) entry.first = record.ts;
+      if (entry.last === null || record.ts > entry.last) entry.last = record.ts;
+    }
+    if (!entry.sample) entry.sample = bounded(record.text, DIAGNOSE_ERROR_SAMPLE);
+    groups.set(key, entry);
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count).slice(0, DIAGNOSE_ERROR_GROUPS);
+}
+
 export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, sessionExists = async () => false, browserSessionActive = () => false,
   userinfoUrl, readBody, respond, daemon = dockerJson,
   daemonCall = engine, platform = vos, now = Date.now, audit = console.info }) {
@@ -241,6 +433,54 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     }
   }
 
+  /**
+   * One-call diagnosis for a visible container: Docker-inspect facts that
+   * never appear in application logs (exit code, OOM, restart count, health
+   * checks) plus a collapsed error-line summary. No raw log body is returned.
+   */
+  async function diagnose(id) {
+    if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
+    const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
+    if (!container || !visible(container)) throw new OpsError(404, 'not-found');
+    let inspect;
+    try {
+      inspect = JSON.parse(await daemonCall('GET', `/containers/${id}/json`));
+    } catch (error) {
+      if (error instanceof OpsError && error.status === 404) throw stale();
+      throw error;
+    }
+    const state = inspect.State ?? {};
+    const health = state.Health ?? null;
+    const records = logRecords(await daemonCall('GET',
+      `/containers/${id}/logs?${LOG_QUERY}${DIAGNOSE_TAIL}`, LOG_BYTES));
+    const stamped = records.filter(record => record.ts !== null);
+    return {
+      id, name: bounded(container.Names?.[0]?.replace(/^\//, ''), 200),
+      image: bounded(container.Image, 300), stack: mainStack(container),
+      state: {
+        status: bounded(state.Status, 40), running: state.Running === true,
+        restarting: state.Restarting === true, oomKilled: state.OOMKilled === true,
+        exitCode: typeof state.ExitCode === 'number' ? state.ExitCode : null,
+        error: bounded(state.Error, 500), startedAt: state.StartedAt ?? null,
+        finishedAt: state.FinishedAt ?? null,
+        restartCount: typeof inspect.RestartCount === 'number' ? inspect.RestartCount : 0,
+        health: health ? {
+          status: bounded(health.Status, 40),
+          failingStreak: typeof health.FailingStreak === 'number' ? health.FailingStreak : 0,
+          recent: (health.Log ?? []).slice(-3).map(entry => ({
+            start: entry.Start ?? null, end: entry.End ?? null,
+            exitCode: typeof entry.ExitCode === 'number' ? entry.ExitCode : null,
+            output: bounded(entry.Output, DIAGNOSE_HEALTH_OUTPUT).trim(),
+          })),
+        } : null,
+      },
+      logs: {
+        scanned: records.length, first: stamped[0]?.ts ?? null, last: stamped.at(-1)?.ts ?? null,
+        errors: errorGroups(records),
+      },
+    };
+  }
+
   async function execute(pending, token, base, session, stillAllowed, res) {
     const { action, id, item, ids, items } = pending;
     const latestPermissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
@@ -288,8 +528,9 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       // All requests carry a non-simple header. This route never enables CORS.
       if (!agent && (req.headers['x-vh-ops'] !== '1' ||
           (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin'))) throw denied();
-      if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs', '/host-mode', '/host-containers', '/host-logs'].includes(path)) ||
-          (req.method === 'POST' && path === '/proposal'))) throw denied();
+      if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs', '/app-logs', '/diagnose',
+          '/host-mode', '/host-containers', '/host-logs', '/host-diagnose'].includes(path)) ||
+        (req.method === 'POST' && path === '/proposal'))) throw denied();
       const session = agent?.session ?? sessionFor(req);
       if (!session) throw new OpsError(401, 'sign-in-required');
       const sessionScoped = agent || path.startsWith('/host-') || path === '/proposal' ||
@@ -330,19 +571,23 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         respond(res, 200, { available: true, enabled });
         return;
       }
-      if (path === '/host-containers' || path === '/host-logs') {
+      if (path === '/host-containers' || path === '/host-logs' || path === '/host-diagnose') {
         if (!agent || req.method !== 'GET' || !hostEnabled() || !await conversation()) throw denied();
         if (path === '/host-containers') {
           const containers = await daemon('/containers/json?all=1');
           respond(res, 200, { containers: containers.filter(c => CONTAINER_ID.test(c.Id) && visible(c))
             .map(c => summarizeContainer(c, [])) });
-        } else {
+        } else if (path === '/host-logs') {
           const id = url.searchParams.get('id');
           if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
           const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
           if (!container || !visible(container)) throw new OpsError(404, 'not-found');
-          const data = await daemonCall('GET', `/containers/${id}/logs?stdout=1&stderr=1&timestamps=1&tail=150`, 512 * 1024);
-          respond(res, 200, { id, text: logText(data) });
+          const filter = logFilter(url, now());
+          const result = filterRecords(logRecords(
+            await daemonCall('GET', `/containers/${id}/logs?${filter.query}`, LOG_BYTES)), filter);
+          respond(res, 200, logsPayload(id, result, filter));
+        } else {
+          respond(res, 200, await diagnose(url.searchParams.get('id')));
         }
         return;
       }
@@ -465,12 +710,35 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       if (path === '/logs' && req.method === 'GET') {
         const id = url.searchParams.get('id');
         if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
+        const filter = logFilter(url, now());
         const [containers, apps] = await Promise.all([daemon('/containers/json?all=1'), inventory(token, base)]);
         const c = containers.find(c => c.Id === id);
         const stack = c && mainStack(c);
         if (!stack || !apps.some(a => a.appId === stack.appId)) throw new OpsError(404, 'not-found');
-        const data = await daemonCall('GET', `/containers/${id}/logs?stdout=1&stderr=1&timestamps=1&tail=150`, 512 * 1024);
-        respond(res, 200, { id, text: logText(data) });
+        const result = filterRecords(logRecords(
+          await daemonCall('GET', `/containers/${id}/logs?${filter.query}`, LOG_BYTES)), filter);
+        respond(res, 200, logsPayload(id, result, filter));
+        return;
+      }
+      if (path === '/app-logs' && req.method === 'GET') {
+        const appId = url.searchParams.get('appId');
+        if (!APP_ID.test(appId ?? '')) throw new OpsError(400, 'invalid-target');
+        const filter = logFilter(url, now());
+        const [containers, apps] = await Promise.all([daemon('/containers/json?all=1'), inventory(token, base)]);
+        if (!apps.some(a => a.appId === appId)) throw new OpsError(404, 'not-found');
+        const members = containers
+          .filter(c => CONTAINER_ID.test(c.Id) && mainStack(c)?.appId === appId)
+          .map(c => ({ id: c.Id, name: bounded(c.Names?.[0]?.replace(/^\//, ''), 200) }));
+        if (members.length === 0) throw new OpsError(404, 'not-found');
+        const sources = await Promise.all(members.map(async member => ({
+          name: member.name,
+          records: logRecords(await daemonCall('GET', `/containers/${member.id}/logs?${filter.query}`, LOG_BYTES)),
+        })));
+        respond(res, 200, appLogsPayload(appId, sources, filter));
+        return;
+      }
+      if (path === '/diagnose' && req.method === 'GET') {
+        respond(res, 200, await diagnose(url.searchParams.get('id')));
         return;
       }
       if (path === '/preview' && req.method === 'POST') {

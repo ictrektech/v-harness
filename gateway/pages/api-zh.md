@@ -85,7 +85,9 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 | GET /inventory | 无参数。返回 `apps`、`containers`、`publishedPorts`、`unusedImages`、`unreferencedTaggedImages` 五个数组，无结果时为空数组。 |
 | GET /containers | 查询参数 `sessionId` 为会话 ID，该会话须选择「完全访问（VOS 运维）」或已开启应用容器管理。不需要授权头。返回 `containers` 数组，条目为 `id`、`name`、`appId`、`version`、`state`、`status`，只含 VOS 应用栈容器；数据库、模型和宿主机上的其他容器不返回。输入框的 `@` 容器来源使用此接口。 |
 | GET /status | 必填查询参数 `id` 为应用 ID，最多 128 字符，字母或数字开头，其余还可用点、下划线和连字符。返回 `appId`、`version`、`state`、`lastError` 和 `workflow`。 |
-| GET /logs | 必填查询参数 `id` 为 64 位小写十六进制完整容器 ID。返回 `id` 和 `text`，后者为最近最多 150 行 UTF-8 日志，含时间戳，原始响应上限 512 KiB。 |
+| GET /logs | 必填查询参数 `id` 为 64 位小写十六进制完整容器 ID。可选 `since` 与 `until`（RFC 3339 时间或如 `30m` 的相对时长）、`after`（RFC 3339 游标：轮询时回传上次响应的 `next`，只返回更晚的记录，与 `since` 互斥）、`pattern`（不超过 200 字符的不区分大小写正则）与 `context`（0–50，每条命中记录前后附带的记录数）。时间窗与游标作为 `since`/`until` 传给 Docker，`pattern` 与 `context` 由网关按记录过滤；记录以时间戳开头，多行输出（如栈追踪）并入同一条记录。返回 `id`、按记录重组的 `text`，以及 `scanned`、`returned`、`first`、`last`、`next`（下次轮询的游标；没有更晚记录时保持不变）和布尔 `truncated`；超过 300 条记录返回最早一批并置 `truncated`。带任一过滤参数或游标时扫描窗从 150 行放宽到 1000 行。 |
+| GET /app-logs | 必填查询参数 `appId` 为应用 ID，其余参数同 /logs。返回该应用 compose 栈全部容器按时间戳交错合并的一条时间线，每条记录以容器名作前缀。返回 `appId`、`containers`（容器名数组）、合并后的 `text`，以及与 /logs 同语义的 `scanned`、`returned`、`first`、`last`、`next` 和布尔 `truncated`。应用不在清单或栈内无可见容器返回 404。 |
+| GET /diagnose | 必填查询参数 `id` 为完整容器 ID。返回 `id`、`name`、`image`、`stack`、`state` 与 `logs`。`state` 含 `status`、`running`、`restarting`、`oomKilled`、`exitCode`、`error`、`startedAt`、`finishedAt`、`restartCount` 和 `health`（`status`、`failingStreak`、最近最多三次 `recent`，各含 `start`、`end`、`exitCode`、`output`）；无健康检查时 `health` 为 null。`logs` 含 `scanned`、`first`、`last` 与折叠后的 `errors`（每条含 `count`、`first`、`last`、`sample`，最多 40 条）。容器不可见返回 404；Docker 元数据缺失返回 409 `target-changed`。 |
 | POST /preview | 必填字符串 `action` 和 `id`。支持 `restart`（应用 ID）、`remove-container`（完整容器 ID）、`stop-container`（完整容器 ID）、`remove-image`（`sha256:` 加 64 位小写十六进制）。返回 `confirmation`（不透明字符串）、`expiresIn: 60`、`action`、`targetId`、`target`（相应清单条目）。每个授权同时只有一个预览。 |
 | POST /execute | 必填字符串 `confirmation` 和 `targetId`。核对具体对象后提交预览中的确认码和完整 ID。返回 `action`、`id` 和 `taskId`（重启任务 ID，清理时为 null）。受理重启后可重新查看应用状态。确认码单次使用，失败后应重新查看状态及预览。 |
 | GET /proposal | 查询参数 `sessionId` 为会话 ID。返回 `proposal`（无待确认操作为 null，否则包含 `action`、`targetId`、`target` 和 `confirmation`）。 |
@@ -97,9 +99,9 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 镜像条目包括字符串 `id` 和数字 `bytes`（字节）。`unusedImages` 还包含数字 `created`（Unix 秒），对应无标签、无摘要且未被任何容器引用的镜像。`unreferencedTaggedImages` 还包含非空字符串数组 `tags` 和可能为空的字符串数组 `digests`，对应带标签且未被任何容器引用的镜像。两类均可用 `remove-image` 提议清理。 未开启「完全访问（VOS 运维）」时，会话会提示管理员开启。租户终端的 Docker 清单仅覆盖当前租户。管理员在会话选「完全访问（VOS 运维）」并要求清理未使用镜像，核对确认框中的标签和 ID 后点击确认或跳过。删除时按完整 ID 复核引用和标签，保留卷和父镜像。Docker 遇到多标签、依赖镜像或新容器引用等冲突时可拒绝非强制删除。单项返回 409 `image-delete-conflict`，批量结果的对应条目返回 `removed: false` 和同一错误码。刷新清单核对失败项。
 
-错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target` 或 `confirmation-mismatch`，请核对 JSON、操作和完整 ID；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
+错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target`、`confirmation-mismatch`、`invalid-since`、`invalid-until`、`invalid-after`、`invalid-pattern` 或 `invalid-context`，请核对 JSON、操作、完整 ID 和日志查询参数；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
 
-内置工具 `vos_diagnostics` 支持 `inventory`、`status`、`logs`、`propose`。后三项需字符串 `id`，格式同表；`propose` 另需 `action`。返回诊断 JSON 文本，最长 49,152 字符。VOS 系统管理员选择 `vos-full-access` 即可使用。会话确认接口无需设置页授权头；`sessionId` 是当前租户的会话 ID，1–128 个字母、数字、下划线或连字符。每个会话最多一个待确认提议，120 秒有效，已有提议时返回 409 `confirmation-pending`。
+内置工具 `vos_diagnostics` 支持 `inventory`、`status`、`logs`、`app-logs`、`diagnose`、`propose`。除 `inventory` 外需字符串 `id`，格式同表；`propose` 另需 `action`。`diagnose` 要求完整容器 ID，优先于 `logs` 使用：它返回状态事实（退出码、是否 OOM、重启计数、健康检查）和折叠的错误摘要，不返回原始日志。`app-logs` 接收应用 ID，返回整个应用栈交错合并、带容器名标签的时间线，跨 service 问题无需猜测该看哪个容器。`logs` 与 `app-logs` 可另带 `since`、`until`、`after`、`pattern` 和 `context`，语义同上表。返回诊断 JSON 文本，最长 49,152 字符。VOS 系统管理员选择 `vos-full-access` 即可使用。会话确认接口无需设置页授权头；`sessionId` 是当前租户的会话 ID，1–128 个字母、数字、下划线或连字符。每个会话最多一个待确认提议，120 秒有效，已有提议时返回 409 `confirmation-pending`。
 
 在 DS Bot 中打开「设置 → 模型」。「V-Scheduler」区可从现有目录选择默认模型，也可刷新列表。「自定义模型供应商」仅统计在 DS Bot 中添加的供应商，仍可点击「添加供应商」配置。Agent API 的模型接口保持原有契约。
 
@@ -113,7 +115,7 @@ VOS 系统管理员打开会话，点击「应用容器管理」，再点击「�
 
 浏览器通过 `GET /__vh/vos-ops/host-mode?sessionId=<会话ID>` 读取 `{available:true,enabled:boolean}`。对同一路径发送 `POST`，JSON 为 `{enabled:true}` 或 `{enabled:false}`，可开启或关闭。使用当前 VOS 登录会话和同源请求头 `X-VH-Ops: 1`。会话 ID 格式同上，切换模式时会话须存在于当前账号。退出登录、撤销管理员角色或网关重启都会终止授权。
 
-会话工具 `vos_host_containers` 的 `operation` 取值为 `list`、`logs`、`start`、`stop`、`restart`、`remove`。除 `list` 外，`id` 均为 64 位小写十六进制容器 ID。清单只包含 VOS 应用栈容器，沿用上面的容器记录；其他容器 ID 查日志返回 404，发起操作返回 409。日志沿用 VOS 诊断的行数和字节限制。写操作通过现有会话确认流程提交 `host-start`、`host-stop`、`host-restart`、`host-remove`。启动接受 `created` 或 `exited`，停止和重启接受 `running` 或 `restarting`，删除接受 `created`、`exited` 或 `dead`。确认成功返回 `action`、`id`、`taskId:null`。参数无效返回 400，未登录返回 401，角色或会话未授权返回 403，日志目标不存在返回 404，目标已变化或不符合条件返回 409，授权数达到上限返回 429，Docker 调用失败返回 502。
+会话工具 `vos_host_containers` 的 `operation` 取值为 `list`、`logs`、`diagnose`、`start`、`stop`、`restart`、`remove`。除 `list` 外，`id` 均为 64 位小写十六进制容器 ID。`diagnose` 返回与 `/diagnose` 相同的报告，`logs` 可另带 `since`、`until`、`after`、`pattern` 和 `context`，语义同上表。清单只包含 VOS 应用栈容器，沿用上面的容器记录；其他容器 ID 查日志或诊断返回 404，发起操作返回 409。日志沿用 VOS 诊断的过滤参数和字节限制。写操作通过现有会话确认流程提交 `host-start`、`host-stop`、`host-restart`、`host-remove`。启动接受 `created` 或 `exited`，停止和重启接受 `running` 或 `restarting`，删除接受 `created`、`exited` 或 `dead`。确认成功返回 `action`、`id`、`taskId:null`。参数无效返回 400，未登录返回 401，角色或会话未授权返回 403，日志目标不存在返回 404，目标已变化或不符合条件返回 409，授权数达到上限返回 429，Docker 调用失败返回 502。
 
 输入框的 VOS 运维权限名称随当前界面语言切换。
 

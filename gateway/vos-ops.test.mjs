@@ -18,7 +18,8 @@ const container = {
 function fixture() {
   const state = { admin: true, sessionAllowed: true, sid: 'a', installedVersion: '2.0', now: 1, containers: [{ ...container }], images: [
     { Id: imageId, RepoTags: [], RepoDigests: [], Created: 1, Size: 100 },
-  ], calls: [] };
+  ], calls: [], logData: Buffer.from('sample log'),
+    inspect: { State: { Status: 'exited' }, RestartCount: 0 } };
   const handle = createVosOps({
     sessionFor: () => ({ sid: state.sid, subject: 'test' }), tokenFor: () => 'test',
     agentSessionAllowed: async (_subject, id) => id === 'session-1' && state.sessionAllowed,
@@ -37,7 +38,10 @@ function fixture() {
     daemon: async path => path.startsWith('/containers/') ? state.containers : state.images,
     async daemonCall(method, path) {
       state.calls.push([method, path]);
-      return Buffer.from('sample log');
+      if (path.endsWith('/json')) return Buffer.from(JSON.stringify(state.inspect));
+      const logs = /\/containers\/([0-9a-f]{64})\/logs\?/.exec(path);
+      if (logs) return state.logsById?.[logs[1]] ?? state.logData;
+      return Buffer.alloc(0);
     },
   });
   return { state, async send(path, body, grant, headers = {}, agent) {
@@ -305,4 +309,209 @@ test('one cleanup confirmation covers exited and created containers and rejects 
   assert.deepEqual((await confirm(last)).body.results, ids.map(id => ({ id, removed: true })));
   assert.deepEqual(state.calls, ids.map(id => ['DELETE', `/containers/${id}?force=0&v=0`]));
   assert.equal((await confirm(last)).status, 409);
+});
+
+// Docker multiplexed frames: [stream, 0, 0, 0, length BE32] + payload.
+const frame = (stream, text) => {
+  const body = Buffer.from(text, 'utf8');
+  const head = Buffer.alloc(8);
+  head[0] = stream;
+  head.writeUInt32BE(body.length, 4);
+  return Buffer.concat([head, body]);
+};
+const t1 = '2026-01-01T00:00:01.000000000Z';
+const t2 = '2026-01-01T00:00:02.000000000Z';
+const t3 = '2026-01-01T00:00:03.000000000Z';
+const t4 = '2026-01-01T00:00:04.000000000Z';
+const t5 = '2026-01-01T00:00:05.000000000Z';
+
+test('logs support gateway-side time, pattern and context filtering', async () => {
+  const { send, state } = fixture();
+  const { body: { grant } } = await send('/authorize', {});
+  const logs = query => send('/logs?id=' + containerId + query, null, grant);
+  state.logData = Buffer.concat([
+    frame(1, `${t1} service started\n`),
+    frame(1, `${t2} ERROR: db timeout\n`),
+    frame(2, `${t3} panic: stack line A\nline B\n`),
+  ]);
+  const windowed = await logs('&since=' + encodeURIComponent(t2));
+  assert.equal(windowed.status, 200);
+  assert.equal(windowed.body.scanned, 3);
+  assert.equal(windowed.body.returned, 2);
+  assert.equal(windowed.body.first, t2);
+  assert.equal(windowed.body.last, t3);
+  assert.equal(windowed.body.text.includes('service started'), false);
+  assert.match(state.calls.at(-1)[1], /tail=1000/);
+  assert.match(state.calls.at(-1)[1], /since=/);
+  const relative = await logs('&since=30m');
+  assert.equal(relative.body.returned, 3);
+  assert.match(state.calls.at(-1)[1], /since=1969/);
+  const matched = await logs('&pattern=timeout');
+  assert.equal(matched.body.returned, 1);
+  assert.match(matched.body.text, /ERROR: db timeout/);
+  assert.equal(matched.body.text.includes('service started'), false);
+  const nearby = await logs('&pattern=line B&context=1');
+  assert.equal(nearby.body.returned, 2);
+  assert.match(nearby.body.text, /ERROR: db timeout/);
+  assert.match(nearby.body.text, /panic: stack line A\nline B/);
+  assert.deepEqual(await logs('&pattern='), { status: 400, body: { error: 'invalid-pattern' } });
+  assert.deepEqual(await logs('&pattern=%28%5Bp'), { status: 400, body: { error: 'invalid-pattern' } });
+  assert.deepEqual(await logs('&context=99'), { status: 400, body: { error: 'invalid-context' } });
+  assert.deepEqual(await logs('&since=nonsense'), { status: 400, body: { error: 'invalid-since' } });
+  assert.deepEqual(await logs('&until=nonsense'), { status: 400, body: { error: 'invalid-until' } });
+  assert.equal((await logs('&since=' + encodeURIComponent(t3) + '&until=' + encodeURIComponent(t1))).status, 400);
+  state.logData = Buffer.concat(Array.from({ length: 350 }, (_, i) =>
+    frame(1, `2026-01-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000000000Z line ${i}\n`)));
+  const capped = await logs('');
+  assert.equal(capped.body.returned, 300);
+  assert.equal(capped.body.truncated, true);
+  assert.ok(capped.body.text.includes('line 0'));
+  assert.equal(capped.body.text.includes('line 349'), false);
+});
+
+test('polling with the after cursor returns only new records and a next cursor', async () => {
+  const { send, state } = fixture();
+  const { body: { grant } } = await send('/authorize', {});
+  const logs = query => send('/logs?id=' + containerId + query, null, grant);
+  state.logData = Buffer.concat([
+    frame(1, `${t1} service started\n`),
+    frame(1, `${t2} all good\n`),
+    frame(2, `${t3} ready\n`),
+  ]);
+  const first = await logs('');
+  assert.equal(first.body.next, t3);
+  assert.equal(first.body.returned, 3);
+  // Docker's since is inclusive at the boundary, so the poll replays the
+  // cursor stamp and the gateway must drop it by padded stamp comparison.
+  state.logData = Buffer.concat([
+    frame(1, `${t3} ready\n`),
+    frame(1, `${t4} panic: boom\n`),
+    frame(1, `${t5} recovered\n`),
+  ]);
+  const incremental = await logs('&after=' + encodeURIComponent(t3));
+  assert.equal(incremental.status, 200);
+  assert.equal(incremental.body.returned, 2);
+  assert.equal(incremental.body.first, t4);
+  assert.equal(incremental.body.next, t5);
+  assert.equal(incremental.body.text.includes('ready'), false);
+  assert.ok(state.calls.at(-1)[1].includes('since=' + encodeURIComponent(t3)));
+  assert.match(state.calls.at(-1)[1], /tail=1000/);
+  state.logData = Buffer.concat([frame(1, `${t5} recovered\n`)]);
+  const quiet = await logs('&after=' + encodeURIComponent(t5));
+  assert.equal(quiet.body.returned, 0);
+  assert.equal(quiet.body.next, t5);
+  assert.equal(quiet.body.first, null);
+  assert.deepEqual(await logs('&after=nonsense'), { status: 400, body: { error: 'invalid-after' } });
+  assert.deepEqual(await logs('&after=2026-01-01T00%3A00%3A01%2B08%3A00'), { status: 400, body: { error: 'invalid-after' } });
+  assert.equal((await logs('&after=' + encodeURIComponent(t1) + '&since=' + encodeURIComponent(t1))).status, 400);
+  assert.equal((await logs('&after=' + encodeURIComponent(t2) + '&until=' + encodeURIComponent(t1))).status, 400);
+  // Trailing-zero trims compare correctly across RFC3339Nano forms.
+  state.logData = Buffer.concat([
+    frame(1, '2026-01-01T00:00:01.5Z first half\n'),
+    frame(1, '2026-01-01T00:00:01.500000001Z just after\n'),
+  ]);
+  const subNano = await logs('&after=2026-01-01T00%3A00%3A01.5Z');
+  assert.equal(subNano.body.returned, 1);
+  assert.match(subNano.body.text, /just after/);
+});
+
+test('app-logs merges one application stack into an interleaved labeled timeline', async () => {
+  const { send, state } = fixture();
+  const { body: { grant } } = await send('/authorize', {});
+  const apiId = 'e'.repeat(64);
+  const apiContainer = { ...container, Id: apiId, State: 'running',
+    Names: ['/' + project + '-api-1'], Labels: { ...container.Labels, 'com.docker.compose.service': 'api' } };
+  state.containers.push(apiContainer);
+  state.logsById = {
+    [containerId]: Buffer.concat([
+      frame(1, `${t1} db started\n`),
+      frame(2, `${t3} db ready\n`),
+    ]),
+    [apiId]: Buffer.concat([
+      frame(1, `${t2} ERROR: connect refused\n`),
+      frame(1, `${t4} connected\n`),
+    ]),
+  };
+  const merged = await send('/app-logs?appId=' + encodeURIComponent(appId), null, grant);
+  assert.equal(merged.status, 200);
+  assert.equal(merged.body.appId, appId);
+  assert.deepEqual(merged.body.containers, [project + '-demo-1', project + '-api-1']);
+  assert.equal(merged.body.returned, 4);
+  assert.equal(merged.body.scanned, 4);
+  assert.equal(merged.body.first, t1);
+  assert.equal(merged.body.last, t4);
+  assert.equal(merged.body.next, t4);
+  assert.equal(merged.body.text, [
+    `${t1} [${project}-demo-1] db started`,
+    `${t2} [${project}-api-1] ERROR: connect refused`,
+    `${t3} [${project}-demo-1] db ready`,
+    `${t4} [${project}-api-1] connected`,
+  ].join('\n'));
+  state.logsById[apiId] = Buffer.concat([
+    frame(1, `${t3} connected\n`),
+    frame(1, `${t4} serving\n`),
+  ]);
+  const incremental = await send('/app-logs?appId=' + encodeURIComponent(appId) + '&after=' + encodeURIComponent(t2), null, grant);
+  assert.equal(incremental.body.returned, 3);
+  assert.equal(incremental.body.first, t3);
+  assert.equal(incremental.body.text, [
+    `${t3} [${project}-demo-1] db ready`,
+    `${t3} [${project}-api-1] connected`,
+    `${t4} [${project}-api-1] serving`,
+  ].join('\n'));
+  assert.equal((await send('/app-logs?appId=com.ictrek.other', null, grant)).status, 404);
+  assert.deepEqual(await send('/app-logs?appId=bad%20id', null, grant), { status: 400, body: { error: 'invalid-target' } });
+  assert.deepEqual(await send('/app-logs?appId=' + encodeURIComponent(appId) + '&after=nonsense', null, grant),
+    { status: 400, body: { error: 'invalid-after' } });
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  const agentRead = await send('/app-logs?appId=' + encodeURIComponent(appId), null, undefined, {}, agent);
+  assert.equal(agentRead.status, 200);
+  assert.equal(agentRead.body.returned, 4);
+});
+
+test('diagnose answers inspect facts and collapsed error summary for a visible container', async () => {
+  const { send, state } = fixture();
+  const { body: { grant } } = await send('/authorize', {});
+  state.inspect = {
+    State: { Status: 'exited', Running: false, Restarting: false, OOMKilled: true, ExitCode: 137, Error: '',
+      StartedAt: '2026-01-01T00:00:00Z', FinishedAt: '2026-01-01T00:05:00Z',
+      Health: { Status: 'unhealthy', FailingStreak: 4, Log: [{ Start: t1, End: t1, ExitCode: 1, Output: 'connection refused\n' }] } },
+    RestartCount: 3,
+  };
+  state.logData = Buffer.concat([
+    frame(1, `${t1} ERROR: db timeout\n`),
+    frame(1, `${t1} ERROR: db timeout\n`),
+    frame(1, `${t2} all good\n`),
+  ]);
+  const report = await send('/diagnose?id=' + containerId, null, grant);
+  assert.equal(report.status, 200);
+  assert.equal(report.body.state.oomKilled, true);
+  assert.equal(report.body.state.exitCode, 137);
+  assert.equal(report.body.state.restartCount, 3);
+  assert.equal(report.body.state.health.status, 'unhealthy');
+  assert.deepEqual(report.body.state.health.recent, [{ start: t1, end: t1, exitCode: 1, output: 'connection refused' }]);
+  assert.equal(report.body.logs.scanned, 3);
+  assert.equal(report.body.logs.first, t1);
+  assert.deepEqual(report.body.logs.errors, [{ count: 2, first: t1, last: t1, sample: 'ERROR: db timeout' }]);
+  assert.equal(report.body.stack.appId, appId);
+  state.containers[0].Names = ['/vh-account-unrelated'];
+  assert.equal((await send('/diagnose?id=' + containerId, null, grant)).status, 404);
+  state.containers[0].Names = container.Names;
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  assert.equal((await send('/diagnose?id=' + containerId, null, undefined, {}, agent)).status, 200);
+  assert.equal((await send('/diagnose?id=bad', null, undefined, {}, agent)).status, 400);
+});
+
+test('host diagnose follows host-mode authorization and stays agent-only', async () => {
+  const { send, state } = fixture();
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  assert.equal((await send('/host-diagnose?id=' + containerId, null, undefined, {}, agent)).status, 403);
+  assert.equal((await send('/host-diagnose?id=' + containerId)).status, 403);
+  await send('/host-mode?sessionId=session-1', { enabled: true });
+  const report = await send('/host-diagnose?id=' + containerId, null, undefined, {}, agent);
+  assert.equal(report.status, 200);
+  assert.equal(report.body.id, containerId);
+  assert.equal((await send('/host-diagnose?id=' + 'e'.repeat(64), null, undefined, {}, agent)).status, 404);
+  state.admin = false;
+  assert.equal((await send('/host-diagnose?id=' + containerId, null, undefined, {}, agent)).status, 403);
 });
