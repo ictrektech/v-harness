@@ -104,6 +104,18 @@ RUN pnpm exec tsc -b packages/client/ui-voffice/tsconfig.json \
       packages/client/ui-voffice/locale \
       /build/plugins/dsh-client-ui-voffice/
 
+# The `@` source over the VOS application containers the operations tool may
+# act on. Same carrier story as ui-voffice: unpublished, mounted by the VOS
+# bundle row, copied into each profile from this payload.
+RUN pnpm exec tsc -b packages/client/ui-vos-container/tsconfig.json \
+ && pnpm --filter @deepseek-ai/dsh-client-ui-vos-container bundle \
+ && mkdir -p /build/plugins/dsh-client-ui-vos-container \
+ && cp -R \
+      packages/client/ui-vos-container/package.json \
+      packages/client/ui-vos-container/lib \
+      packages/client/ui-vos-container/locale \
+      /build/plugins/dsh-client-ui-vos-container/
+
 # The locale plugin follows the language VOS publishes (the vos_platform
 # bridge and the stamped preferences-locale entry). That support postdates
 # the published dsh the runtime stage installs, so the image builds it from

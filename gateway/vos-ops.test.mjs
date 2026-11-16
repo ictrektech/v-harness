@@ -184,7 +184,6 @@ test('host mode requires an administrator and browser opt-in for one conversatio
   const query = '?sessionId=session-1';
   const enable = () => send('/host-mode' + query, { enabled: true });
   const list = (as = agent) => send('/host-containers', null, undefined, {}, as);
-  state.containers[0].Names = ['/ordinary-host-container'];
   state.sessionAllowed = false;
   assert.equal((await list()).status, 403);
   state.admin = false;
@@ -192,7 +191,7 @@ test('host mode requires an administrator and browser opt-in for one conversatio
   state.admin = true;
   assert.equal((await send('/host-mode', { enabled: true }, undefined, {}, agent)).status, 403);
   assert.equal((await enable()).body.enabled, true);
-  assert.equal((await list()).body.containers[0].name, 'ordinary-host-container');
+  assert.equal((await list()).body.containers[0].name, project + '-demo-1');
   assert.equal((await list({ ...agent, sessionId: 'session-2' })).status, 403);
   const propose = () => send('/proposal', { action: 'host-start', id: containerId }, undefined, {}, agent);
   assert.equal((await propose()).body.executed, false);
@@ -216,6 +215,58 @@ test('host mode requires an administrator and browser opt-in for one conversatio
   assert.equal((await list()).status, 403);
 });
 
+
+test('host management reaches only VOS application containers', async () => {
+  const { send, state } = fixture();
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  const harnessProject = 'vos-app-com-ictrek-v-harness-01m79733shjks958r2h96tead4';
+  const database = { ...container, Id: 'e'.repeat(64), State: 'running', Image: 'postgres:16',
+    Names: ['/vos-db-01m79733shjks958r2h96tead4-postgres-1'], Labels: {
+      'io.vos.platform.managed': 'true', 'io.vos.platform.kind': 'db',
+      'com.docker.compose.project': 'vos-db-01m79733shjks958r2h96tead4',
+    } };
+  const model = { ...container, Id: '9'.repeat(64), State: 'running', Image: 'vllm:latest',
+    Names: ['/model-server'], Labels: { 'io.vos.platform.managed': 'true', 'io.vos.platform.kind': 'model' } };
+  const harness = { ...container, Id: 'f'.repeat(64), State: 'running', Image: 'vh:1',
+    Names: ['/' + harnessProject + '-gateway-1'], Labels: {
+      'io.vos.platform.managed': 'true', 'io.vos.platform.kind': 'app',
+      'com.docker.compose.project': harnessProject, 'com.docker.compose.service': 'gateway',
+      'com.docker.compose.container-number': '1',
+      'com.docker.compose.project.config_files': '/data/vos/apps/com.ictrek.v-harness/1.0/rendered/docker-compose.yml',
+    } };
+  state.containers.push(database, model, harness);
+  assert.equal((await send('/host-mode?sessionId=session-1', { enabled: true })).body.enabled, true);
+  const hidden = [database.Id, model.Id, harness.Id];
+  const listed = await send('/host-containers', null, undefined, {}, agent);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.containers.map(c => c.id), [containerId]);
+  for (const id of hidden) {
+    assert.equal((await send('/host-logs?id=' + id, null, undefined, {}, agent)).status, 404);
+    assert.equal((await send('/proposal', { action: 'host-stop', id }, undefined, {}, agent)).status, 409);
+    assert.equal((await send('/proposal', { action: 'host-remove', ids: [id] }, undefined, {}, agent)).status, 409);
+  }
+  assert.deepEqual(state.calls, []);
+});
+
+test('the composer lists only authorized VOS application containers', async () => {
+  const { send, state } = fixture();
+  const query = '?sessionId=session-1';
+  state.sessionAllowed = false;
+  assert.equal((await send('/containers' + query)).status, 403);
+  state.sessionAllowed = true;
+  state.containers.push({ Id: 'e'.repeat(64), Names: ['/mariadb'], State: 'running', Image: 'mariadb:11', Labels: {} });
+  const listed = await send('/containers' + query);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.containers.map(c => c.id), [containerId]);
+  const [only] = listed.body.containers;
+  assert.equal(only.name, project + '-demo-1');
+  assert.equal(only.appId, appId);
+  assert.equal(only.version, '1.0');
+  assert.equal(only.state, 'exited');
+  assert.equal((await send('/containers?sessionId=bad id')).status, 403);
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  assert.equal((await send('/containers', null, undefined, {}, agent)).status, 403);
+});
 
 test('one cleanup confirmation covers exited and created containers and rejects a changed batch', async () => {
   const { send, state } = fixture();

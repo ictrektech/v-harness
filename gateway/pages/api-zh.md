@@ -76,13 +76,14 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 ## VOS 运维入口
 
-从「设置 → VOS 运维」使用。以下是设置页的浏览器接口，路径基址为同源 `/__vh/vos-ops`，也可加 VOS 应用前缀 `/app/com.ictrek.v-harness`。使用当前 VOS 登录派生的 v-harness 会话 Cookie，每次请求都向 VOS 校验 `system_admin`。请求带 `X-VH-Ops: 1`，除授权外还需 `X-VH-Ops-Grant`。POST 请求使用 JSON 对象，响应均为 JSON，禁止缓存。没有跨域接口和 Agent Bearer 入口。
+从「设置 → VOS 运维」使用。以下是设置页的浏览器接口，路径基址为同源 `/__vh/vos-ops`，也可加 VOS 应用前缀 `/app/com.ictrek.v-harness`。使用当前 VOS 登录派生的 v-harness 会话 Cookie，每次请求都向 VOS 校验 `system_admin`。请求带 `X-VH-Ops: 1`，除授权和 `GET /containers` 外还需 `X-VH-Ops-Grant`。POST 请求使用 JSON 对象，响应均为 JSON，禁止缓存。没有跨域接口和 Agent Bearer 入口。
 
 | 方法与路径 | 输入和输出 |
 |---|---|
 | POST /authorize | 请求 `{}`。返回 `grant`（不透明字符串）及 `expiresIn: 900`（秒），并替换同一会话的先前授权。 |
 | POST /close | 请求 `{}`。撤销此授权及其待确认操作，返回 `closed: true`。 |
 | GET /inventory | 无参数。返回 `apps`、`containers`、`publishedPorts`、`unusedImages`、`unreferencedTaggedImages` 五个数组，无结果时为空数组。 |
+| GET /containers | 查询参数 `sessionId` 为会话 ID，该会话须选择「完全访问（VOS 运维）」或已开启应用容器管理。不需要授权头。返回 `containers` 数组，条目为 `id`、`name`、`appId`、`version`、`state`、`status`，只含 VOS 应用栈容器；数据库、模型和宿主机上的其他容器不返回。输入框的 `@` 容器来源使用此接口。 |
 | GET /status | 必填查询参数 `id` 为应用 ID，最多 128 字符，字母或数字开头，其余还可用点、下划线和连字符。返回 `appId`、`version`、`state`、`lastError` 和 `workflow`。 |
 | GET /logs | 必填查询参数 `id` 为 64 位小写十六进制完整容器 ID。返回 `id` 和 `text`，后者为最近最多 150 行 UTF-8 日志，含时间戳，原始响应上限 512 KiB。 |
 | POST /preview | 必填字符串 `action` 和 `id`。支持 `restart`（应用 ID）、`remove-container`（完整容器 ID）、`stop-container`（完整容器 ID）、`remove-image`（`sha256:` 加 64 位小写十六进制）。返回 `confirmation`（不透明字符串）、`expiresIn: 60`、`action`、`targetId`、`target`（相应清单条目）。每个授权同时只有一个预览。 |
@@ -106,15 +107,17 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 查应用状态或请求重启时，请使用清单中的应用 ID。修复提议等待用户确认，返回 `executed: false`。已有提议时，HTTP 409 `confirmation-pending` 返回该提议的 `action`、`id` 和剩余秒数 `expiresIn`。请在会话里确认或取消。过期或已使用的确认返回 409 `confirmation-unavailable`。应用状态收到 Docker ID 时返回 400 `app-id-required`，请在清单里看容器状态或用日志查询读取输出。
 
-### 宿主机管理
+### 应用容器管理
 
-VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开启宿主机管理」。Agent 可列出宿主机 Docker 容器、查看近期日志，并按完整容器 ID 提议启动、停止、重启或删除。执行前请在会话里核对目标并确认。删除要求容器已停止，数据卷保留。点击「关闭宿主机管理」可提前结束。授权在 30 分钟后过期，每次调用都会核验管理员角色和 VOS 登录会话。接口见「设置 → API 文档」。
+VOS 系统管理员打开会话，点击「应用容器管理」，再点击「开启应用容器管理」。Agent 只看到 VOS 应用栈的容器（带 VOS 平台标签且属于 `vos-app-*` 项目）：数据库、模型和宿主机上的其他容器不列出，按它们的 ID 查日志返回 404，发起操作返回 409 `target-changed`。应用已卸载但残留的栈容器仍会列出，便于清理。Agent 可查看近期日志，并按完整容器 ID 提议启动、停止、重启或删除。执行前请在会话里核对目标并确认。删除要求容器已停止，数据卷保留。点击「关闭应用容器管理」可提前结束。授权在 30 分钟后过期，每次调用都会核验管理员角色和 VOS 登录会话。接口见「设置 → API 文档」。
 
 浏览器通过 `GET /__vh/vos-ops/host-mode?sessionId=<会话ID>` 读取 `{available:true,enabled:boolean}`。对同一路径发送 `POST`，JSON 为 `{enabled:true}` 或 `{enabled:false}`，可开启或关闭。使用当前 VOS 登录会话和同源请求头 `X-VH-Ops: 1`。会话 ID 格式同上，切换模式时会话须存在于当前账号。退出登录、撤销管理员角色或网关重启都会终止授权。
 
-会话工具 `vos_host_containers` 的 `operation` 取值为 `list`、`logs`、`start`、`stop`、`restart`、`remove`。除 `list` 外，`id` 均为 64 位小写十六进制容器 ID。清单沿用上面的容器记录，非 VOS 主栈容器的 `stack` 为 null。日志沿用 VOS 诊断的行数和字节限制。写操作通过现有会话确认流程提交 `host-start`、`host-stop`、`host-restart`、`host-remove`。启动接受 `created` 或 `exited`，停止和重启接受 `running` 或 `restarting`，删除接受 `created`、`exited` 或 `dead`。确认成功返回 `action`、`id`、`taskId:null`。参数无效返回 400，未登录返回 401，角色或会话未授权返回 403，日志目标不存在返回 404，目标已变化或不符合条件返回 409，授权数达到上限返回 429，Docker 调用失败返回 502。
+会话工具 `vos_host_containers` 的 `operation` 取值为 `list`、`logs`、`start`、`stop`、`restart`、`remove`。除 `list` 外，`id` 均为 64 位小写十六进制容器 ID。清单只包含 VOS 应用栈容器，沿用上面的容器记录；其他容器 ID 查日志返回 404，发起操作返回 409。日志沿用 VOS 诊断的行数和字节限制。写操作通过现有会话确认流程提交 `host-start`、`host-stop`、`host-restart`、`host-remove`。启动接受 `created` 或 `exited`，停止和重启接受 `running` 或 `restarting`，删除接受 `created`、`exited` 或 `dead`。确认成功返回 `action`、`id`、`taskId:null`。参数无效返回 400，未登录返回 401，角色或会话未授权返回 403，日志目标不存在返回 404，目标已变化或不符合条件返回 409，授权数达到上限返回 429，Docker 调用失败返回 502。
 
 输入框的 VOS 运维权限名称随当前界面语言切换。
+
+在输入框输入 `@`，选择「VOS 容器」再点一个容器，即可把该容器作为引用放进对话。引用文本带完整容器 ID，Agent 可直接按 ID 提议操作。这个来源只列出 VOS 应用栈容器，并且只有在 VOS 系统管理员、且当前会话已选择「完全访问（VOS 运维）」时才会出现在菜单里；其他情况完全不显示，也不发起请求。
 
 ### 批量清理接口
 

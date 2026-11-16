@@ -46,6 +46,11 @@
     - id: ui-voffice
       name: '@deepseek-ai/dsh-client-ui-voffice'
 
+    # The composer's `@` source over the VOS application containers the
+    # operations tool may act on. Same unpublished-payload story as ui-voffice.
+    - id: ui-vos-container
+      name: '@deepseek-ai/dsh-client-ui-vos-container'
+
     # The tenant services panel: list, open, stop and restart the web services
     # the tenant registered through the gateway's vh-services capability.
     - id: ui-services

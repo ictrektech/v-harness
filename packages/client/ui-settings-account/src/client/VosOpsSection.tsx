@@ -17,12 +17,12 @@ const en = {
   cleanup: 'Container cleanup deletes its writable layer and keeps volumes. Image cleanup accepts images with no container references, including tagged images.',
   imageDeleteConflict: 'Docker refused to remove this image. Check for multiple tags, dependent images or a new container reference.',
   port: 'Filter by host port', closeLogs: 'Close logs', status: 'View status',
-  hostManagement: 'Host management',
-  hostEnable: 'Enable host management',
-  hostDisable: 'Turn off host management',
-  hostDescription: 'For this conversation, the Agent can list containers and read logs across the host. Container changes require your confirmation. Access expires in 30 minutes.',
-  hostStart: 'Start host container', hostStop: 'Stop host container',
-  hostRestart: 'Restart host container', hostRemove: 'Remove host container',
+  hostManagement: 'Application containers',
+  hostEnable: 'Enable application container management',
+  hostDisable: 'Turn off application container management',
+  hostDescription: 'For this conversation, the Agent can list VOS application containers and read their logs. Database, model and unrelated host containers stay hidden. Container changes require your confirmation. Access expires in 30 minutes.',
+  hostStart: 'Start application container', hostStop: 'Stop application container',
+  hostRestart: 'Restart application container', hostRemove: 'Remove application container',
   proposalTitle: 'VOS repair confirmation',
   targetList: 'Targets', removed: 'Removed', removalFailed: 'Removal failed',
   targetIdLabel: 'ID', targetName: 'Container', targetImage: 'Image', targetVersion: 'Version',
@@ -45,12 +45,12 @@ const zh: Record<keyof typeof en, string> = {
   cleanup: '删除容器会删除其可写层并保留卷。可清理未被任何容器引用的镜像，包括带标签的镜像。',
   imageDeleteConflict: 'Docker 拒绝删除此镜像。请检查镜像是否有多个标签、依赖镜像或新增的容器引用。',
   port: '按宿主机端口筛选', closeLogs: '关闭日志', status: '查看状态',
-  hostManagement: '宿主机管理',
-  hostEnable: '开启宿主机管理',
-  hostDisable: '关闭宿主机管理',
-  hostDescription: '开启后，本会话的 Agent 可以查看宿主机容器和日志。修改容器需由你确认，授权 30 分钟后到期。',
-  hostStart: '启动宿主机容器', hostStop: '停止宿主机容器',
-  hostRestart: '重启宿主机容器', hostRemove: '删除宿主机容器',
+  hostManagement: '应用容器管理',
+  hostEnable: '开启应用容器管理',
+  hostDisable: '关闭应用容器管理',
+  hostDescription: '开启后，本会话的 Agent 可查看 VOS 应用栈的容器和日志，不含数据库、模型和宿主机上的其他容器。修改容器需由你确认，授权 30 分钟后到期。',
+  hostStart: '启动应用容器', hostStop: '停止应用容器',
+  hostRestart: '重启应用容器', hostRemove: '删除应用容器',
   proposalTitle: '确认 VOS 修复',
   targetList: '操作目标', removed: '已删除', removalFailed: '删除失败',
   targetIdLabel: '标识符', targetName: '容器', targetImage: '镜像', targetVersion: '版本',
@@ -67,14 +67,30 @@ const hostLabels = {
 type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image' | keyof typeof hostLabels
 type Inventory = {
   apps: { appId: string; version: string; state: string; lastError: string }[]
-  containers: { id: string; name: string; image: string; state: string; status: string; cleanup: boolean; stoppable: boolean;
-    stack: { appId: string; version: string; project: string } }[]
+  containers: {
+    id: string
+    name: string
+    image: string
+    state: string
+    status: string
+    cleanup: boolean
+    stoppable: boolean
+    stack: { appId: string; version: string; project: string }
+  }[]
   publishedPorts: { hostPort: number; containerPort: number; protocol: string; address: string; container: string; appId: string | null }[]
   unusedImages: { id: string; created: number; bytes: number }[]
   unreferencedTaggedImages: { id: string; tags: string[]; bytes: number }[]
 }
 type RemovalResult = { id: string; removed: boolean; error?: string }
-type TargetSummary = { id?: string; appId?: string; name?: string; image?: string; tags?: string[]; version?: string; stack?: { version: string } }
+type TargetSummary = {
+  id?: string
+  appId?: string
+  name?: string
+  image?: string
+  tags?: string[]
+  version?: string
+  stack?: { version: string }
+}
 type Preview = { action: Action; confirmation: string; targetId: string; target: unknown }
 
 function actionLabel(action: Action): VosOpsKey {
@@ -227,7 +243,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
 }
 
 type ConversationProposal = Preview | {
-  action: Action; confirmation: string; targetIds: string[]; targets: TargetSummary[]
+  action: Action
+  confirmation: string
+  targetIds: string[]
+  targets: TargetSummary[]
 }
 
 /** Render a server-owned proposal in the active conversation. */
@@ -318,36 +337,36 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
       }}>{t(activeHostMode.enabled ? 'hostDisable' : 'hostManagement')}</button>}
       {hostError && <p role="alert">{t('failed')}</p>}
     </aside>}
-    {(proposal || outcome) && <dialog ref={dialog} aria-label={t('proposalTitle')} onCancel={event => {
-    event.preventDefault()
-    if (proposal) void settle(false)
-    else setResult(undefined)
-  }} style={{ maxWidth: 'min(640px, 90vw)', maxHeight: '80vh', overflow: 'auto', padding: '1.25rem' }}>
-    <h3>{t('proposalTitle')}</h3>
-    {outcome && <p role="status">{t(outcome.message)} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
-    {outcome?.results && <ul>{outcome.results.map(item => <li key={item.id}>
-      {t(item.removed ? 'removed' : 'removalFailed')} · <code>{item.id}</code>
-      {item.error === 'image-delete-conflict' && <div>{t('imageDeleteConflict')}</div>}
-    </li>)}</ul>}
-    {proposal ? <section key={proposal.confirmation}>
-      <p>{t('pending')}</p>
-      <p>{t(actionLabel(proposal.action))}</p>
-      <ul aria-label={t('targetList')} style={{ overflowWrap: 'anywhere' }}>
-        {('targets' in proposal ? proposal.targets : [proposal.target as TargetSummary]).map((target, index) => {
-          const id = 'targetIds' in proposal ? proposal.targetIds[index] : proposal.targetId
-          const version = target.stack?.version ?? target.version
-          return <li key={id}>
-            {target.name && <div>{t('targetName')} · {target.name}</div>}
-            {target.image && <div>{t('targetImage')} · {target.image}</div>}
-            {!!target.tags?.length && <div>{t('targetImage')} · {target.tags.join(', ')}</div>}
-            {version && <div>{t('targetVersion')} · {version}</div>}
-            <div>{t('targetIdLabel')} · <code>{id}</code></div>
-          </li>
-        })}
-      </ul>
-      <button type="button" disabled={busy} onClick={() => void settle(true)}>{t('confirm')}</button>{' '}
-      <button type="button" disabled={busy} onClick={() => void settle(false)}>{t('skip')}</button>
-    </section> : <button type="button" onClick={() => setResult(undefined)}>{t('cancel')}</button>}
-  </dialog>}
+    {(proposal || outcome) && <dialog ref={dialog} aria-label={t('proposalTitle')} onCancel={(event) => {
+      event.preventDefault()
+      if (proposal) void settle(false)
+      else setResult(undefined)
+    }} style={{ maxWidth: 'min(640px, 90vw)', maxHeight: '80vh', overflow: 'auto', padding: '1.25rem' }}>
+      <h3>{t('proposalTitle')}</h3>
+      {outcome && <p role="status">{t(outcome.message)} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
+      {outcome?.results && <ul>{outcome.results.map(item => <li key={item.id}>
+        {t(item.removed ? 'removed' : 'removalFailed')} · <code>{item.id}</code>
+        {item.error === 'image-delete-conflict' && <div>{t('imageDeleteConflict')}</div>}
+      </li>)}</ul>}
+      {proposal ? <section key={proposal.confirmation}>
+        <p>{t('pending')}</p>
+        <p>{t(actionLabel(proposal.action))}</p>
+        <ul aria-label={t('targetList')} style={{ overflowWrap: 'anywhere' }}>
+          {('targets' in proposal ? proposal.targets : [proposal.target as TargetSummary]).map((target, index) => {
+            const id = 'targetIds' in proposal ? proposal.targetIds[index] : proposal.targetId
+            const version = target.stack?.version ?? target.version
+            return <li key={id}>
+              {target.name && <div>{t('targetName')} · {target.name}</div>}
+              {target.image && <div>{t('targetImage')} · {target.image}</div>}
+              {!!target.tags?.length && <div>{t('targetImage')} · {target.tags.join(', ')}</div>}
+              {version && <div>{t('targetVersion')} · {version}</div>}
+              <div>{t('targetIdLabel')} · <code>{id}</code></div>
+            </li>
+          })}
+        </ul>
+        <button type="button" disabled={busy} onClick={() => void settle(true)}>{t('confirm')}</button>{' '}
+        <button type="button" disabled={busy} onClick={() => void settle(false)}>{t('skip')}</button>
+      </section> : <button type="button" onClick={() => setResult(undefined)}>{t('cancel')}</button>}
+    </dialog>}
   </>
 }

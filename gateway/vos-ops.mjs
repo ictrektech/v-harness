@@ -1,5 +1,7 @@
 // VOS operations. The Agent transport is read-only; writes require browser
-// confirmation. No route accepts caller-supplied Docker API paths.
+// confirmation. No route accepts caller-supplied Docker API paths. Host
+// management reaches only containers of VOS application stacks, never the
+// database, model or unrelated containers that share the host.
 import { randomBytes } from 'node:crypto';
 import { request } from 'node:http';
 import { hostname } from 'node:os';
@@ -94,6 +96,20 @@ function mainStack(container) {
   return { appId: match[1], version: match[2], project };
 }
 
+const HIDDEN_APP_IDS = new Set(['com.ictrek.v-harness']);
+
+/**
+ * A container host management may show and operate on: a VOS application stack
+ * member that is not the harness itself. Database, model and unrelated host
+ * containers carry no matching stack and stay invisible. A stack container left
+ * behind by an uninstalled application keeps its labels, so cleanup still
+ * reaches it without consulting the VOS application list.
+ */
+function visible(c) {
+  const stack = mainStack(c);
+  return stack !== null && !HIDDEN_APP_IDS.has(stack.appId);
+}
+
 function summarizeContainer(c, apps) {
   const stack = mainStack(c);
   const app = stack ? apps.find(a => a.appId === stack.appId) : undefined;
@@ -165,8 +181,7 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     if (HOST_ACTIONS.has(action)) {
       if (!CONTAINER_ID.test(id)) throw new OpsError(400, 'invalid-target');
       const container = (snapshot?.containers ?? await daemon('/containers/json?all=1')).find(c => c.Id === id);
-      if (!container || !HOST_ACTIONS.get(action).includes(container.State) ||
-          mainStack(container)?.appId === 'com.ictrek.v-harness' ||
+      if (!container || !visible(container) || !HOST_ACTIONS.get(action).includes(container.State) ||
           (process.env.VH_SELF_CONTAINER || hostname()) === container.Id.slice(0, 12) ||
           process.env.VH_SELF_CONTAINER === container.Id) throw stale();
       const summary = summarizeContainer(container, []);
@@ -277,7 +292,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           (req.method === 'POST' && path === '/proposal'))) throw denied();
       const session = agent?.session ?? sessionFor(req);
       if (!session) throw new OpsError(401, 'sign-in-required');
-      const sessionScoped = agent || path.startsWith('/host-') || path === '/proposal' || path === '/confirm-proposal';
+      const sessionScoped = agent || path.startsWith('/host-') || path === '/proposal' ||
+        path === '/confirm-proposal' || path === '/containers';
       const sessionId = agent?.sessionId ?? url.searchParams.get('sessionId');
       const key = JSON.stringify([session.subject, sessionId]);
       const mode = hostModes.get(key);
@@ -318,11 +334,13 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         if (!agent || req.method !== 'GET' || !hostEnabled() || !await conversation()) throw denied();
         if (path === '/host-containers') {
           const containers = await daemon('/containers/json?all=1');
-          respond(res, 200, { containers: containers.filter(c => CONTAINER_ID.test(c.Id))
+          respond(res, 200, { containers: containers.filter(c => CONTAINER_ID.test(c.Id) && visible(c))
             .map(c => summarizeContainer(c, [])) });
         } else {
           const id = url.searchParams.get('id');
           if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
+          const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
+          if (!container || !visible(container)) throw new OpsError(404, 'not-found');
           const data = await daemonCall('GET', `/containers/${id}/logs?stdout=1&stderr=1&timestamps=1&tail=150`, 512 * 1024);
           respond(res, 200, { id, text: logText(data) });
         }
@@ -392,6 +410,21 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           if (!approved) { respond(res, 200, { cancelled: true }); return; }
           await execute(p, token, base, session, async () => sessionFor(req)?.sid === sid &&
             (HOST_ACTIONS.has(p.action) ? hostEnabled() && await conversation() : await vosEnabled()), res);
+          return;
+        }
+        if (!agent && path === '/containers' && req.method === 'GET') {
+          // The composer's @ menu names a container before the Agent has a turn
+          // to run, so this read answers the browser directly. It carries the
+          // same narrowed set the in-session tool operates on and needs no
+          // grant: the conversation's operations preset already authorized it.
+          const containers = await daemon('/containers/json?all=1');
+          respond(res, 200, { containers: containers.filter(c => CONTAINER_ID.test(c.Id) && visible(c))
+            .map(c => {
+              const stack = mainStack(c);
+              return { id: c.Id, name: bounded(c.Names?.[0]?.replace(/^\//, ''), 200),
+                appId: stack.appId, version: stack.version,
+                state: bounded(c.State, 40), status: bounded(c.Status, 300) };
+            }) });
           return;
         }
         if (!agent) throw denied();

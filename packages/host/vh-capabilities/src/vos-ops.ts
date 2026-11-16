@@ -22,7 +22,7 @@ export function registerVosOps(ctx: Context, gateway: string, key: string): void
 
   ctx.tools.register(defineTool({
     name: 'vos_host_containers',
-    description: 'Manage Docker containers on the VOS host in a session with Host management enabled. List containers, read logs, or propose starting, stopping, restarting or removing an exact container. A proposal waits for the user to confirm in the conversation. For multiple removals, send all target IDs together in ids in one call. End the turn and wait for the user to confirm or cancel.',
+    description: 'Inspect and repair VOS application containers in a conversation with application container management enabled. List containers, read logs, or propose starting, stopping, restarting or removing an exact container. Only containers of VOS application stacks are listed; database, model and unrelated host containers stay hidden. A proposal waits for the user to confirm in the conversation. For multiple removals, send all target IDs together in ids in one call. End the turn and wait for the user to confirm or cancel.',
     parameters: {
       operation: { type: 'string', enum: ['list', 'logs', 'start', 'stop', 'restart', 'remove'], required: true },
       id: { type: 'string', description: 'Complete container ID from list for a single target.' },
@@ -30,7 +30,7 @@ export function registerVosOps(ctx: Context, gateway: string, key: string): void
     },
     output: { schema: { type: 'string' }, render: (_args, text) => [{ type: 'text', text }] },
     async execute({ operation, id, ids }, { agent, signal }) {
-      if (!agent) throw new Error('Open a conversation with Host management enabled.')
+      if (!agent) throw new Error('Open a conversation with application container management enabled.')
       if (ids && (operation !== 'remove' || id !== undefined)) throw new Error('Use ids only for a removal batch, without id.')
       if (!ids && operation !== 'list' && !/^[a-f0-9]{64}$/.test(id ?? '')) throw new Error('Use the complete container ID from list.')
       const timeout = AbortSignal.any([signal, AbortSignal.timeout(35000)])
@@ -42,9 +42,9 @@ export function registerVosOps(ctx: Context, gateway: string, key: string): void
       if (response.ok || result?.error === 'confirmation-pending') {
         return `Awaiting confirmation for ${result.action} on ${proposalTargets(result)} (${result.expiresIn}s). This proposal has not run. Ask the user to confirm or cancel it in the conversation, then end the turn.`
       }
-      if (response.status === 401 || response.status === 403) throw new Error('A VOS system administrator must enable Host management in this conversation.')
-      if (result?.error === 'target-changed') throw new Error('The container is missing or ineligible for this operation. Refresh the container list and check its state.')
-      throw new Error(`Host management failed: ${result?.error ?? response.status}.`)
+      if (response.status === 401 || response.status === 403) throw new Error('A VOS system administrator must enable application container management in this conversation.')
+      if (result?.error === 'target-changed') throw new Error('The container is missing, is not a VOS application container, or is ineligible for this operation. Refresh the container list and check its state.')
+      throw new Error(`Application container management failed: ${result?.error ?? response.status}.`)
     },
   }), {
     async when({ agent, signal }) {
