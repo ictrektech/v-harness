@@ -341,9 +341,6 @@ RUN corepack enable \
 COPY gateway/ /opt/v-harness/gateway/
 COPY gateway/vos.patch.yml /usr/local/share/v-harness/vos.patch.yml
 COPY bin/ /opt/v-harness/bin/
-# Product skills are discovered through DSH_BUNDLED_SKILL_DIR (see
-# gateway/instances.mjs) and stay root-owned, so a tenant cannot edit them.
-COPY skills/ /opt/v-harness/skills/
 COPY bin/install-mnemon.sh /tmp/install-mnemon.sh
 ARG SKILL_PYPI_INDEX=https://mirrors.huaweicloud.com/repository/pypi/simple
 RUN apt-get update \
@@ -354,6 +351,8 @@ RUN apt-get update \
  && python3 -m venv /usr/local/share/vh-pptx-designer \
  && /usr/local/share/vh-pptx-designer/bin/pip install --no-cache-dir \
       --index-url "${SKILL_PYPI_INDEX}" --extra-index-url https://pypi.org/simple 'pptx-designer[images,ai-images]==1.0.0b11'
+# The gateway exposes these skill files read-only in each tenant's jail.
+COPY skills/ /opt/v-harness/skills/
 # Browser plugins built from this repository. A user's dsh profile installs its
 # web bundles from the registry, so gateway/plugins.mjs copies each of these
 # over the published copy right after dsh finishes installing the profile.

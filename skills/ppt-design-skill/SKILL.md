@@ -106,7 +106,7 @@ been revised, and the user has confirmed the final direction or result.
    `pptx_designer` APIs. Record the Theme Lock version, resolved-theme source,
    seed, package version, and module path with the generation result.
 8. Run the generation path and perform basic structural checks.
-9. Export the PPTX to PDF and PNG using `skill/scripts/render_pptx.ps1`.
+9. Export the PPTX to PDF and PNG with `sh /opt/v-harness/skills/ppt-design-skill/scripts/render_pptx.sh <deck.pptx> <new-preview-directory>`.
 10. Inspect the rendered PNGs directly using two gates. **Gate 1 is visual
    effect first**: ask whether the result looks client-ready at a glance, with a
    clear visual thesis, focal point, composition, density, rhythm, and purposeful

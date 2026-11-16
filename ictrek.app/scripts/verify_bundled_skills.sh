@@ -34,9 +34,9 @@ deck = Presentation("fixture.pptx")
 assert any("Editable fixture" in shape.text for slide in deck.slides
            for shape in slide.shapes if shape.has_text_frame)
 PY
-libreoffice -env:UserInstallation="file://$scratch/office" --headless --convert-to pdf fixture.pptx
-pdftoppm -f 1 -l 1 -scale-to 600 -png fixture.pdf preview
-test -s preview-1.png
+sh "$skill_root/ppt-design-skill/scripts/render_pptx.sh" fixture.pptx preview
+test -s preview/fixture.pdf
+test -s preview/slide-1.png
 
 ffmpeg -hide_banner -loglevel error -f lavfi -i 'color=c=blue:s=320x180:r=24' -t 1 -c:v libx264 motion.mp4
 ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:duration=1' tone.wav

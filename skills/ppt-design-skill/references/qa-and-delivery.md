@@ -1,5 +1,13 @@
 # QA and delivery
 
+On v-harness, render with the Linux entry point:
+
+```sh
+sh /opt/v-harness/skills/ppt-design-skill/scripts/render_pptx.sh deck.pptx preview
+```
+
+Give it a new output directory for each revision.
+
 Visual QA is performed by the LLM reviewing rendered PNGs. This skill does not
 implement a separate visual model, scoring service, or automatic visual
 revision engine.
