@@ -4,7 +4,11 @@ import {execFileSync,spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {randomUUID} from 'node:crypto';
-import {readdir,readFile} from 'node:fs/promises';
+import {cp,mkdir,readdir,readFile,writeFile} from 'node:fs/promises';
+const upgrade = process.env.VH_UPGRADE_FIXTURE;
+const fixtureFile = '/data/.vh/release-session-fixture.json';
+const runtimeModules = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules';
+
 assert.ok((await readFile('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-api-remotes/lib/client.js','utf8')).includes('selectDefaultModel'), 'browser Remote assembly must include default-model selection');
 assert.equal(execFileSync('npm', ['config', 'get', 'registry'], { encoding: 'utf8' }).trim(), 'https://registry.npmjs.org/');
 const webRoot='/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist';
@@ -87,6 +91,17 @@ try {
      headers: { ...(token ? { authorization: 'Bearer ' + token } : {}), 'content-type': 'application/json' },
      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
    });
+ if (upgrade === 'check') {
+   const fixture = JSON.parse(await readFile(fixtureFile, 'utf8'));
+   const prior = await api('/sessions/' + fixture.sessionId + '/events');
+   assert.equal(prior.status, 200, await prior.clone().text());
+   const previousEvents = (await prior.json()).events;
+   assert.ok(previousEvents.some(event => event.type === 'assistant-text' && event.text === replyText));
+   assert.ok(previousEvents.some(event => event.type === 'turn-ended' && event.outcome === 'completed'));
+   const legacyStorage = JSON.parse(await readFile(fixture.shadow + '/package.json', 'utf8'));
+   assert.equal(legacyStorage.version, '0.2.2-rc.2', 'retain the plugin-owned copy in the tenant profile');
+   console.log('PRIOR IMAGE SESSION REOPENED WITH OLD STORAGE STILL INSTALLED: PASS');
+ }
  for (const token of ['', 'invalid-fixture-token']) {
    const denied = await api('/sessions', { token, body: {} });
    assert.equal(denied.status, 401);
@@ -147,4 +162,13 @@ try {
    assert.doesNotMatch(await readFile(logs + '/' + file, 'utf8'), /prompt section .* is already registered/);
  }
  console.log('GLOBAL MARKET DEFAULT AND BUNDLED PLUGINS: PASS');
+ if (upgrade === 'prepare') {
+   const profile = '/data/startup-smoke/.dsh/profiles/web';
+   const shadow = profile + '/node_modules/@deepseek-ai/dsh-storage-domain';
+   await mkdir(profile + '/node_modules/@deepseek-ai', { recursive: true });
+   await cp(runtimeModules + '/@deepseek-ai/dsh-storage-domain', shadow, {recursive:true});
+   await writeFile(fixtureFile, JSON.stringify({sessionId: createdBody.sessionId, shadow}), {mode:0o600});
+   console.log('PRIOR IMAGE SESSION AND STORAGE FIXTURE SAVED');
+ }
+
 }catch(error){for(const file of await readdir('/data/.vh/logs').catch(()=>[])) console.log('INSTANCE LOG',(await readFile('/data/.vh/logs/'+file,'utf8')).replace(/token=[^\s&]+/g, 'token=<redacted>'));throw error;}finally{gateway.kill('SIGTERM');upstream.close();}

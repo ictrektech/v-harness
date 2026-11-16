@@ -2,6 +2,8 @@
 
 用 VOS 账号从脚本创建会话、提交任务并读取结果。API 会话使用该账号的 v-harness 工作区和「设置 → 模型」中选定的默认模型。使用前请在 V-Scheduler 配置该账号可用的模型。能进入 v-harness 的普通 VOS 账号即可调用。
 
+0.2.2-rc.3 的 VOS 运行时统一使用随应用安装的存储服务。升级前的工作区 ID 和会话 ID 可以继续使用，以下请求、响应和鉴权约定保持现状。
+
 ## 获取 VOS 访问令牌
 
 访问同一台 VOS 设备的 `https://<vos-host>:1180/v1000/oauth2/.well-known/openid-configuration`。外部集成使用 VOS 管理员注册的 OAuth2 客户端和回调地址。嵌入 v-harness 的集成可以使用安装时注册的公开客户端 `com.ictrek.v-harness`。
