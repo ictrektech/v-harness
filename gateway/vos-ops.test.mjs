@@ -82,7 +82,7 @@ test('binds execution to an exact target, rechecks state and consumes confirmati
   assert.deepEqual(state.calls, [['DELETE', `/containers/${containerId}?force=0&v=0`]]);
 });
 
-test('refuses non-platform logs and in-use or tagged images', async () => {
+test('refuses non-platform logs and protects referenced or changed images', async () => {
   const { send, state } = fixture();
   const { body: { grant } } = await send('/authorize', {});
   const logs = () => send('/logs?id=' + containerId, null, grant);
@@ -94,7 +94,17 @@ test('refuses non-platform logs and in-use or tagged images', async () => {
   assert.equal((await prepare()).status, 409);
   state.containers[0].ImageID = container.ImageID;
   state.images[0].RepoTags = ['demo:latest'];
-  assert.equal((await prepare()).status, 409);
+  const tagged = await prepare();
+  assert.equal(tagged.status, 200);
+  assert.deepEqual(tagged.body.target.tags, ['demo:latest']);
+  const execute = confirmation => send('/execute', { confirmation, targetId: imageId }, grant);
+  state.images[0].RepoTags = ['demo:latest', 'demo:backup'];
+  assert.equal((await execute(tagged.body.confirmation)).status, 409);
+  assert.ok(state.calls.every(([method]) => method !== 'DELETE'));
+  state.images[0].RepoTags = ['demo:latest'];
+  const confirmed = await prepare();
+  assert.equal((await execute(confirmed.body.confirmation)).status, 200);
+  assert.deepEqual(state.calls.at(-1), ['DELETE', `/images/${imageId}?force=0&noprune=1`]);
   state.images[0].RepoTags = [];
   const { body: { confirmation } } = await prepare();
   state.now += 60001;

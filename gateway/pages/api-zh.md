@@ -94,7 +94,7 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 
 `containers` 条目包含字符串 `id`、`name`、`image`、`imageId`、`state`、`status`，以及布尔 `cleanup`、`stack`（字符串 `appId`、`version`、`project`）和 `ports` 数组。容器状态取 Docker 原值，清理接受 `created` 或 `exited` 且归属与版本通过复核。端口条目包括数字 `hostPort`、`containerPort`，字符串 `protocol`（Docker 的 tcp、udp、sctp 值）、`address`。全机 `publishedPorts` 还带容器名称 `container` 和字符串或 null 的 `appId`。
 
-无标签镜像条目包括字符串 `id`、数字 `created`（Unix 秒）和 `bytes`（字节）；带标签镜像条目以字符串数组 `tags` 代替 `created`，仅供查看。容器清理不移除卷，镜像清理不会强制删除或清理父层。
+镜像条目包括字符串 `id` 和数字 `bytes`（字节）。`unusedImages` 还包含数字 `created`（Unix 秒），对应无标签、无摘要且未被任何容器引用的镜像。`unreferencedTaggedImages` 还包含非空字符串数组 `tags` 和可能为空的字符串数组 `digests`，对应带标签且未被任何容器引用的镜像。两类均可用 `remove-image` 提议清理。管理员在会话选「完全访问（VOS 运维）」并要求清理未使用镜像，核对确认框中的标签和 ID 后点击确认或跳过。删除时按完整 ID 复核引用和标签，保留卷和父镜像。Docker 遇到多标签、依赖镜像或新容器引用等冲突时可拒绝非强制删除。单项返回 409 `image-delete-conflict`，批量结果的对应条目返回 `removed: false` 和同一错误码。刷新清单核对失败项。
 
 错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target` 或 `confirmation-mismatch`，请核对 JSON、操作和完整 ID；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
 

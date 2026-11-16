@@ -117,6 +117,14 @@ function candidates(images, containers) {
     .map(i => ({ id: i.Id, created: i.Created, bytes: i.Size }));
 }
 
+function taggedImages(images, containers) {
+  const inUse = new Set(containers.map(c => c.ImageID));
+  return images.filter(i => IMAGE_ID.test(i.Id) && !inUse.has(i.Id))
+    .map(i => ({ id: i.Id, tags: (i.RepoTags ?? []).filter(t => t !== '<none>:<none>').sort(),
+      bytes: i.Size, digests: (i.RepoDigests ?? []).filter(d => d !== '<none>@<none>').sort() }))
+    .filter(i => i.tags.length > 0);
+}
+
 function logText(data) {
   // Non-TTY Docker streams prepend an eight-byte header to each frame.
   if (data.length < 8 || ![1, 2].includes(data[0]) || data[1] || data[2] || data[3]) {
@@ -188,7 +196,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     if (action === 'remove-image' && IMAGE_ID.test(id)) {
       const [containers, images] = snapshot ? [snapshot.containers, snapshot.images] :
         await Promise.all([daemon('/containers/json?all=1'), daemon('/images/json?all=1')]);
-      const item = candidates(images, containers).find(i => i.id === id);
+      const item = candidates(images, containers).find(i => i.id === id) ??
+        taggedImages(images, containers).find(i => i.id === id);
       if (!item) throw stale();
       return item;
     }
@@ -204,11 +213,17 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     return Promise.all(ids.map(id => target(action, id, token, base, { containers, apps, images })));
   }
 
-  function removeTarget(action, id) {
-    const path = action === 'remove-image'
-      ? `/images/${id}?force=0&noprune=1`
-      : `/containers/${id}?force=0&v=0`;
-    return daemonCall('DELETE', path);
+  async function removeTarget(action, id) {
+    if (action !== 'remove-image') {
+      await daemonCall('DELETE', `/containers/${id}?force=0&v=0`);
+      return;
+    }
+    try {
+      await daemonCall('DELETE', `/images/${id}?force=0&noprune=1`);
+    } catch (error) {
+      if (error instanceof OpsError && error.status === 409) throw new OpsError(409, 'image-delete-conflict');
+      throw error;
+    }
   }
 
   async function execute(pending, token, base, session, stillAllowed, res) {
@@ -386,15 +401,12 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         const [apps, containers, images] = await Promise.all([
           inventory(token, base), daemon('/containers/json?all=1'), daemon('/images/json?all=1'),
         ]);
-        const imageReferences = new Set(containers.map(c => c.ImageID));
         const rows = containers.map(c => summarizeContainer(c, apps));
         respond(res, 200, {
           apps, containers: rows.filter(c => c.stack && CONTAINER_ID.test(c.id)),
           publishedPorts: rows.flatMap(c => c.ports.map(p => ({ ...p, container: c.name, appId: c.stack?.appId ?? null }))),
           unusedImages: candidates(images, containers),
-          unreferencedTaggedImages: images.filter(i => IMAGE_ID.test(i.Id) &&
-            !imageReferences.has(i.Id) && (i.RepoTags ?? []).some(t => t !== '<none>:<none>'))
-            .map(i => ({ id: i.Id, tags: i.RepoTags, bytes: i.Size })),
+          unreferencedTaggedImages: taggedImages(images, containers),
 
         });
         return;

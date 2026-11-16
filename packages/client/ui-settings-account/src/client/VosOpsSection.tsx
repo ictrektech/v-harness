@@ -6,7 +6,7 @@ const en = {
   authorize: 'Authorize diagnostics', refresh: 'Refresh inventory', busy: 'Working…',
   applications: 'Installed applications', containers: 'VOS application containers', ports: 'Published Docker ports',
   images: 'Unused untagged images', none: 'None found', logs: 'Read recent logs',
-  restart: 'Restart application', stopContainer: 'Stop old container', removeContainer: 'Remove old container', removeImage: 'Remove untagged image',
+  restart: 'Restart application', stopContainer: 'Stop old container', removeContainer: 'Remove old container', removeImage: 'Remove image',
   confirm: 'Confirm this operation', cancel: 'Cancel', confirmation: 'Check the exact target below. This confirmation expires in 60 seconds.',
   accepted: 'Operation accepted. Refresh the inventory to check progress.',
   pending: 'Awaiting your confirmation. The operation has not run.',
@@ -14,7 +14,8 @@ const en = {
   confirmationUnavailable: 'This confirmation expired or was already used. Check the current state before requesting another.',
   failed: 'The request failed. Refresh the inventory or authorize again if the session expired.',
   forbidden: 'VOS system administrator permission and an active diagnostics grant are required.',
-  cleanup: 'Container cleanup deletes its writable layer and keeps volumes. Image cleanup is limited to untagged images with no container references.',
+  cleanup: 'Container cleanup deletes its writable layer and keeps volumes. Image cleanup accepts images with no container references, including tagged images.',
+  imageDeleteConflict: 'Docker refused to remove this image. Check for multiple tags, dependent images or a new container reference.',
   port: 'Filter by host port', closeLogs: 'Close logs', status: 'View status',
   hostManagement: 'Host management',
   hostEnable: 'Enable host management',
@@ -33,7 +34,7 @@ const zh: Record<keyof typeof en, string> = {
   authorize: '授权诊断', refresh: '刷新清单', busy: '正在处理…',
   applications: '已安装应用', containers: 'VOS 应用容器', ports: 'Docker 发布端口',
   images: '无标签且未使用的镜像', none: '未发现', logs: '查看近期日志',
-  restart: '重启应用', stopContainer: '停止旧版容器', removeContainer: '删除未运行的旧版容器', removeImage: '删除无标签镜像',
+  restart: '重启应用', stopContainer: '停止旧版容器', removeContainer: '删除未运行的旧版容器', removeImage: '删除镜像',
   confirm: '确认执行', cancel: '取消', confirmation: '请核对下面的具体对象。此次确认 60 秒后失效。',
   accepted: '操作已受理。刷新清单查看进度。',
   pending: '等待你确认。操作尚未执行。',
@@ -41,7 +42,8 @@ const zh: Record<keyof typeof en, string> = {
   confirmationUnavailable: '这次确认已过期或已使用。请先检查当前状态，再发起新提议。',
   failed: '请求失败。请刷新清单；若授权已过期，请重新授权。',
   forbidden: '需要 VOS 系统管理员权限和有效的诊断授权。',
-  cleanup: '删除容器会删除其可写层并保留卷。仅可清理无标签且没有容器引用的镜像。',
+  cleanup: '删除容器会删除其可写层并保留卷。可清理未被任何容器引用的镜像，包括带标签的镜像。',
+  imageDeleteConflict: 'Docker 拒绝删除此镜像。请检查镜像是否有多个标签、依赖镜像或新增的容器引用。',
   port: '按宿主机端口筛选', closeLogs: '关闭日志', status: '查看状态',
   hostManagement: '宿主机管理',
   hostEnable: '开启宿主机管理',
@@ -71,8 +73,8 @@ type Inventory = {
   unusedImages: { id: string; created: number; bytes: number }[]
   unreferencedTaggedImages: { id: string; tags: string[]; bytes: number }[]
 }
-type RemovalResult = { id: string; removed: boolean }
-type TargetSummary = { id?: string; appId?: string; name?: string; image?: string; version?: string; stack?: { version: string } }
+type RemovalResult = { id: string; removed: boolean; error?: string }
+type TargetSummary = { id?: string; appId?: string; name?: string; image?: string; tags?: string[]; version?: string; stack?: { version: string } }
 type Preview = { action: Action; confirmation: string; targetId: string; target: unknown }
 
 function actionLabel(action: Action): VosOpsKey {
@@ -91,6 +93,7 @@ async function request<T>(path: string, grant?: string, body?: object): Promise<
   if (!response.ok) {
     const failure = await response.json().catch(() => null)
     if (failure?.error === 'target-changed') throw new Error('targetChanged')
+    if (failure?.error === 'image-delete-conflict') throw new Error('imageDeleteConflict')
     if (failure?.error === 'confirmation-unavailable') throw new Error('confirmationUnavailable')
     throw new Error(String(response.status))
   }
@@ -123,7 +126,7 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
         setAppStatus(undefined)
         setMessage('forbidden')
       } else {
-        setMessage(status === 'targetChanged' ? 'targetChanged' : 'failed')
+        setMessage(status === 'targetChanged' || status === 'imageDeleteConflict' ? status : 'failed')
       }
     } finally {
       setBusy(false)
@@ -216,7 +219,8 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       </li>)}</ul>
       <h3>{t('tagged')}</h3>
       <ul>{inventory.unreferencedTaggedImages.map(image => <li key={image.id}>
-        {image.tags.join(', ')} · {(image.bytes / (1024 * 1024)).toFixed(1)} MiB
+        {image.tags.join(', ')} · {(image.bytes / (1024 * 1024)).toFixed(1)} MiB{' '}
+        {button('removeImage', () => prepare('remove-image', image.id))}
       </li>)}</ul>
     </>}
   </div>
@@ -279,7 +283,7 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
       if (approved) setResult({ sessionId, message: 'accepted', ...(response.results ? { results: response.results } : {}), ...(response.taskId ? { taskId: response.taskId } : {}) })
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
-      const message = code === 'targetChanged' || code === 'confirmationUnavailable' ? code : 'failed'
+      const message = code === 'targetChanged' || code === 'confirmationUnavailable' || code === 'imageDeleteConflict' ? code : 'failed'
       setResult({ sessionId, message })
     } finally {
       setPending(undefined)
@@ -323,6 +327,7 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     {outcome && <p role="status">{t(outcome.message)} {outcome.taskId && <code>{outcome.taskId}</code>}</p>}
     {outcome?.results && <ul>{outcome.results.map(item => <li key={item.id}>
       {t(item.removed ? 'removed' : 'removalFailed')} · <code>{item.id}</code>
+      {item.error === 'image-delete-conflict' && <div>{t('imageDeleteConflict')}</div>}
     </li>)}</ul>}
     {proposal ? <section key={proposal.confirmation}>
       <p>{t('pending')}</p>
@@ -334,6 +339,7 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
           return <li key={id}>
             {target.name && <div>{t('targetName')} · {target.name}</div>}
             {target.image && <div>{t('targetImage')} · {target.image}</div>}
+            {!!target.tags?.length && <div>{t('targetImage')} · {target.tags.join(', ')}</div>}
             {version && <div>{t('targetVersion')} · {version}</div>}
             <div>{t('targetIdLabel')} · <code>{id}</code></div>
           </li>
