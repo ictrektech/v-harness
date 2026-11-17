@@ -345,7 +345,8 @@ test('logs support gateway-side time, pattern and context filtering', async () =
   assert.match(state.calls.at(-1)[1], /since=/);
   const relative = await logs('&since=30m');
   assert.equal(relative.body.returned, 3);
-  assert.match(state.calls.at(-1)[1], /since=1969/);
+  // Mocked now=1 minus 30m, floored to epoch seconds with one second of slack.
+  assert.match(state.calls.at(-1)[1], /since=-1801\b/);
   const matched = await logs('&pattern=timeout');
   assert.equal(matched.body.returned, 1);
   assert.match(matched.body.text, /ERROR: db timeout/);
@@ -394,7 +395,7 @@ test('polling with the after cursor returns only new records and a next cursor',
   assert.equal(incremental.body.first, t4);
   assert.equal(incremental.body.next, t5);
   assert.equal(incremental.body.text.includes('ready'), false);
-  assert.ok(state.calls.at(-1)[1].includes('since=' + encodeURIComponent(t3)));
+  assert.ok(state.calls.at(-1)[1].includes('since=' + (Math.floor(Date.parse(t3) / 1000) - 1)));
   assert.match(state.calls.at(-1)[1], /tail=1000/);
   state.logData = Buffer.concat([frame(1, `${t5} recovered\n`)]);
   const quiet = await logs('&after=' + encodeURIComponent(t5));

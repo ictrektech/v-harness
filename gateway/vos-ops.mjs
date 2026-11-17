@@ -202,13 +202,10 @@ function logRecords(data) {
 function logSince(value, nowMs, code) {
   if (value === null) return null;
   if (LOG_RFC3339.test(value) && !Number.isNaN(Date.parse(value))) {
-    return { docker: value, ms: Date.parse(value) };
+    return { ms: Date.parse(value) };
   }
   const span = LOG_SPAN.exec(value);
-  if (span) {
-    const ms = nowMs - Number(span[1]) * LOG_SPAN_MS[span[2]];
-    return { docker: new Date(ms).toISOString(), ms };
-  }
+  if (span) return { ms: nowMs - Number(span[1]) * LOG_SPAN_MS[span[2]] };
   throw new OpsError(400, code);
 }
 
@@ -217,10 +214,13 @@ const logNano = ts => ts.replace(/(?:\.(\d+))?Z$/, (_, frac = '') => '.' + frac.
 /**
  * Parses the shared log query: since/until (RFC 3339 or a span like 30m),
  * after (a Z-form RFC 3339 polling cursor), pattern (case-insensitive) and
- * context (records around each match). The cursor and time bounds go to Docker
- * as since/until; the cursor is exclusive by stamp so polling resumes exactly
- * after the last record already seen. With any of them the Docker-side scan
- * window widens from the default tail.
+ * context (records around each match). The time bounds go to Docker as unix
+ * epoch seconds: this deployment's daemon parses logs since/until with
+ * strconv.ParseInt and answers RFC 3339 with a 500. One second of slack on
+ * each side over-fetches; the record-level filtering below stays exact. The
+ * cursor is exclusive by stamp so polling resumes exactly after the last
+ * record already seen. With any of them the Docker-side scan window widens
+ * from the default tail.
  */
 function logFilter(url, nowMs) {
   const since = logSince(url.searchParams.get('since'), nowMs, 'invalid-since');
@@ -247,10 +247,11 @@ function logFilter(url, nowMs) {
     context = Number(url.searchParams.get('context'));
     if (!Number.isInteger(context) || context < 0 || context > LOG_MAX_CONTEXT) throw new OpsError(400, 'invalid-context');
   }
-  const lower = since ?? (after ? { docker: after } : null);
+  const epoch = (ms, slack) => String(Math.floor(ms / 1000) + slack);
+  const lower = since ?? (after ? { ms: Date.parse(after) } : null);
   const query = LOG_QUERY + (lower || until || pattern ? LOG_SCAN_TAIL : LOG_DEFAULT_TAIL) +
-    (lower ? '&since=' + encodeURIComponent(lower.docker) : '') +
-    (until ? '&until=' + encodeURIComponent(until.docker) : '');
+    (lower ? '&since=' + epoch(lower.ms, -1) : '') +
+    (until ? '&until=' + epoch(until.ms, 1) : '');
   return { since, until, after, cursor: after === null ? null : logNano(after), pattern, context, query };
 }
 
