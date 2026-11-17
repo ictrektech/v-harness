@@ -6,6 +6,12 @@ import {once} from 'node:events';
 import {randomUUID} from 'node:crypto';
 import {cp,mkdir,readdir,readFile,writeFile} from 'node:fs/promises';
 const upgrade = process.env.VH_UPGRADE_FIXTURE;
+const bundled = JSON.parse(await readFile('/opt/v-harness/gateway/agent-plugins/registry-plugins.json', 'utf8')
+  .catch(error => {
+    if (upgrade === 'prepare' && error.code === 'ENOENT') return 'null';
+    throw error;
+  }));
+const profile = '/data/startup-smoke/.dsh/profiles/web';
 const fixtureFile = '/data/.vh/release-session-fixture.json';
 const runtimeModules = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules';
 
@@ -77,6 +83,30 @@ try {
    assert.equal(result?.ok, true, JSON.stringify(result?.error));
    return result.value;
  };
+ if (bundled) {
+   assert.ok(!html.includes('ds-bot:surface'));
+   const graph = JSON.parse(html.match(/globalThis\["__DSH_BOOT__"\] = ([^<]+)<\/script>/u)[1]);
+   const inventory = await rpc('pluginManager/listPlugins', {});
+   const bundles = await rpc('pluginManager/listBundles', {});
+   for (const [name, version] of Object.entries(bundled)) {
+     const entry = bundles.find(item => item.name === name);
+     assert.equal(entry?.version, version, name);
+     assert.equal(entry?.enabled, true, name);
+     assert.equal(entry?.error, undefined, JSON.stringify(entry?.error));
+     const host = inventory.find(item => item.moduleName === name);
+     assert.equal(host?.fiberPhase, 'active', JSON.stringify(host ?? { name }));
+     const client = graph.entries.find(item => item.id === name);
+     assert.ok(client?.url, `missing browser component for ${name}`);
+     const response = await fetch(new URL(client.url, base + '/'), { headers: { cookie } });
+     assert.equal(response.status, 200, name);
+     assert.match(response.headers.get('content-type') ?? '', /javascript/, name);
+     await response.arrayBuffer();
+   }
+   assert.ok(!bundles.some(item => item.name === 'ds-bot'));
+   assert.ok(!inventory.some(item => item.moduleName.startsWith('ds-bot')));
+   assert.ok(inventory.some(item => item.moduleName === '@deepseek-ai/dsh-client-ui-settings-general' && item.enabled));
+   console.log('PINNED PLUGINS, ACTIVE HOST FIBERS, BROWSER BUNDLES AND CORE SETTINGS: PASS');
+ }
  const workspace = await rpc('workspace/create', { request: { path: '/home/startup-smoke/workspace' } });
  assert.ok(workspace.workspace.workspaceId);
  console.log('WORKSPACE CONTROLLER CREATE: PASS');
@@ -100,6 +130,10 @@ try {
    assert.ok(previousEvents.some(event => event.type === 'turn-ended' && event.outcome === 'completed'));
    const legacyStorage = JSON.parse(await readFile(fixture.shadow + '/package.json', 'utf8'));
    assert.equal(legacyStorage.version, '0.2.2-rc.2', 'retain the plugin-owned copy in the tenant profile');
+   const manifest = JSON.parse(await readFile(profile + '/package.json', 'utf8'));
+   assert.ok(!Object.hasOwn(manifest.dependencies, 'ds-bot'));
+   assert.ok(!manifest.dsh.profile.bundles.includes('ds-bot'));
+   assert.equal(await readFile('/data/startup-smoke/.dsh/ds-bot-upgrade-fixture', 'utf8'), 'preserved');
    console.log('PRIOR IMAGE SESSION REOPENED WITH OLD STORAGE STILL INSTALLED: PASS');
  }
  for (const token of ['', 'invalid-fixture-token']) {
@@ -154,7 +188,7 @@ try {
  const plugins = await market.json();
  assert.equal(plugins.region, 'global');
  assert.equal(plugins.githubProxy, null);
- for (const name of ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']) {
+ for (const name of Object.keys(bundled ?? { dshmarket: true, 'ds-bot': true })) {
    assert.ok(Object.hasOwn(plugins.installed, name), `Missing bundled plugin ${name}`);
  }
  const logs = '/data/.vh/logs';
@@ -163,7 +197,12 @@ try {
  }
  console.log('GLOBAL MARKET DEFAULT AND BUNDLED PLUGINS: PASS');
  if (upgrade === 'prepare') {
-   const profile = '/data/startup-smoke/.dsh/profiles/web';
+   const manifestPath = profile + '/package.json';
+   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+   assert.ok(manifest.dependencies['ds-bot'], 'prepare the upgrade fixture with the prior DS Bot image');
+   if (!manifest.dsh.profile.bundles.includes('ds-bot')) manifest.dsh.profile.bundles.push('ds-bot');
+   await writeFile(manifestPath, JSON.stringify(manifest));
+   await writeFile('/data/startup-smoke/.dsh/ds-bot-upgrade-fixture', 'preserved');
    const shadow = profile + '/node_modules/@deepseek-ai/dsh-storage-domain';
    await mkdir(profile + '/node_modules/@deepseek-ai', { recursive: true });
    await cp(runtimeModules + '/@deepseek-ai/dsh-storage-domain', shadow, {recursive:true});
