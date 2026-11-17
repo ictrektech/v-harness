@@ -19,7 +19,13 @@ workspace, and private deliverables.
   read another user's sessions, files, or credentials.
 - The file drawer only shows your own `workspace/`; hidden files are not
   downloadable.
-- Add models in V-Scheduler, then open Settings → Models to refresh the list and select a default. Chat, Responses, Messages and text completion models visible to your VOS account are available in the conversation dropdown. No separate DeepSeek login or API key is required. Text-only completion models cannot call tools.
+- Open Settings → Models. Pick a V-Scheduler or personal model as the default for new conversations. V-Scheduler uses your VOS identity. Text-only completion models reply without tool calls.
+
+### Use your own models
+
+1. Open Account menu → Settings → Models → Add model provider.
+2. Select **Third-party model provider**, choose a provider from the catalog, enter your API key and save. For a self-hosted or compatible endpoint, choose **Custom model API**, enter a provider ID, base URL, protocol, model IDs and any required key, then save. The endpoint must be reachable from v-harness.
+3. Under **Default model for new conversations**, select your personal model. To switch in the current conversation, use the model menu at the bottom right of the composer. Existing conversations keep their selected models. If your provider is missing, refresh the catalog and check the endpoint, protocol, model IDs and credentials.
 
 ## Built-in plugins
 
@@ -39,7 +45,7 @@ Open Plugins in the sidebar to find the preinstalled bundles. Open Settings → 
 
 ### Assign roles in Agent Teams
 
-Specify the members to create, their responsibilities, task dependencies, and when to start in the conversation. Use the team panel to review the draft and track members and progress. In the draft, you can update existing members' roles and models and add, edit, or remove tasks. To add members or revise the division of work, select **Return to chat & revise** and describe the changes. Save the draft, select **Approve & Run**, then select **Confirm launch**. After the team starts, request changes to assignments in the conversation.
+Specify the members to create, their responsibilities, task dependencies, and when to start in the conversation. After the draft appears, click **View team** in the conversation header or in the team card below the reply to open **Team workspace**. You can review the draft there before launch. Once the team starts, check assignments in the member list, select tasks in the dependency graph to see their owners and prerequisites, and track completion in the progress summary. In the draft, you can update existing members' roles and models and add, edit, or remove tasks. To add members or revise the division of work, select **Return to chat & revise** and describe the changes. Save the draft, select **Approve & Run**, then select **Confirm launch**. After the team starts, request changes to assignments in the conversation.
 
 > Create an Agent Teams team. Member A analyzes requirements and writes acceptance criteria without editing code. Member B implements the change after A finishes. Member C independently reviews the implementation and tests after B finishes. List the members, tasks, and dependencies in a draft plan. Wait for my approval before starting.
 
@@ -70,7 +76,7 @@ Ask the Agent to collect all cleanup targets in one proposal. The confirmation w
 
 ## Framework and plugin upgrades
 
-The runtime is DSH 0.2.2-rc.3. On the first launch after upgrading, v-harness removes the DS Bot plugin and settings entry and preserves its historical data. Select models under Settings → Models. The plugins use the existing Agent API session and task interface. Each plugin owns its browser UI endpoints.
+The runtime is DSH 0.2.2-rc.3. On the first launch after upgrading, v-harness removes the DS Bot plugin and settings entry and preserves its historical data. Settings → Models contains the V-Scheduler selector and personal provider setup. The plugins use the existing Agent API session and task interface. Each plugin owns its browser UI endpoints.
 
 The tenant runtime uses its installation-owned storage service when a plugin carries an older storage module. This keeps workspace and session services on the same module identity. Session files and workspace membership stay in the persistent user directory. If history is missing after an upgrade, inspect startup errors before changing any session files. The Agent API routes and authentication contract remain unchanged.
 
