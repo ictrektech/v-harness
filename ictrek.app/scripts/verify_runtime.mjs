@@ -37,6 +37,7 @@ const personalModel = 'personal-fixture';
 const personalReply = 'Personal model fixture completed';
 const personalKey = 'isolated-personal-model-test';
 let personalRequests = 0;
+let schedulerAvailable = true;
 const upstream = createServer((req, res) => {
  const key = req.headers.authorization?.replace(/^Bearer /, '');
  const subject = tokens.get(key);
@@ -49,6 +50,11 @@ const upstream = createServer((req, res) => {
  if (req.url === '/userinfo') {
    res.end(JSON.stringify({ sub: subject, preferred_username: subject, locale: 'en' }));
  } else if (req.url === '/api/v1/models') {
+   if (!schedulerAvailable) {
+     res.writeHead(503);
+     res.end('{}');
+     return;
+   }
    res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }] }));
  } else if (req.url === '/v1/chat/completions') {
    req.resume();
@@ -204,6 +210,10 @@ try {
    await rpc('session/selectDefaultModel', { selection: { provider: providerId, model: personalModel } });
    const selected = await rpc('session/modelCatalog', {});
    assert.equal(selected.default.provider, providerId);
+   schedulerAvailable = false;
+   const personalOnly = await rpc('session/modelCatalog', {});
+   assert.ok(personalOnly.groups.some(group => group.id === providerId));
+   assert.ok(!personalOnly.groups.some(group => group.id === provider.id));
    const response = await api('/sessions', { body: { workspaceId: workspace.workspace.workspaceId } });
    assert.equal(response.status, 201, await response.clone().text());
    const personalPath = '/sessions/' + (await response.json()).sessionId;
@@ -222,7 +232,7 @@ try {
    }
    assert.equal(completed, true, 'personal model request timed out');
    assert.equal(personalRequests, 1);
-   console.log('PERSONAL CREDENTIAL, DEFAULT MODEL AND DIRECT INFERENCE: PASS');
+   console.log('PERSONAL DEFAULT AND DIRECT INFERENCE WITHOUT V-SCHEDULER: PASS');
  }
 
  const state = await fetch(base + '/media-desk/state', { headers: { cookie, 'x-media-desk-lang': 'en' } });

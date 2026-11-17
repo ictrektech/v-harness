@@ -22,7 +22,7 @@ dependencies:
   apps:
     - id: com.ictrek.v-scheduler
       version: latest
-      optional: false
+      optional: true
 
 oauth2:
   client:
