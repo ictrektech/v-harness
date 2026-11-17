@@ -74,6 +74,7 @@ const LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
  *   createSession: (identity: { subject: string, account: string, userAgent: string }, now?: number) => string,
  *   loadSession: (sid: string | undefined, userAgent: string, now?: number) => Session | undefined,
  *   isActive: (sid: string, subject: string, now?: number) => boolean,
+ *   subjectOf: (sid: string) => string | undefined,
  *   revokeSession: (sid: string) => void,
  *   revokeSubject: (subject: string) => void,
  *   close: () => void,
@@ -157,6 +158,19 @@ export async function openSessionStore(path, { ttlMs }) {
     isActive(sid, subject, now = Date.now()) {
       const row = bySid.get(sid);
       return Boolean(row && row.subject === subject && !row.revoked && row.expires_at > now);
+    },
+    /**
+     * Which account a ticket was issued to, retired or not.
+     *
+     * A tab presenting a retired ticket is not the same thing as a tab
+     * presenting none: following the browser's cookie there would hand the page
+     * to whoever signed in later, which is how one account's workspace came to
+     * be rendered under another account's window.
+     * @param {string} sid - the session id.
+     * @returns {string | undefined} the subject the ticket belonged to.
+     */
+    subjectOf(sid) {
+      return bySid.get(sid)?.subject;
     },
     revokeSession: (sid) => { revokeOne.run(sid); proved.delete(sid); },
     revokeSubject: (subject) => { revokeSubject.run(subject); },

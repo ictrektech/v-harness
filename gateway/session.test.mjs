@@ -80,6 +80,16 @@ describe('session store', () => {
     assert.equal(store.loadSession(kept, UA), undefined);
   });
 
+  it('names the account a retired ticket belonged to', async () => {
+    const store = await openSessionStore(dbPath(), { ttlMs: TTL_MS });
+    const sid = store.createSession({ subject: 'sub-1', account: 'admin', userAgent: UA });
+    store.revokeSession(sid);
+    // A retired ticket still says whose it was: that is what stops a tab from
+    // being handed to whoever the browser's cookie names now.
+    assert.equal(store.subjectOf(sid), 'sub-1');
+    assert.equal(store.subjectOf('never-issued'), undefined);
+  });
+
   it('records when a session proved its identity and forgets it on revoke', async () => {
     const store = await openSessionStore(dbPath(), { ttlMs: TTL_MS });
     const sid = store.createSession({ subject: 'sub-1', account: 'a', userAgent: UA });

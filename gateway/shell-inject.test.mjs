@@ -224,3 +224,139 @@ test('without an application path nothing is rewritten', () => {
   assert.deepEqual(bridge.fetch, ['/dsh-gitea/config']);
   assert.deepEqual(bridge.xhr, ['/dsh-gitea/config']);
 });
+
+/**
+ * Run the bridge for a document served under one ticket, with a tab that may
+ * already hold another.
+ * @param {{ ticket?: string, account?: string, stored?: string, storedAccount?: string, basePath?: string, status?: number }} options
+ * @returns {{ calls: { url: string, ticket: string | undefined }[], sockets: string[], reloads: number, context: Record<string, any> }}
+ */
+function loadTicketed({ ticket = '', account = '', stored, storedAccount, basePath = '', status = 200 } = {}) {
+  const html = injectShell('<html><head></head><body></body></html>', { locale: 'zh', basePath, ticket, account });
+  const script = scriptsOf(html).find(value => value.includes('ROOT_ROUTES'));
+  assert.ok(script);
+  /** @type {{ url: string, ticket: string | undefined }[]} */
+  const calls = [];
+  /** @type {string[]} */
+  const sockets = [];
+  const store = new Map();
+  if (stored !== undefined) store.set('vh_session', stored);
+  if (storedAccount !== undefined) store.set('vh.tab.account', storedAccount);
+  class FakeSocket {
+    /** @param {string} url */
+    constructor(url) {
+      sockets.push(String(url));
+    }
+  }
+  const location = new URL('https://vos.example' + (basePath || '') + '/');
+  /** @type {Record<string, any>} */
+  const sandbox = {
+    XMLHttpRequest: class { open() {} },
+    navigator: {},
+    WebSocket: FakeSocket,
+    location,
+    document: { readyState: 'complete', getElementById: () => null, documentElement: { appendChild() {} } },
+    URL,
+    Request,
+    Headers,
+    console,
+    sessionStorage: {
+      /** @param {string} key */
+      getItem: (key) => (store.has(key) ? store.get(key) : null),
+      /** @param {string} key @param {string} value */
+      setItem: (key, value) => { store.set(key, String(value)); },
+      /** @param {string} key */
+      removeItem: (key) => { store.delete(key); },
+    },
+  };
+  sandbox.fetch = (/** @type {any} */ url, /** @type {any} */ init) => {
+    const headers = init && init.headers;
+    calls.push({
+      url: typeof url === 'string' ? url : String(url),
+      ticket: headers && typeof headers.get === 'function' ? headers.get('x-vh-session') : undefined,
+    });
+    return Promise.resolve({ status });
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  const reloads = { count: 0 };
+  location.reload = () => { reloads.count += 1; };
+  vm.runInContext(script, sandbox);
+  return { calls, sockets, get reloads() { return reloads.count; }, context: sandbox };
+}
+
+test('a tab stamps its ticket on the requests that reach this gateway', () => {
+  const page = loadTicketed({ ticket: 'ticket-a' });
+  page.context.fetch('/api/session/list');
+  page.context.fetch('/__vh/boot');
+  assert.deepEqual(page.calls, [
+    { url: '/api/session/list', ticket: 'ticket-a' },
+    { url: '/__vh/boot', ticket: 'ticket-a' },
+  ]);
+});
+
+test('the ticket never leaves for the platform or another origin', () => {
+  const page = loadTicketed({ ticket: 'ticket-a' });
+  page.context.fetch('/v1000/oauth2/userinfo');
+  page.context.fetch('/app/com.ictrek.mcphub/api/x');
+  page.context.fetch('https://gitea.internal/api/v1/repos');
+  assert.deepEqual(page.calls.map(call => call.ticket), [undefined, undefined, undefined]);
+});
+
+test('a tab keeps the ticket it already holds when another account signs in', () => {
+  // The document was served under the cookie's account (b); this tab is still a.
+  const page = loadTicketed({ ticket: 'ticket-b', account: 'tieniu', stored: 'ticket-a', storedAccount: 'admin' });
+  page.context.fetch('/api/session/list');
+  assert.equal(page.calls[0]?.ticket, 'ticket-a');
+});
+
+test('two tabs of one account follow a re-login instead of pinning the old ticket', () => {
+  // Same account, a new ticket from another tab: the old one is retired, so
+  // keeping it would make this tab fall back on the cookie for every request.
+  const page = loadTicketed({ ticket: 'ticket-a2', account: 'admin', stored: 'ticket-a1', storedAccount: 'admin' });
+  page.context.fetch('/api/session/list');
+  assert.equal(page.calls[0]?.ticket, 'ticket-a2');
+  assert.equal(page.context.sessionStorage.getItem('vh_session'), 'ticket-a2');
+});
+
+test('a tab defers to the document when the browser already agrees', () => {
+  const page = loadTicketed({ ticket: 'ticket-a', account: 'admin', stored: 'ticket-a' });
+  page.context.fetch('/api/session/list');
+  assert.equal(page.calls[0]?.ticket, 'ticket-a');
+  assert.equal(page.context.sessionStorage.getItem('vh.tab.account'), 'admin');
+});
+
+test('the first document of a tab adopts the ticket that served it', () => {
+  const page = loadTicketed({ ticket: 'ticket-a', account: 'admin' });
+  page.context.fetch('/api/session/list');
+  assert.equal(page.calls[0]?.ticket, 'ticket-a');
+  assert.equal(page.context.sessionStorage.getItem('vh_session'), 'ticket-a');
+});
+
+test('the socket handshake carries the ticket in the address', () => {
+  const page = loadTicketed({ ticket: 'ticket-a' });
+  void new page.context.WebSocket('/api/remote.mux');
+  assert.deepEqual(page.sockets, ['/api/remote.mux?__vh_tab=ticket-a']);
+});
+
+test('a document served without a ticket stamps nothing', () => {
+  const page = loadTicketed();
+  page.context.fetch('/api/session/list');
+  assert.equal(page.calls[0]?.ticket, undefined);
+});
+
+test('a pinned tab that is refused drops its ticket and reloads once', async () => {
+  // The tab holds a retired ticket while the browser names another account: the
+  // gateway refuses instead of serving the other account's workspace.
+  const page = loadTicketed({ ticket: 'ticket-b', account: 'tieniu', stored: 'ticket-a', storedAccount: 'admin', status: 401 });
+  await page.context.fetch('/api/session/list');
+  assert.equal(page.reloads, 1);
+  assert.equal(page.context.sessionStorage.getItem('vh_session'), null);
+});
+
+test('a refusal never reloads a tab that was not pinned', async () => {
+  const page = loadTicketed({ ticket: 'ticket-a', account: 'admin', status: 401 });
+  await page.context.fetch('/api/session/list');
+  assert.equal(page.reloads, 0);
+});

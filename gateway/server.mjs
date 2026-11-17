@@ -116,6 +116,7 @@ import {
   parseCookies,
 } from './session.mjs';
 import { DECODABLE_ENCODINGS, injectShell } from './shell-inject.mjs';
+import { TICKET_HEADER, explicitTicket, stripTicketParam } from './tab-ticket.mjs';
 import { findUser, listUsers, upsertUser } from './users.mjs';
 import { VosAuthError, userinfoUrl, verifyVosToken } from './vos-auth.mjs';
 import { createVosOps, OPS_PATH } from './vos-ops.mjs';
@@ -348,18 +349,25 @@ function cookiePolicy(req) {
  * @returns {import('./session.mjs').Session | undefined}
  */
 function authenticate(req) {
-  const cookies = parseCookies(req.headers.cookie);
-  const raw = req.headers['x-vh-session'];
-  const header = typeof raw === 'string' && raw !== '' ? raw : undefined;
   const userAgent = String(req.headers['user-agent'] ?? '');
-  // The cookie is what the proxied UI relies on; the header is the fallback for
-  // the bootstrap page, which cannot count on a cookie having been stored. A
-  // cookie naming a ticket already retired (the account that signed in before)
-  // must not shadow that fallback, or sign-in would loop on a browser that
-  // refused the new cookie.
-  const fromCookie = sessions.loadSession(cookies[SESSION_COOKIE], userAgent);
-  if (fromCookie) return fromCookie;
-  return header === undefined ? undefined : sessions.loadSession(header, userAgent);
+  const cookies = parseCookies(req.headers.cookie);
+  const fromCookie = () => sessions.loadSession(cookies[SESSION_COOKIE], userAgent);
+  // The ticket a request names explicitly outranks the cookie. One browser has
+  // one `vh_session` cookie for the whole origin, so a second account signing in
+  // in another tab rewrites it for every tab; a tab that states the session it
+  // was served under is the only thing that keeps the two apart.
+  const ticket = explicitTicket(req);
+  if (ticket === undefined) return fromCookie();
+  const bound = sessions.loadSession(ticket, userAgent);
+  if (bound) return bound;
+  // The ticket was retired (signed out, expired, or replaced by a re-login).
+  // Falling through to the cookie is only safe while it names the same account:
+  // otherwise this tab, which the user still sees as the old account, would be
+  // answered with the new account's workspace.
+  const current = fromCookie();
+  const retired = sessions.subjectOf(ticket);
+  if (retired !== undefined && current !== undefined && current.subject !== retired) return undefined;
+  return current;
 }
 
 /** Per-session VOS subject re-check results: sid → { subject, checkedAt }. */
@@ -1080,6 +1088,8 @@ function serviceHeaders(req, port) {
     if (value === undefined) continue;
     if (HOP_BY_HOP.has(name)) continue;
     if (name === 'host' || name === 'cookie') continue;
+    // The tab's ticket authenticates the browser to this gateway alone.
+    if (name === TICKET_HEADER) continue;
     headers[name] = value;
   }
   headers.host = `127.0.0.1:${String(port)}`;
@@ -1858,12 +1868,16 @@ async function handleControl(req, res, url) {
       );
     });
 
-    // Whoever proved themselves here owns this browser from now on: the ticket
-    // it arrived with is retired, so the previous account cannot ride along in
-    // another tab that never navigates again.
-    const priorSid = cookies[SESSION_COOKIE]
-      ?? (typeof req.headers['x-vh-session'] === 'string' ? req.headers['x-vh-session'] : undefined);
-    if (priorSid !== undefined) sessions.revokeSession(priorSid);
+    // A re-login of the same account retires the ticket it arrived with, so the
+    // old one cannot ride along in a tab that never navigates again. A *different*
+    // account is not a retirement: every tab presents the ticket it was served
+    // under, so the previous account's session still belongs to its own tab, and
+    // revoking it would sign that tab out for no reason.
+    const priorSid = (typeof req.headers[TICKET_HEADER] === 'string' ? req.headers[TICKET_HEADER] : undefined)
+      ?? cookies[SESSION_COOKIE];
+    if (priorSid !== undefined && sessions.isActive(priorSid, record.subject)) {
+      sessions.revokeSession(priorSid);
+    }
 
     const sid = sessions.createSession({
       subject: record.subject,
@@ -1972,6 +1986,9 @@ function upstreamHeaders(req, port, instanceCookie) {
     if (value === undefined) continue;
     if (HOP_BY_HOP.has(name)) continue;
     if (name === 'host' || name === 'cookie' || name === 'origin' || name === 'referer') continue;
+    // The tab's ticket authenticates the browser to this gateway and to nothing
+    // else; a tenant (or a plugin running inside it) must never see it.
+    if (name === TICKET_HEADER) continue;
     if (name.startsWith('sec-fetch-')) continue;
     headers[name] = value;
   }
@@ -2357,7 +2374,10 @@ function replayBundle(instance, livePath, headers, req, res) {
 async function proxyRequest(req, res) {
   const url0 = String(req.url ?? '');
   if (!url0.includes('dsh-pet') && !url0.includes('/assets/')) {
-    console.log(`[req] ${String(req.method)} ${url0.slice(0, 70)} accept=${String(req.headers.accept ?? '').slice(0, 24)} cookie=${req.headers.cookie === undefined ? 'no' : 'yes'} host=${String(req.headers.host ?? '')}`);
+    // The tab's ticket is a bearer credential: it must not reach the log any
+    // more than it reaches the tenant.
+    const logged = stripTicketParam(url0);
+    console.log(`[req] ${String(req.method)} ${logged.slice(0, 70)} accept=${String(req.headers.accept ?? '').slice(0, 24)} cookie=${req.headers.cookie === undefined ? 'no' : 'yes'} host=${String(req.headers.host ?? '')}`);
   }
   const session = authenticate(req);
   if (!session) {
@@ -2440,7 +2460,7 @@ async function proxyRequest(req, res) {
     return;
   }
 
-  const path = stripPrefix(req.url ?? '/').replace(/^\/__vh-ui-v2\/assets\//, '/assets/');
+  const path = stripTicketParam(stripPrefix(req.url ?? '/')).replace(/^\/__vh-ui-v2\/assets\//, '/assets/');
   if (path.split('?')[0] === '/modsearch/config' && req.method === 'POST') {
     if (req.headers['sec-fetch-site'] === 'cross-site') {
       json(res, 403, { error: 'cross-site request rejected' });
@@ -2572,6 +2592,12 @@ async function proxyRequest(req, res) {
           // Only the workspace shell is ours to decorate. A plugin's own panel
           // document gets the URL bridge and nothing else.
           shell: isShellDocument(req),
+          // The tab keeps this ticket, so a second account signing in elsewhere
+          // in the same browser cannot take the page over behind the user's back.
+          // The account is what tells a same-account re-login (follow it) from
+          // another account taking the browser over (keep the tab's own ticket).
+          ticket: session.sid,
+          account: record.account ?? record.linuxName,
         });
         // Give the entire module graph a fresh URL after older gateways served
         // incompatible responses at the shared asset URLs. Relative imports
@@ -2638,7 +2664,9 @@ async function proxyUpgrade(req, socket, head) {
   headers.connection = 'Upgrade';
   headers.upgrade = 'websocket';
 
-  const lines = [`${req.method ?? 'GET'} ${stripPrefix(req.url ?? '/')} HTTP/1.1`];
+  // The tab's ticket rides in the query on this handshake and is stripped here:
+  // the tenant's dsh never sees which browser session opened the socket.
+  const lines = [`${req.method ?? 'GET'} ${stripTicketParam(stripPrefix(req.url ?? '/'))} HTTP/1.1`];
   for (const [name, value] of Object.entries(headers)) {
     if (Array.isArray(value)) for (const item of value) lines.push(`${name}: ${item}`);
     else lines.push(`${name}: ${value}`);

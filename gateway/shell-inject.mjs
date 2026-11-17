@@ -1,7 +1,7 @@
 /**
  * The document the gateway rewrites: the tenant's dsh shell.
  *
- * Three things ride on it, and all of them have to happen inside the shell
+ * Four things ride on it, and all of them have to happen inside the shell
  * because the gateway owns no code in the browser:
  *
  *   1. The language entry the client locale plugin reads before it mounts.
@@ -15,12 +15,19 @@
  *   3. The restart affordance. A plugin bundle patch that carries configuration
  *      is applied by the bundle layer at startup only; the surface reports
  *      "restart to apply" but has no control that performs one.
+ *   4. The tab ticket. A browser has one session cookie for the whole origin, so
+ *      a second account signing in elsewhere rewrites it for every tab. Each
+ *      document states the session that served it, the tab keeps the one it was
+ *      first served under, and every request it makes carries that ticket — the
+ *      gateway prefers it to the cookie, so two accounts can live in two tabs.
  *
  * The scripts are classic, added before any module in the head, and never
  * throw: a broken bridge must not cost the user their workspace.
  *
  * @module v-harness/gateway/shell-inject
  */
+
+import { TICKET_HEADER, TICKET_PARAM } from './tab-ticket.mjs';
 
 /** Restart endpoint the injected button calls; the gateway answers it. */
 export const RESTART_PATH = '/__vh/restart';
@@ -55,11 +62,13 @@ const COPY = {
 /**
  * Rewrite one dsh shell document.
  * @param {string} html - the document as dsh served it.
- * @param {{ locale?: string, basePath?: string }} options - tenant language and
- *   the application path the ingress mounts this gateway under.
+ * @param {{ locale?: string, basePath?: string, shell?: boolean, ticket?: string, account?: string }} options -
+ *   tenant language, the application path the ingress mounts this gateway
+ *   under, whether this document is the workspace shell, the ticket of the
+ *   session that served it, and the account that ticket belongs to.
  * @returns {string} the document with the host scripts in its head.
  */
-export function injectShell(html, { locale, basePath = '', shell = true }) {
+export function injectShell(html, { locale, basePath = '', shell = true, ticket = '', account = '' }) {
   const copy = COPY[locale === 'en' ? 'en' : 'zh'];
   // A plugin's own document (a panel served at `/mcp-connector/ui/`) gets the
   // URL bridge and nothing else. The identity check, the language entry, the
@@ -68,8 +77,8 @@ export function injectShell(html, { locale, basePath = '', shell = true }) {
   // reloading two seconds after it opened is exactly what the user sees as
   // "refreshing every few seconds".
   const scripts = shell
-    ? `${verifyScript()}${localeScript(locale)}${runtimeScript(copy, basePath, true)}`
-    : runtimeScript(copy, basePath, false);
+    ? `${verifyScript()}${localeScript(locale)}${runtimeScript(copy, basePath, true, ticket, account)}`
+    : runtimeScript(copy, basePath, false, ticket, account);
   const head = /<head[^>]*>/iu.exec(html);
   // A document without a head still gets the scripts: prepending keeps the rest
   // of the markup untouched, and the browser hoists them either way.
@@ -111,9 +120,13 @@ function localeScript(locale) {
 /**
  * @param {{ label: string, hint: string, confirm: string, busy: string, failed: string }} copy
  * @param {string} basePath
+ * @param {boolean} shell - whether this document is the workspace shell.
+ * @param {string} ticket - the session that served this document; empty when the
+ *   request carried none (sign-in pages, health answers).
+ * @param {string} account - the account that ticket belongs to.
  * @returns {string} the bridge script tag.
  */
-function runtimeScript(copy, basePath, shell) {
+function runtimeScript(copy, basePath, shell, ticket, account) {
   // The control routes are answered by this gateway, not the portal root. When
   // the app is mounted under a base path, an absolute `/__vh/*` URL lands on
   // the portal and 404s, leaving the restart button and the boot watcher dead.
@@ -121,7 +134,7 @@ function runtimeScript(copy, basePath, shell) {
     base: basePath,
     path: basePath ? `${basePath}${RESTART_PATH}` : RESTART_PATH,
     boot: basePath ? `${basePath}${BOOT_PATH}` : BOOT_PATH,
-    copy, shell,
+    copy, shell, sid: ticket, account, header: TICKET_HEADER, param: TICKET_PARAM,
   });
   return `<script>(function(){try{var vh=${config};${BRIDGE}}catch(e){}})();</script>`;
 }
@@ -186,26 +199,139 @@ function fixUrl(value) {
   if (text.charAt(0) !== "/") return value;
   return appPath(text);
 }
+// One session cookie covers the whole origin, so a second account signing in in
+// another tab rewrites it here too. A tab therefore keeps the ticket it was
+// served under and stamps it on its own requests: a header where one is
+// possible, a query parameter where it is not (the WebSocket handshake and
+// EventSource are built by the browser). The gateway prefers that ticket to the
+// cookie, and that is what keeps two accounts in two tabs apart.
+//
+// Following the document is right in three cases: this is the tab's first
+// document, the browser already agrees with the tab, or the same account simply
+// signed in again (same account, new ticket — two tabs of one account must not
+// pin themselves to tickets the other one retired). Only another *account* is
+// refused, and that is the one case a tab keeps its own ticket.
+var sid = "";
+var account = "";
+try { sid = sessionStorage.getItem("vh_session") || ""; } catch (e) {}
+try { account = sessionStorage.getItem("vh.tab.account") || ""; } catch (e) {}
+var served = typeof vh.sid === "string" ? vh.sid : "";
+var servedAccount = typeof vh.account === "string" ? vh.account : "";
+if (sid === "" || served === "" || sid === served || account === "" || account === servedAccount) {
+  sid = served;
+  account = servedAccount;
+  try {
+    if (sid !== "") sessionStorage.setItem("vh_session", sid);
+    if (account !== "") sessionStorage.setItem("vh.tab.account", account);
+  } catch (e) {}
+}
+// Pinned: this tab kept its own ticket although the document came from another
+// one. That is the only case in which the gateway can refuse the request with
+// 401 (a retired ticket that does not belong to the account the cookie names),
+// so it is the only case that reloads — back to a browser-owned identity.
+var pinned = served !== "" && sid !== "" && sid !== served;
+var reloaded = false;
+function repin() {
+  if (reloaded === true) return;
+  reloaded = true;
+  try {
+    sessionStorage.removeItem("vh_session");
+    sessionStorage.removeItem("vh.tab.account");
+  } catch (e) {}
+  location.reload();
+}
+function ticketPath(pathname) {
+  if (typeof pathname !== "string" || pathname === "") return false;
+  if (hasBase && (pathname === vh.base || pathname.indexOf(vh.base + "/") === 0)) return true;
+  // Only the routes the ingress sends to this gateway. A platform path
+  // (/v1000, /vms, /app/<other application>) is not this tenant's to see, and
+  // the ticket must never travel there.
+  var at = ["/__vh", "/api", "/plugins", "/assets"];
+  for (var r = 0; r < at.length; r += 1) {
+    if (pathname === at[r] || pathname.indexOf(at[r] + "/") === 0) return true;
+  }
+  return pathname === "/favicon.ico";
+}
+function ticketTarget(value) {
+  if (sid === "") return null;
+  var url;
+  try { url = new URL(String(value), location.href); } catch (e) { return null; }
+  if (url.host !== location.host) return null;
+  return ticketPath(url.pathname) ? url : null;
+}
+function stampTicket(target, init) {
+  if (typeof Headers !== "function") return [target, init];
+  try {
+    if (typeof Request === "function" && target instanceof Request) {
+      var merged = new Headers(target.headers);
+      if (init && init.headers) {
+        var extra = new Headers(init.headers);
+        extra.forEach(function (value, name) { merged.set(name, value); });
+      }
+      merged.set(vh.header, sid);
+      var rest = {};
+      if (init) { for (var key in init) { if (key !== "headers") rest[key] = init[key]; } }
+      rest.headers = merged;
+      return [new Request(target, rest), undefined];
+    }
+    var headers = new Headers(init && init.headers ? init.headers : undefined);
+    headers.set(vh.header, sid);
+    var options = { headers: headers };
+    if (init) { for (var own in init) { if (own !== "headers") options[own] = init[own]; } }
+    return [target, options];
+  } catch (e) { return [target, init]; }
+}
 var nativeFetch = window.fetch;
 if (typeof nativeFetch === "function") {
   window.fetch = function (input, init) {
+    var target = input, options = init;
     try {
-      if (typeof input === "string") input = fixUrl(input);
-      else if (typeof URL !== "undefined" && input instanceof URL) input = new URL(fixUrl(input.href));
+      if (typeof input === "string") target = fixUrl(input);
+      else if (typeof URL !== "undefined" && input instanceof URL) target = new URL(fixUrl(input.href));
       else if (typeof Request === "function" && input instanceof Request) {
         var moved = fixUrl(input.url);
-        if (moved !== input.url) input = new Request(moved, input);
+        if (moved !== input.url) target = new Request(moved, input);
       }
     } catch (e) {}
-    return nativeFetch.call(this, input, init);
+    var ticketed = null;
+    try {
+      ticketed = ticketTarget(typeof target === "string" ? target : (target && target.url) || String(target));
+      if (ticketed !== null) {
+        var stamped = stampTicket(target, options);
+        target = stamped[0];
+        options = stamped[1];
+      }
+    } catch (e) { ticketed = null; }
+    var pending = nativeFetch.call(this, target, options);
+    // A 401 only means this tab's pinned ticket is gone when the tab is pinned;
+    // a plugin's own service answering 401 must never reload the workspace.
+    if (pinned === true && ticketed !== null && pending && typeof pending.then === "function") {
+      pending = pending.then(function (response) {
+        if (response && response.status === 401) repin();
+        return response;
+      });
+    }
+    return pending;
   };
 }
 var nativeOpen = XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open = function (method, url) {
   var args = Array.prototype.slice.call(arguments);
   try { args[1] = fixUrl(url); } catch (e) {}
+  try { this.__vhUrl = args[1]; } catch (e) {}
   return nativeOpen.apply(this, args);
 };
+var nativeSend = XMLHttpRequest.prototype.send;
+if (typeof nativeSend === "function") {
+  XMLHttpRequest.prototype.send = function () {
+    try {
+      if (typeof this.setRequestHeader === "function" && ticketTarget(this.__vhUrl) !== null) {
+        this.setRequestHeader(vh.header, sid);
+      }
+    } catch (e) {}
+    return nativeSend.apply(this, arguments);
+  };
+}
 var nativeBeacon = navigator.sendBeacon;
 if (typeof nativeBeacon === "function") {
   navigator.sendBeacon = function (url, data) {
@@ -260,11 +386,20 @@ if (typeof Element === "function" && typeof Element.prototype.setAttribute === "
     return nativeSetAttribute.call(this, name, value);
   };
 }
+function withTabTicket(value) {
+  var url = ticketTarget(value);
+  if (url === null) return value;
+  url.searchParams.set(vh.param, sid);
+  return /^[a-z][a-z0-9+.-]*:/i.test(String(value)) ? url.toString() : url.pathname + url.search + url.hash;
+}
 function wrapSocket(native) {
   if (typeof native !== "function") return native;
   var Wrapped = function (url, options) {
     var moved = url;
     try { moved = fixUrl(url); } catch (e) {}
+    // The handshake carries no headers from script, so the ticket rides in the
+    // address; the gateway strips it before the tenant sees the request.
+    try { moved = withTabTicket(moved); } catch (e) {}
     return options === undefined ? new native(moved) : new native(moved, options);
   };
   Wrapped.prototype = native.prototype;
