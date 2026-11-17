@@ -310,6 +310,10 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     }
   }
   const activeHostMode = hostMode?.sessionId === sessionId ? hostMode : undefined
+  // The prompt floats over the conversation. Without an explicit panel it
+  // inherits the chat's muted text color and disappears into the background.
+  const panel = { background: '#1f2530', color: '#edf0f4', border: '1px solid #414b5c',
+    borderRadius: 8, padding: '0.75rem 1rem', boxShadow: '0 6px 24px rgba(0, 0, 0, 0.4)' } as const
   const setHostEnabled = async (enabled: boolean) => {
     if (!sessionId || hostBusy) return
     setHostBusy(true)
@@ -326,16 +330,16 @@ export function VosOpsConfirmation({ t, useSessions }: PropsLocale<'settings.vh-
     }
   }
   return <>
-    {activeHostMode && <aside aria-label={t('hostManagement')} style={{ position: 'fixed', top: '4rem', right: '1rem', zIndex: 10 }}>
-      {hostPrompt ? <section role="group" aria-label={t('hostManagement')}>
-        <p>{t('hostDescription')}</p>
+    {activeHostMode && <aside aria-label={t('hostManagement')} style={{ position: 'fixed', top: '4rem', right: '1rem', zIndex: 10, maxWidth: 'min(24rem, 90vw)' }}>
+      {hostPrompt ? <section role="group" aria-label={t('hostManagement')} style={panel}>
+        <p style={{ margin: '0 0 0.5rem' }}>{t('hostDescription')}</p>
         <button type="button" disabled={hostBusy} onClick={() => void setHostEnabled(true)}>{t('hostEnable')}</button>{' '}
         <button type="button" disabled={hostBusy} onClick={() => setHostPrompt(false)}>{t('cancel')}</button>
       </section> : <button type="button" disabled={hostBusy} onClick={() => {
         if (activeHostMode.enabled) void setHostEnabled(false)
         else setHostPrompt(true)
       }}>{t(activeHostMode.enabled ? 'hostDisable' : 'hostManagement')}</button>}
-      {hostError && <p role="alert">{t('failed')}</p>}
+      {hostError && <p role="alert" style={panel}>{t('failed')}</p>}
     </aside>}
     {(proposal || outcome) && <dialog ref={dialog} aria-label={t('proposalTitle')} onCancel={(event) => {
       event.preventDefault()
