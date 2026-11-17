@@ -795,10 +795,6 @@ async function launch(options) {
       PIP_CACHE_DIR: `${jailHome}/.cache/pip`,
       UV_CACHE_DIR: `${jailHome}/.cache/uv`,
       PNPM_HOME: `${jailHome}/.local/share/pnpm`,
-      // ds-bot keeps its own store and team folder; both default to the
-      // process home, which is only correct if they are named explicitly.
-      DS_BOT_USER_DSH_HOME: `${jailHome}/.dsh`,
-      DS_BOT_WORKSPACE: `${jailHome}/workspace`,
       NODE_ENV: 'production',
       ...schedulerEnvironment(record.namespace),
       ...mcphub,

@@ -23,12 +23,20 @@ workspace, and private deliverables.
 
 ## Built-in plugins
 
-The first visit opens in Classic Agent mode. DS Bot is preinstalled and can be enabled under Plugins. Each user keeps their own activation state.
+Open Plugins in the sidebar to find the preinstalled bundles. Open Settings → Built-in plugins to check their runtime status.
 
-- **Media Desk**. Sign in to VOS, open v-harness, and select Media Desk in the sidebar. If the DS Bot interface is active, open Settings from the account menu and switch to Classic Agent mode under Mode. Add a note under Ideas, then open the card to generate a script, title, cover, illustrations, and storyboard. Schedule the draft in Calendar and enter or import metrics in Review. Drafting uses the v-harness default model unless you select another in Media Desk. For images, configure an image provider or select an available subscription image tool in Media Desk settings and generate a test image. You can explore with sample data or clear it before adding your own. [Upstream usage guide](https://github.com/woniuniuniu/dsh-media-desk/blob/main/README.en.md)
-- **IM Bot**. Open Settings → IM Bot, choose a channel, and follow its QR code or credential setup. Assign a workspace and model, set conversation access, then send a test message from the chat app once connected. If the connection fails, check platform permissions, credentials, and network access. [Upstream channel guide](https://github.com/xmanrui/dsh-im)
-- Both plugins use the signed-in VOS user's isolated environment. Media Desk's `/media-desk/*` routes serve its own browser UI and ship with the plugin. IM platform connections are managed by each channel adapter.
-- **Plugin downloads**. Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
+- **Context** (`dsh-context@0.85.1`). Open Context in the conversation's right sidebar to inspect usage, composition and compaction history. [Usage guide](https://github.com/bowenliang123/dsh-context)
+- **Image Gen** (`dsh-image-gen@0.11.3`). Configure a provider and its credentials in the plugin settings, then ask for an image generation or edit in a conversation. [Provider configuration](https://github.com/shanliuling/dsh-image-gen)
+- **Mnemon** (`dsh-mnemon@0.5.47`). Open Memory System to inspect memory views and storage settings for your workspace. Follow the provider's instructions to connect an external memory space. [Usage guide](https://github.com/omdsh-dev/dsh-mnemon)
+- **Skills Manager** (`@michengai/dsh-skills-manager@1.4.11`). Open Plugins → Skills Manager to browse and manage skills in your tenant. [Usage guide](https://github.com/MichengAI/dsh-skills-manager)
+- **Agent Teams** (`@nanmicoder/dsh-agent-teams@0.1.30`). Ask Agent Teams to divide a task in a workspace conversation. Review and approve the plan, then follow member progress. Use a model that supports tool calls. [Usage guide](https://github.com/NanmiCoder/dsh-agent-teams)
+
+- **Media Desk** (`dsh-media-desk@2.7.2`). Sign in to VOS, open v-harness, and select Media Desk in the sidebar. Add a note under Ideas, then open the card to generate a script, title, cover, illustrations, and storyboard. Schedule the draft in Calendar and enter or import metrics in Review. Drafting uses the v-harness default model unless you select another in Media Desk. For images, configure an image provider or select an available subscription image tool in Media Desk settings and generate a test image. You can explore with sample data or clear it before adding your own. [Upstream usage guide](https://github.com/woniuniuniu/dsh-media-desk/blob/main/README.en.md)
+- **IM Bot** (`@xmanrui/dsh-im@5.10.0`). Open Settings → IM Bot, choose a channel, and follow its QR code or credential setup. Assign a workspace and model, set conversation access, then send a test message from the chat app once connected. If the connection fails, check platform permissions, credentials, and network access. [Upstream channel guide](https://github.com/xmanrui/dsh-im)
+- Plugins run in the signed-in VOS user's isolated environment. Media Desk's `/media-desk/*` routes serve its own browser UI and ship with the plugin. IM platform connections are managed by each channel adapter.
+- **MCP Connector** (`dsh-mcp-connector@0.2.109`). Open MCP Connector from Plugins, add a server, then check its connection and tool list.
+
+- **Plugin Market** (`dshmarket@1.73.20`). Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
 
 Open **Settings → API documentation** for VOS OAuth2 authentication, session creation, task submission, reading results and handling errors.
 
@@ -42,8 +50,6 @@ Open Account menu → Settings → VOS operations. The signed-in VOS system admi
 - To restart an app or clean up an object, review the preview and click Confirm this operation or Skip. A preview is valid once for 60 seconds. If the target changes, preview it again. VOS runs the restart and the console shows the accepted task ID.
 
 A VOS system administrator can select **Full access (VOS operations)** in a conversation to diagnose directly. When the Agent proposes a stop, restart or cleanup, the conversation displays the target and asks for confirmation. The workspace sandbox remains active. See Settings → API documentation for supported operations.
-
-In DS Bot, open Settings → Models. The **V-Scheduler** section lets you select a default model from the existing catalog and refresh the list. **Custom model providers** lists only providers added in DS Bot. Use **Add a provider** to configure one. **Advanced settings** remains available. The Agent API model contract is unchanged.
 
 If an old VOS app container holds a port or a runner lock, select **Full access (VOS operations)** and ask the Agent to inspect the app. For an eligible container, review **Stop old container**, click Confirm this operation or Skip. Refresh inventory before requesting a restart of the current app or a separate cleanup of the stopped container. The stop preserves the container and its data. The `stoppable` flag applies to recognized running or restarting containers from a different version of an installed or stopped VOS app other than v-harness. The gateway rechecks the installed version and installation ID before stopping. A stale or ineligible target returns 409 `target-changed`.
 
@@ -59,7 +65,7 @@ Ask the Agent to collect all cleanup targets in one proposal. The confirmation w
 
 ## Framework and plugin upgrades
 
-This VOS release uses DSH 0.2.2-rc.3 built from the merged fork source, with dshmarket 1.73.20, DS Bot 0.3.6, IM 5.10.0, MCP Connector 0.2.109 and Media Desk 2.7.2. Existing plugin activation and custom settings stay per user.
+The runtime is DSH 0.2.2-rc.3. On the first launch after upgrading, v-harness removes the DS Bot plugin and settings entry and preserves its historical data. Select models under Settings → Models. The plugins use the existing Agent API session and task interface. Each plugin owns its browser UI endpoints.
 
 The tenant runtime uses its installation-owned storage service when a plugin carries an older storage module. This keeps workspace and session services on the same module identity. Session files and workspace membership stay in the persistent user directory. If history is missing after an upgrade, inspect startup errors before changing any session files. The Agent API routes and authentication contract remain unchanged.
 

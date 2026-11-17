@@ -221,26 +221,8 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
  && node --import tsx/esm scripts/stage-agent-plugins.ts \
       --out /build/agent-plugins
 
-# Registry plugins every tenant profile ships with. They are not workspace
-# packages, so they install from the registry instead of being staged from the
-# build; naming them in the payload manifest is what makes gateway/plugins.mjs
-# overwrite a tenant's copy on every start. Both declare `dsh.bundle.patch`, so
-# the profile layer list loads their rows from their own patches.
-#
-# Their real dependencies (undici, js-yaml, deep-view) ride along and are
-# copied only when a profile has no copy yet — the same rule that keeps a
-# published package from being shadowed by this payload. Peers are not
-# installed: dsh supplies them from the installation at runtime.
-ARG DSMARKET_VERSION=1.73.20
-ARG DS_BOT_VERSION=0.3.6
-# The IM bridge (WeCom/Feishu/DingTalk/QQ/Telegram/...), a third-party registry
-# package that ships to every tenant like the market and the bot. Its runtime
-# dependencies (IM SDKs, mail/IMAP clients) ride along with the closure below.
-ARG DSH_IM_VERSION=5.10.0
-# The MCP connection manager (authorization, tool governance, diagnostics),
-# also a registry package that ships to every tenant.
-ARG DSH_MCP_CONNECTOR_VERSION=0.2.109
-ARG DSH_MEDIA_DESK_VERSION=2.7.2
+# Install the exact registry bundles declared by each Web profile. dsh supplies
+# their host peers at runtime; only their ordinary dependencies are staged.
 # The connector registers its sidebar row with a label *function*, which the
 # surface re-evaluates on every projection, so that one row repaints whenever
 # the plugin's store moves — every other plugin registers a string and stays
@@ -250,16 +232,14 @@ ARG DSH_MEDIA_DESK_VERSION=2.7.2
 # fail the build rather than silently bring the row back.
 RUN set -eu; \
     mkdir -p /tmp/registry-plugins; \
-    set -- --no-save --ignore-scripts --legacy-peer-deps \
-      "dshmarket@${DSMARKET_VERSION}" "ds-bot@${DS_BOT_VERSION}" "@xmanrui/dsh-im@${DSH_IM_VERSION}" \
-      "dsh-mcp-connector@${DSH_MCP_CONNECTOR_VERSION}" "dsh-media-desk@${DSH_MEDIA_DESK_VERSION}"; \
+    specs=$(node -e "const plugins = require('./gateway/agent-plugins/registry-plugins.json'); console.log(Object.entries(plugins).map(([name, version]) => name + '@' + version).join(' '))"); \
+    set -- --no-save --ignore-scripts --legacy-peer-deps $specs; \
     (npm install --prefix /tmp/registry-plugins "$@" || \
       npm install --prefix /tmp/registry-plugins --registry=https://registry.npmjs.org "$@") \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
- && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push('dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk'); fs.writeFileSync(path, JSON.stringify(manifest, undefined, 2) + '\n')" \
+ && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push(...Object.keys(require('./gateway/agent-plugins/registry-plugins.json'))); fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')" \
  && node gateway/agent-plugins/set-market-default.mjs /build/agent-plugins/node_modules/dshmarket/lib/routes.js \
- && node gateway/agent-plugins/set-bot-models.mjs /build/agent-plugins/node_modules/ds-bot/client.js \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
 
 # ============================================================

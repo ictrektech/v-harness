@@ -2,7 +2,7 @@
 # Repair the dsh profiles that the `link:` bundle dependencies broke.
 #
 # A previous revision of gateway/plugins.mjs declared vh-agent-plugins, dshmarket
-# and ds-bot as `link:/opt/v-harness/...` dependencies of the tenant profile.
+# as `link:/opt/v-harness/...` dependencies of the tenant profile.
 # `pnpm install` runs inside the tenant's jail, where that path does not exist,
 # so the install failed and left the profile's node_modules incomplete: the
 # browser bundles resolved from there never activated ("1 entry did not

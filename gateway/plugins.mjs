@@ -28,6 +28,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import registryPlugins from './agent-plugins/registry-plugins.json' with { type: 'json' }
 
 /** Where the image puts built client plugins; a deployment may relocate both roots. */
 const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
@@ -39,7 +40,8 @@ const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/age
 const AGENT_BUNDLE_NAME = 'vh-agent-plugins'
 
 /** Registry packages installed at image build and declared in each Web profile. */
-const PROFILE_PLUGINS = ['dshmarket', 'ds-bot', '@xmanrui/dsh-im', 'dsh-mcp-connector', 'dsh-media-desk']
+const PROFILE_PLUGINS = Object.keys(registryPlugins)
+const RETIRED_BOT = 'ds-bot'
 
 /** The plugin that serves tenant capability sockets inside dsh. */
 const CAPABILITIES_PLUGIN_NAME = '@deepseek-ai/dsh-host-vh-capabilities'
@@ -54,12 +56,11 @@ const CAPABILITIES_PLUGIN_NAME = '@deepseek-ai/dsh-host-vh-capabilities'
  * The default registry bundles follow the carrier because their own patches
  * mount their rows. Existing user-selected bundle layers are retained.
  */
-// DS Bot is installed for each user and is selected only through that user's plugin manager.
 const PROFILE_BUNDLES = [
   '@deepseek-ai/dsh-base',
   '@deepseek-ai/dsh-web-app',
   AGENT_BUNDLE_NAME,
-  ...PROFILE_PLUGINS.filter(name => name !== 'ds-bot'),
+  ...PROFILE_PLUGINS,
 ]
 
 /** Mirrors dsh's profile user-patch template. */
@@ -114,7 +115,7 @@ const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-sess
  * Declaring them is what makes them survive. `pnpm` treats a package the
  * manifest does not name as extraneous and moves it into `node_modules/.ignored`
  * on the next install; every market install runs one, so an undeclared market
- * deleted itself — and the bot, the carrier and the client panels — halfway
+ * deleted itself — and the carrier and the client panels — halfway
  * through installing a plugin. A declared package is never extraneous, whatever
  * pnpm version answers.
  * @returns {Promise<Record<string, string>>} package name → exact version.
@@ -549,7 +550,7 @@ async function syncAgentPlugins(user) {
   if (stampDirty) await writeFile(agentStampPath, JSON.stringify(stamps), { mode: 0o600 }).catch(() => {})
   // A name the manifest lists but the payload lacks used to leave no trace: the
   // loop above only walks packages that are present, so the tenant silently
-  // booted without that plugin (no market, no bot) and nothing was logged. An
+  // booted without that plugin (including the market) and nothing was logged. An
   // image whose payload was copied without these packages must say so.
   for (const name of plugins) {
     if (await exists(join(payloadModules, name))) continue
@@ -603,7 +604,7 @@ function isPayloadLink(spec) {
  * A bundle layer is what mounts its plugin rows, so a profile that predates the
  * carrier still has to receive it. A dependency is what keeps a plugin out of
  * `pnpm`'s extraneous sweep, so a profile created before this image declared the
- * market and the bot has to receive those too — otherwise its next install
+ * market has to receive it too — otherwise its next install
  * deletes them. `link:` specs onto this image's payload are the opposite case:
  * `pnpm install` runs inside the tenant's jail, where that path does not exist,
  * so the install failed and left `node_modules` incomplete ("1 entry did not
@@ -621,15 +622,17 @@ async function mountBundles(profile, user, names, declared) {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     const bundles = manifest?.dsh?.profile?.bundles
     if (!Array.isArray(bundles)) return true
-    let changed = false
+    const retained = bundles.filter(name => name !== RETIRED_BOT)
+    let changed = retained.length !== bundles.length
+    manifest.dsh.profile.bundles = retained
     for (const name of names) {
-      if (bundles.includes(name)) continue
-      bundles.push(name)
+      if (retained.includes(name)) continue
+      retained.push(name)
       changed = true
     }
     const dependencies = manifest.dependencies ?? {}
     for (const [name, spec] of Object.entries(dependencies)) {
-      if (!isPayloadLink(spec)) continue
+      if (name !== RETIRED_BOT && !isPayloadLink(spec)) continue
       delete dependencies[name]
       changed = true
     }
@@ -638,9 +641,13 @@ async function mountBundles(profile, user, names, declared) {
       dependencies[name] = spec
       changed = true
     }
-    if (!changed) return true
-    if (Object.keys(dependencies).length > 0) manifest.dependencies = dependencies
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    if (changed) {
+      manifest.dependencies = dependencies
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    }
+    // Remove the retired code in both lookup locations. Plugin-owned data stays in the tenant home.
+    await rm(join(profile, 'node_modules', RETIRED_BOT), { recursive: true, force: true })
+    await rm(join(profile, '..', 'node_modules', RETIRED_BOT), { recursive: true, force: true })
     return true
   } catch (error) {
     console.error(`bundle mount failed for ${user.linuxName}:`, error.message)

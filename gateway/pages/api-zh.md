@@ -4,6 +4,8 @@
 
 0.2.2-rc.3 的 VOS 运行时统一使用随应用安装的存储服务。升级前的工作区 ID 和会话 ID 可以继续使用，以下请求、响应和鉴权约定保持现状。
 
+预装插件及 DS Bot 迁移见[应用说明](https://twp99wyutbs.feishu.cn/docx/DTWGdRXGhoblP5xue4Gcf8Bpnsc)。会话、任务、事件和鉴权继续使用本文定义的接口。
+
 ## 获取 VOS 访问令牌
 
 访问同一台 VOS 设备的 `https://<vos-host>:1180/v1000/oauth2/.well-known/openid-configuration`。外部集成使用 VOS 管理员注册的 OAuth2 客户端和回调地址。嵌入 v-harness 的集成可以使用安装时注册的公开客户端 `com.ictrek.v-harness`。
@@ -102,8 +104,6 @@ VOS UserInfo 请求超时为 8 秒。冷启动可能在调用会话控制器前�
 错误响应为 `{"error":"<code>"}`。400 为 `invalid-body`、`invalid-target`、`confirmation-mismatch`、`invalid-since`、`invalid-until`、`invalid-after`、`invalid-pattern` 或 `invalid-context`，请核对 JSON、操作、完整 ID 和日志查询参数；401 `sign-in-required` 请重新登录；403 `forbidden` 请检查角色、浏览器同源请求和有效授权；404 `not-found` 请刷新；409 `target-changed` 请刷新和重新预览；429 `too-many-grants` 请等待授权到期；502 `vos-request-failed`、`docker-unavailable`、`response-too-large` 或 `upstream-unavailable` 表示上游拒绝、不可用或返回超限，请检查 VOS 或 Docker 状态。重启受理与完成是两个阶段，超时后先刷新应用状态再决定是否重试。
 
 内置工具 `vos_diagnostics` 支持 `inventory`、`status`、`logs`、`app-logs`、`diagnose`、`propose`。除 `inventory` 外需字符串 `id`，格式同表；`propose` 另需 `action`。`diagnose` 要求完整容器 ID，优先于 `logs` 使用：它返回状态事实（退出码、是否 OOM、重启计数、健康检查）和折叠的错误摘要，不返回原始日志。`app-logs` 接收应用 ID，返回整个应用栈交错合并、带容器名标签的时间线，跨 service 问题无需猜测该看哪个容器。`logs` 与 `app-logs` 可另带 `since`、`until`、`after`、`pattern` 和 `context`，语义同上表。返回诊断 JSON 文本，最长 49,152 字符。VOS 系统管理员选择 `vos-full-access` 即可使用。会话确认接口无需设置页授权头；`sessionId` 是当前租户的会话 ID，1–128 个字母、数字、下划线或连字符。每个会话最多一个待确认提议，120 秒有效，已有提议时返回 409 `confirmation-pending`。
-
-在 DS Bot 中打开「设置 → 模型」。「V-Scheduler」区可从现有目录选择默认模型，也可刷新列表。「自定义模型供应商」仅统计在 DS Bot 中添加的供应商，仍可点击「添加供应商」配置。Agent API 的模型接口保持原有契约。
 
 如果旧版 VOS 容器占用端口或持有 runner 文件锁，在会话中选择「完全访问（VOS 运维）」并让 Agent 检查应用。核对「停止旧版容器」提议，点击「确认执行」或「跳过」。刷新清单后，可再请求重启当前应用或单独清理已退出的容器。停止操作保留容器及数据。`stoppable` 表示容器可识别、处于运行或重启中，所属应用已安装或停止，容器版本与当前安装版本不同，且所属应用不是 v-harness。停止前会重新校验当前安装版本和安装 ID。目标变化或不符合条件时返回 409 `target-changed`。
 

@@ -98,19 +98,8 @@ test('the language entry carries the tenant language and nothing else', () => {
   assert.ok(!injectShell(SHELL, { locale: undefined }).includes('preferences-locale'));
 });
 
-test('the classic Agent surface is the default and a saved DS Bot choice wins', () => {
-  const script = scriptsOf(injectShell(SHELL, {})).find(value => value.includes('ds-bot:surface'));
-  assert.ok(script);
-  const mode = new Map();
-  const localStorage = {
-    getItem: key => mode.get(key) ?? null,
-    setItem: (key, value) => mode.set(key, value),
-  };
-  vm.runInNewContext(script, { localStorage });
-  assert.equal(mode.get('ds-bot:surface'), 'agent');
-  mode.set('ds-bot:surface', 'bot');
-  vm.runInNewContext(script, { localStorage });
-  assert.equal(mode.get('ds-bot:surface'), 'bot');
+test('the workspace shell no longer injects a DS Bot preference', () => {
+  assert.ok(!injectShell(SHELL, {}).includes('ds-bot:surface'));
 });
 
 test('the bridge is told where the gateway is mounted', () => {
