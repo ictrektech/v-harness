@@ -33,10 +33,15 @@ const tokens = new Map([
 ]);
 const model = 'fixture/chat';
 const replyText = 'API fixture completed';
+const personalModel = 'personal-fixture';
+const personalReply = 'Personal model fixture completed';
+const personalKey = 'isolated-personal-model-test';
+let personalRequests = 0;
 const upstream = createServer((req, res) => {
- const subject = tokens.get(req.headers.authorization?.replace(/^Bearer /, ''));
+ const key = req.headers.authorization?.replace(/^Bearer /, '');
+ const subject = tokens.get(key);
  res.setHeader('content-type', 'application/json');
- if (!subject) {
+ if (!subject && !(key === personalKey && req.url === '/v1/chat/completions')) {
    res.writeHead(401);
    res.end(JSON.stringify({ code: 10001 }));
    return;
@@ -47,10 +52,12 @@ const upstream = createServer((req, res) => {
    res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }] }));
  } else if (req.url === '/v1/chat/completions') {
    req.resume();
-   const chunk = { id: 'fixture', object: 'chat.completion.chunk', created: 1, model };
+   const personal = key === personalKey;
+   if (personal) personalRequests++;
+   const chunk = { id: 'fixture', object: 'chat.completion.chunk', created: 1, model: personal ? personalModel : model };
    res.setHeader('content-type', 'text/event-stream');
    res.end([
-     { ...chunk, choices: [{ index: 0, delta: { role: 'assistant', content: replyText }, finish_reason: null }] },
+     { ...chunk, choices: [{ index: 0, delta: { role: 'assistant', content: personal ? personalReply : replyText }, finish_reason: null }] },
      { ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
    ].map(value => 'data: ' + JSON.stringify(value) + '\n\n').join('') + 'data: [DONE]\n\n');
  } else {
@@ -59,7 +66,7 @@ const upstream = createServer((req, res) => {
  }
 });
 upstream.listen(18090,'127.0.0.1'); await once(upstream,'listening');
-const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090'},stdio:['ignore','inherit','inherit']});
+const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090',VH_NET_ALLOW_CIDRS:'127.0.0.1/32'},stdio:['ignore','inherit','inherit']});
 try {
  const base='http://127.0.0.1:8080';
  for(let i=0;i<100;i++){try{const r=await fetch(base+'/__vh/health');if(r.ok)break;}catch{} await new Promise(r=>setTimeout(r,300));}
@@ -176,6 +183,48 @@ try {
    assert.match(await docs.text(), /POST \/sessions/);
  }
  console.log('VOS BEARER API, TASK COMPLETION AND TENANT ISOLATION: PASS');
+ if (bundled) {
+   const providerId = 'personal-fixture';
+   const ref = 'PERSONAL_FIXTURE_API_KEY';
+   await rpc('credentials/set', { ref, value: personalKey });
+   await rpc('settings/update', {
+     ns: 'llm-pi-ai',
+     patch: { providers: { [providerId]: {
+       api: 'openai-completions', baseURL: 'http://127.0.0.1:18090/v1', apiKeyEnv: ref, models: [{ id: personalModel }],
+     } } },
+   });
+   let models;
+   for (let n = 0; n < 20; n++) {
+     models = await rpc('session/modelCatalog', {});
+     if (models.groups.some(group => group.id === providerId)) break;
+     await new Promise(resolve => setTimeout(resolve, 500));
+   }
+   assert.ok(models.groups.some(group => group.id === providerId && group.models.some(row => row.id === personalModel)), 'personal provider unavailable');
+   assert.ok(models.groups.some(group => group.id === provider.id), 'V-Scheduler remains available');
+   await rpc('session/selectDefaultModel', { selection: { provider: providerId, model: personalModel } });
+   const selected = await rpc('session/modelCatalog', {});
+   assert.equal(selected.default.provider, providerId);
+   const response = await api('/sessions', { body: { workspaceId: workspace.workspace.workspaceId } });
+   assert.equal(response.status, 201, await response.clone().text());
+   const personalPath = '/sessions/' + (await response.json()).sessionId;
+   const accepted = await api(personalPath + '/prompts', { body: { requestId: randomUUID(), text: 'Run the personal model fixture.' } });
+   assert.equal(accepted.status, 202, await accepted.text());
+   let completed = false;
+   for (let n = 0; n < 45; n++) {
+     const observed = await api(personalPath + '/events').then(result => result.json());
+     assert.ok(Array.isArray(observed.events));
+     if (observed.events.some(event => event.type === 'turn-ended')) {
+       assert.ok(observed.events.some(event => event.type === 'assistant-text' && event.text === personalReply), JSON.stringify(observed.events));
+       completed = true;
+       break;
+     }
+     await new Promise(resolve => setTimeout(resolve, 1000));
+   }
+   assert.equal(completed, true, 'personal model request timed out');
+   assert.equal(personalRequests, 1);
+   console.log('PERSONAL CREDENTIAL, DEFAULT MODEL AND DIRECT INFERENCE: PASS');
+ }
+
  const state = await fetch(base + '/media-desk/state', { headers: { cookie, 'x-media-desk-lang': 'en' } });
  assert.equal(state.status, 200);
  assert.ok(Array.isArray((await state.json()).state.items));
