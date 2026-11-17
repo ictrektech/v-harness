@@ -123,6 +123,15 @@ try {
    assert.ok(!bundles.some(item => item.name === 'ds-bot'));
    assert.ok(!inventory.some(item => item.moduleName.startsWith('ds-bot')));
    assert.ok(inventory.some(item => item.moduleName === '@deepseek-ai/dsh-client-ui-settings-general' && item.enabled));
+   const teamBase = base + '/app/com.ictrek.v-harness/plugins/dsh-agent-teams/';
+   const teamState = await fetch(teamBase + 'state', { headers: { cookie } });
+   assert.equal(teamState.status, 200, 'Agent Teams state under VOS prefix');
+   assert.deepEqual((await teamState.json()).teams, []);
+   const teamArtwork = await fetch(teamBase + 'assets/member-qa-v2.png', { headers: { cookie } });
+   assert.equal(teamArtwork.status, 200, 'Agent Teams artwork under VOS prefix');
+   assert.match(teamArtwork.headers.get('content-type') ?? '', /image\/png/);
+   await teamArtwork.arrayBuffer();
+   console.log('AGENT TEAMS AUTHENTICATED STATE AND ARTWORK THROUGH VOS PREFIX: PASS');
    console.log('PINNED PLUGINS, ACTIVE HOST FIBERS, BROWSER BUNDLES AND CORE SETTINGS: PASS');
  }
  const workspace = await rpc('workspace/create', { request: { path: '/home/startup-smoke/workspace' } });
