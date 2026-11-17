@@ -51,7 +51,7 @@ export interface ModelsSectionInjected {
   /** Settings schema and immutable path callbacks. */
   schema: SettingsSchemaOperations
   /** VOS default model selector. */
-  scheduler?: SchedulerController
+  scheduler?: SchedulerController | undefined
   /** Section copy. */
   t: (key: keyof typeof en) => string
 }
@@ -244,7 +244,12 @@ export function ModelsSection(props: ModelsSectionProps): ReactNode {
     controller === undefined || useSnapshot === undefined || operations === undefined
     || schema === undefined || t === undefined
   ) return null
-  return <Loaded injected={{ controller, useSnapshot, operations, schema, t, scheduler }} renderSlot={renderSlot} />
+  const forms = <Loaded injected={{ controller, useSnapshot, operations, schema, t, scheduler }} renderSlot={renderSlot} />
+  if (scheduler === undefined) return forms
+  return <div className={styles['section']}>
+    <SchedulerSection controller={scheduler} t={t} />
+    {forms}
+  </div>
 }
 
 function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderSlot: ModelsRenderSlot }): ReactNode {
@@ -348,8 +353,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   if (!hasReadySnapshot && state.status !== 'ready') {
     return (
       <div className={styles['section']}>
-        {scheduler === undefined ? null : <SchedulerSection controller={scheduler} t={t} />}
-      <h2 className={styles['title']}>{t(scheduler === undefined ? 'title' : 'personalProviders')}</h2>
+        <h2 className={styles['title']}>{t(scheduler === undefined ? 'title' : 'personalProviders')}</h2>
         <p className={styles['intro']}>{t('intro')}</p>
       </div>
     )
@@ -416,7 +420,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
 
   return (
     <div className={styles['section']}>
-      <h2 className={styles['title']}>{t('title')}</h2>
+      <h2 className={styles['title']}>{t(scheduler === undefined ? 'title' : 'personalProviders')}</h2>
       <p className={styles['intro']}>{t('intro')}</p>
       {!state.writable && state.status === 'ready' ? <p className={styles['notice']}>{t('readOnly')}</p> : null}
       {savedIdentity === undefined

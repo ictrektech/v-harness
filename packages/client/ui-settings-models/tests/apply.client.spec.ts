@@ -86,7 +86,6 @@ describe('ui-settings-models apply', () => {
       const onboarding = slots.entries('settings.onboarding').find(entry => entry.options.id === 'deepseek-official')!
       expect((onboarding.inject as () => { automatic: boolean })().automatic).toBe(false)
       expect(slots.entries('settings.section').map(entry => entry.options.id)).toEqual(['models'])
-      expect(slots.entries('settings.section')[0]?.component).toBe(ModelsSection)
       await plugin.dispose()
       expect(slots.entries('settings.onboarding')).toEqual([])
       await host.dispose()
@@ -119,6 +118,7 @@ describe('ui-settings-models apply', () => {
       await plugin.await()
       expect(slots.entries('settings.onboarding')).toEqual([])
       expect(slots.entries('settings.section').map(entry => entry.options.id)).toEqual(['models'])
+      expect(slots.entries('settings.section')[0]?.component).toBe(ModelsSection)
       await plugin.dispose()
       expect(slots.entries('settings.section')).toEqual([])
     } finally { await ctx.fiber.dispose() }
