@@ -360,6 +360,63 @@ describe('reconnect supervisor', () => {
     expect(instances).toHaveLength(2)
   })
 
+  it('rebuilds the generation when the server reports the session invalidated', async () => {
+    const { warns, infos } = captureLogs(ctx)
+    await apply(ctx, stdioConfig({ initialDelayMs: 5, maxDelayMs: 40, maxAttempts: 5 }))
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(instances).toHaveLength(1)
+
+    // The upstream discarded the session (server restart, replacement, idle
+    // reclaim): the transport stays open, but every call with the old session
+    // id fails the same way until the client re-initializes.
+    mockCallTool.mockRejectedValue(new Error('Session not found. Please reinitialize the session.'))
+
+    // The failing call still surfaces its original error to the model...
+    const failed = await executeToolFixture(ctx, {
+      name: 'mcp__srv__remote', arguments: {}, callId: nextCallId(), signal: testToolSignal,
+    })
+    expect(failed.isError).toBe(true)
+    if (!failed.isError) throw new Error('expected session failure')
+    expect(failed.error.message).toContain('Session not found')
+
+    // ...while the supervisor retires the generation and rebuilds it.
+    await vi.waitFor(() => { expect(instances).toHaveLength(2) })
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(warns.some(line => line.includes('session invalidated by the server'))).toBe(true)
+    expect(warns.some(line => line.includes('connection lost; reconnecting'))).toBe(true)
+    expect(infos.some(line => line.includes('reconnected and re-synced tools'))).toBe(true)
+
+    // The retry after recovery executes through the fresh generation.
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] })
+    const recovered = await executeToolFixture(ctx, {
+      name: 'mcp__srv__remote', arguments: {}, callId: nextCallId(), signal: testToolSignal,
+    })
+    expect(recovered.isError).toBe(false)
+    expect(mockConnect).toHaveBeenCalledTimes(2)
+  })
+
+  it('retires the generation when a relayed isError result reports the session invalidated', async () => {
+    const { warns } = captureLogs(ctx)
+    await apply(ctx, stdioConfig({ initialDelayMs: 5, maxDelayMs: 40, maxAttempts: 5 }))
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(instances).toHaveLength(1)
+
+    // A gateway that relays the upstream transport failure as an MCP error
+    // result must trigger the same rebuild as a thrown failure.
+    mockCallTool.mockResolvedValue({
+      isError: true,
+      content: [{ type: 'text', text: 'Session expired; please reinitialize the session.' }],
+    })
+    const failed = await executeToolFixture(ctx, {
+      name: 'mcp__srv__remote', arguments: {}, callId: nextCallId(), signal: testToolSignal,
+    })
+    expect(failed.isError).toBe(true)
+
+    await vi.waitFor(() => { expect(instances).toHaveLength(2) })
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(warns.some(line => line.includes('session invalidated by the server'))).toBe(true)
+  })
+
   it('a startup listing that outlives the budget publishes no tools', async () => {
     vi.useFakeTimers()
     const { errors } = captureLogs(ctx)

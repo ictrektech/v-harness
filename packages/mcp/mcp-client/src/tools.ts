@@ -37,10 +37,36 @@ export interface ToolBridgeOptions {
    * @returns the text with secret values replaced.
    */
   redact?: (text: string) => string
+  /**
+   * The server rejected this generation's session (restart, replacement, idle
+   * reclaim). Invoked before the error propagates, so the supervisor rebuilds
+   * the generation while the failing call still surfaces its original error.
+   */
+  onSessionLost?: (error: unknown) => void
 }
 
 /** Registration failed after the prior generation was removed and partial registrations were rolled back. */
 export class McpToolRegistrationError extends McpLocalError {}
+
+/**
+ * Match a failure that means this generation's MCP session is dead: the
+ * server discarded it (restart, replacement, idle reclaim), so every further
+ * request carrying the same `mcp-session-id` fails the same way until the
+ * client re-initializes. Covers the protocol error wording, the SDK's HTTP
+ * 404 body, and relays that surface the failure as an `isError` result.
+ */
+const SESSION_INVALID_PATTERN = new RegExp(
+  'session (?:not found|expired|invalid|was not found|is no longer valid)'
+  + '|reinitialize the session|unknown session',
+  'i',
+)
+
+/** Whether this failure means the generation's session must be rebuilt. */
+export function isSessionInvalidError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === -32001) return true
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return SESSION_INVALID_PATTERN.test(message)
+}
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
 export type ToolDisposers = Map<string, () => void>
@@ -156,9 +182,16 @@ export async function syncTools(
             { signal: AbortSignal.any([execution.signal, opts.signal]),
               timeout: opts.toolCallTimeoutMs, toolDefinition: tool },
           )
-          if (result.isError !== true || opts.redact === undefined) return result
-          return { isError: true, content: [{ type: 'text', text: opts.redact(extractText(result.content as JsonValue[], tool.name)) }] }
+          if (result.isError !== true) return result
+          const failureText = extractText(result.content as JsonValue[], tool.name)
+          // A relayed session-invalid failure means every later call on this
+          // generation fails the same way; retire it while this error still
+          // reaches the model, so its retry lands on a fresh session.
+          if (isSessionInvalidError(new Error(failureText))) opts.onSessionLost?.(new Error(failureText))
+          if (opts.redact === undefined) return result
+          return { isError: true, content: [{ type: 'text', text: opts.redact(failureText) }] }
         } catch (error) {
+          if (isSessionInvalidError(error)) opts.onSessionLost?.(error)
           if (opts.redact === undefined) throw error
           throw new Error(opts.redact(describeError(error)))
         }

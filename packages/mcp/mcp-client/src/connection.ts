@@ -27,7 +27,7 @@ import type { McpCloseResult } from './types.ts'
 import { McpGeneration } from './generation.ts'
 import { McpTemplateBinding } from './credentials.ts'
 import { MissingTemplateValue } from './templates.ts'
-import { McpToolRegistrationError, syncTools } from './tools.ts'
+import { isSessionInvalidError, McpToolRegistrationError, syncTools } from './tools.ts'
 import type { ToolDisposers } from './tools.ts'
 import type { Config } from './index.ts'
 
@@ -187,6 +187,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
           serverName: config.serverName,
           toolCallTimeoutMs: config.toolCallTimeoutMs,
           signal,
+          onSessionLost: error => invalidateSession(record, error),
           ...config.expandTemplates ? { redact: (text: string) => binding.redact(text) } : {},
         }, disposers, () => isCurrent(record))
       })
@@ -232,6 +233,19 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       readiness.resolve({ error: new Error(error) })
       if (confirmed) scheduleReconnect(error, record.connectedAt)
     })
+  }
+
+  /**
+   * Retire a generation whose session the server discarded (restart,
+   * replacement, idle reclaim). The failing call still reaches its caller
+   * with the original error; the normal reconnect loop then re-initializes
+   * and re-syncs a fresh session, so the next call succeeds without a
+   * Host restart.
+   */
+  function invalidateSession(record: Generation, error: unknown): void {
+    if (!isCurrent(record)) return
+    ctx.logger.warn(`${label}: session invalidated by the server: ${diagnostic(error, 'tool call')}`)
+    lost(record, 'MCP session invalidated by the server; reconnecting')
   }
 
   function isStopped(): boolean { return disposed || closureFailure !== undefined }
@@ -378,6 +392,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
             }
           })
         } catch (error) {
+          if (isSessionInvalidError(error)) invalidateSession(record, error)
           if (config.expandTemplates) throw new Error(diagnostic(error, request.method))
           throw error
         }
