@@ -35,6 +35,9 @@ VOS 版本以前缀跟随官方 DSH 版本，后缀 `.vos.xx` 记录本项目的
 
 - **Context**（`dsh-context@0.85.1`）。从会话右栏打开 Context，查看上下文用量、组成和压缩历史。 [使用说明](https://github.com/bowenliang123/dsh-context)
 - **Image Gen**（`dsh-image-gen@0.11.3`）。从插件设置配置可用的生图供应商和凭据，保存后在会话中请求生成或编辑图片。 [供应商配置](https://github.com/shanliuling/dsh-image-gen)
+- **ModSearch**（`@liustack/modsearch@5.10.14`）。在「插件 → 已安装」中启用插件。在插件设置中选择搜索引擎，按引擎要求填写 API 密钥，再在对话里让智能体搜索网页。启用后，当前用户的 Web 搜索由 ModSearch 接管。[搜索引擎配置](https://github.com/liustack/modsearch)
+- **Billion Context**（`billion-context@0.1.215`）。在「插件 → 已安装」中启用插件，再开始对话。它通过租户内部的代理管理会话上下文。要恢复 DSH 默认压缩方式，请在同一页面停用整个插件。[上游使用指南](https://github.com/ranxianglei/billion-context)
+- 这两个插件默认关闭。启用或停用后若提示重启，请点击「重启」并等待 v-harness 重新打开。
 - **Mnemon**（`dsh-mnemon@0.5.47`）。从插件面板查看 Memory System，检查当前工作区的记忆视图和存储设置。首次连接外部记忆空间时，按供应商说明配置凭据。 [使用说明](https://github.com/omdsh-dev/dsh-mnemon)
 - **Skills Manager**（`@michengai/dsh-skills-manager@1.4.11`）。打开「插件 → Skills Manager」，查看和管理租户的技能。 [使用说明](https://github.com/MichengAI/dsh-skills-manager)
 - **智能体团队协作**。在 v-harness 选择工作区并打开根会话，点击输入框右下角显示「模型名 + 推理等级」的按钮，在弹出的菜单中打开「启用智能体团队协作」。新会话默认关闭，开关只影响当前根会话。启用后描述分工，点击会话顶部的「任务板」可查看子智能体和共享任务。有模型请求记录的会话停用时需要确认。

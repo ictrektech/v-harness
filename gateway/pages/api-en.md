@@ -128,3 +128,5 @@ For `remove-container`, `host-remove` or `remove-image`, the Agent can send `ids
 ## Built-in skills from a session
 
 Archify, Mnemon, PPT Design Skill and Vox Director are available to the Agent through the existing session prompt workflow. Generated files are written to the user's workspace. Mnemon stores facts under the user's persistent home directory, and Atlas Cloud video generation uses a user-provided credential. Submit a task with `POST /sessions/{sessionId}/prompts` and read its progress with `GET /sessions/{sessionId}/events`. The session API contract is unchanged.
+
+In **Plugins → Installed**, you can enable ModSearch to handle web searches and Billion Context to manage context for eligible model requests in your profile. The default is disabled for both bundles. API-created sessions use the same tenant’s settings and plugin selection as sessions created in the web UI. The VOS API v1 session, prompt and event contracts are unchanged. See the [VOS app guide](https://twp99wyutbs.feishu.cn/docx/Iu0tdedumoMZ1LxMUSWckt7wn5v) for setup.

@@ -2441,6 +2441,17 @@ async function proxyRequest(req, res) {
   }
 
   const path = stripPrefix(req.url ?? '/').replace(/^\/__vh-ui-v2\/assets\//, '/assets/');
+  if (path.split('?')[0] === '/modsearch/config' && req.method === 'POST') {
+    if (req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+    const contentType = req.headers['content-type']?.split(';')[0].trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      json(res, 415, { error: 'application/json is required' });
+      return;
+    }
+  }
   const headers = upstreamHeaders(req, instance.port, instance.cookie);
   // Media Desk checks Fetch Metadata before processing write requests.
   if (path.startsWith('/media-desk/') && req.headers['sec-fetch-site'] !== undefined) {

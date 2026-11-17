@@ -5,6 +5,9 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import registryPlugins from './agent-plugins/registry-plugins.json' with { type: 'json' };
+import optionalBundles from './agent-plugins/optional-bundles.json' with { type: 'json' };
+
+const defaultBundles = Object.keys(registryPlugins).filter(name => !optionalBundles.includes(name));
 
 /** Deployed browser plugins every image carries; the sync refuses a payload without them. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes'];
@@ -71,7 +74,7 @@ test('a new profile declares the published payload plugins as dependencies', asy
   const manifest = JSON.parse(await readFile(join(user.profile, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.dependencies, registryPlugins);
   assert.deepEqual(manifest.dsh.profile.bundles, [
-    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', ...Object.keys(registryPlugins),
+    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', ...defaultBundles,
   ]);
   for (const name of Object.keys(registryPlugins)) {
     assert.equal(existsSync(join(user.profile, 'node_modules', name, 'package.json')), true, name);
@@ -97,7 +100,7 @@ test('an existing profile drops DS Bot and keeps other user plugins and Bot data
     name: 'dsh-profile-web',
     private: true,
     dependencies: { 'dsh-pet': '0.4.4', 'ds-bot': '0.3.6' },
-    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-bot', 'dsh-pet', 'ds-bot'] } },
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-bot', 'dsh-pet', 'billion-context', 'ds-bot'] } },
   }));
 
   assert.equal(await syncPlugins(user), true);
@@ -106,7 +109,7 @@ test('an existing profile drops DS Bot and keeps other user plugins and Bot data
   const manifest = JSON.parse(upgraded);
   assert.deepEqual(manifest.dependencies, { 'dsh-pet': '0.4.4', ...registryPlugins });
   assert.deepEqual(manifest.dsh.profile.bundles, [
-    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-pet', 'vh-agent-plugins', ...Object.keys(registryPlugins),
+    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-pet', 'billion-context', 'vh-agent-plugins', ...defaultBundles,
   ]);
   assert.equal(existsSync(botDir), false);
   assert.equal(existsSync(sharedBotDir), false);

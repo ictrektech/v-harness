@@ -7,5 +7,7 @@
   "dsh-image-gen": "0.11.3",
   "dsh-mnemon": "0.5.47",
   "@michengai/dsh-skills-manager": "1.4.11",
-  "@nanmicoder/dsh-agent-teams": "0.1.30"
+  "@nanmicoder/dsh-agent-teams": "0.1.30",
+  "@liustack/modsearch": "5.10.14",
+  "billion-context": "0.1.215"
 }

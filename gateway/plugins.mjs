@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import registryPlugins from './agent-plugins/registry-plugins.json' with { type: 'json' }
+import optionalBundles from './agent-plugins/optional-bundles.json' with { type: 'json' }
 
 /** Where the image puts built client plugins; a deployment may relocate both roots. */
 const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
@@ -60,7 +61,7 @@ const PROFILE_BUNDLES = [
   '@deepseek-ai/dsh-base',
   '@deepseek-ai/dsh-web-app',
   AGENT_BUNDLE_NAME,
-  ...PROFILE_PLUGINS,
+  ...PROFILE_PLUGINS.filter(name => !optionalBundles.includes(name)),
 ]
 
 /** Mirrors dsh's profile user-patch template. */
@@ -662,7 +663,7 @@ async function mountBundles(profile, user, names, declared) {
 }
 
 /**
- * Ensure one tenant's profile lists every bundle and dependency this image ships.
+ * Ensure one tenant's profile lists the default bundles and all shipped dependencies.
  * @param {{
  *   home: string,
  *   linuxName: string,

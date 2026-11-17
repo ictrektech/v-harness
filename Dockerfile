@@ -239,6 +239,7 @@ RUN set -eu; \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push(...Object.keys(require('./gateway/agent-plugins/registry-plugins.json'))); fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')" \
+ && node gateway/agent-plugins/set-billion-context-bind.mjs /build/agent-plugins/node_modules/billion-context/dist/agent/dsh-native.js \
  && node gateway/agent-plugins/set-market-default.mjs /build/agent-plugins/node_modules/dshmarket/lib/routes.js \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
 

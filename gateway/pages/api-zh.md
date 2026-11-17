@@ -128,3 +128,5 @@ VOS 系统管理员打开会话，点击「应用容器管理」，再点击「�
 ## 在会话中使用内置技能
 
 Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。生成文件写入用户工作区，Mnemon 将记忆存放在当前用户的持久目录里，Atlas Cloud 视频生成需要用户配置密钥。使用 `POST /sessions/{sessionId}/prompts` 提交任务，通过 `GET /sessions/{sessionId}/events` 查看进度。会话 API 约定保持现状。
+
+在「插件 → 已安装」中，可以启用 ModSearch 处理网页搜索，或启用 Billion Context 管理符合条件的模型请求上下文。两个插件均默认关闭。通过 API 创建的会话使用当前租户在 Web 界面配置的插件及设置。VOS API v1 的会话、提示词和事件协议保持一致。安装使用步骤见 [VAI 应用使用文档](https://twp99wyutbs.feishu.cn/docx/DTWGdRXGhoblP5xue4Gcf8Bpnsc)。

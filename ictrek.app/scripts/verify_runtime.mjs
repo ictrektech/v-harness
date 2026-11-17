@@ -11,6 +11,9 @@ const bundled = JSON.parse(await readFile('/opt/v-harness/gateway/agent-plugins/
     if (upgrade === 'prepare' && error.code === 'ENOENT') return 'null';
     throw error;
   }));
+const optionalBundles = bundled ? JSON.parse(await readFile(
+  '/opt/v-harness/gateway/agent-plugins/optional-bundles.json', 'utf8',
+)) : [];
 const profile = '/data/startup-smoke/.dsh/profiles/web';
 const fixtureFile = '/data/.vh/release-session-fixture.json';
 const runtimeModules = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules';
@@ -104,8 +107,13 @@ try {
    for (const [name, version] of Object.entries(bundled)) {
      const entry = bundles.find(item => item.name === name);
      assert.equal(entry?.version, version, name);
-     assert.equal(entry?.enabled, true, name);
+     const optional = optionalBundles.includes(name);
+     assert.equal(entry?.enabled, !optional, name);
      assert.equal(entry?.error, undefined, JSON.stringify(entry?.error));
+     if (optional) {
+       assert.ok(!inventory.some(item => item.moduleName === name && item.fiberPhase === 'active'), name);
+       continue;
+     }
      const host = inventory.find(item => item.moduleName === name);
      assert.equal(host?.fiberPhase, 'active', JSON.stringify(host ?? { name }));
      const client = graph.entries.find(item => item.id === name);
@@ -270,6 +278,72 @@ try {
    assert.doesNotMatch(await readFile(logs + '/' + file, 'utf8'), /prompt section .* is already registered/);
  }
  console.log('GLOBAL MARKET DEFAULT AND BUNDLED PLUGINS: PASS');
+ if (optionalBundles.length) {
+   for (const name of optionalBundles) {
+     const change = await rpc('pluginManager/setBundleEnabled', { name, enabled: true });
+     assert.equal(change.changed, true, JSON.stringify(change));
+     assert.notEqual(change.application, 'failed', JSON.stringify(change));
+   }
+   const previousBoot = await fetch(base + '/__vh/boot', { headers: { cookie } }).then(r => r.json());
+   const restart = await fetch(base + '/__vh/restart', { method: 'POST', headers: { cookie } });
+   assert.equal(restart.status, 202);
+   let ready = false;
+   for (let n = 0; n < 180; n++) {
+     const boot = await fetch(base + '/__vh/boot', { headers: { cookie } }).then(r => r.json());
+     if (boot.error) throw new Error(JSON.stringify(boot));
+     if (boot.boot > 0 && boot.boot !== previousBoot.boot) {
+       ready = true;
+       break;
+     }
+     await new Promise(resolve => setTimeout(resolve, 1000));
+   }
+   assert.ok(ready, 'optional bundles did not boot');
+   const inventory = await rpc('pluginManager/listPlugins', {});
+   for (const name of ['@liustack/modsearch', 'billion-context', 'billion-context/dsh-compaction-gate']) {
+     assert.ok(inventory.some(item => item.moduleName === name && item.fiberPhase === 'active'), name);
+   }
+   const config = await fetch(base + '/modsearch/config', { headers: { cookie } });
+   assert.equal(config.status, 200, await config.clone().text());
+   assert.match(config.headers.get('content-type') ?? '', /json/);
+   for (const [headers, status] of [
+     [{ 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' }, 403],
+     [{ 'content-type': 'text/plain' }, 415],
+     [{ 'content-type': 'application/json' }, 200],
+   ]) {
+     const saved = await fetch(base + '/modsearch/config', {
+       method: 'POST', headers: { cookie, ...headers }, body: JSON.stringify({ engine: '' }),
+     });
+     assert.equal(saved.status, status, await saved.text());
+   }
+   let proxyOrigin;
+   for (let n = 0; n < 30; n++) {
+     const response = await fetch(base + '/bili/origin', { headers: { cookie } });
+     assert.equal(response.status, 200, await response.clone().text());
+     proxyOrigin = (await response.json()).origin;
+     if (proxyOrigin) break;
+     await new Promise(resolve => setTimeout(resolve, 1000));
+   }
+   assert.match(proxyOrigin ?? '', /^http:\/\/127\.\d+\.\d+\.1:\d+$/);
+   assert.notEqual(new URL(proxyOrigin).hostname, '127.0.0.1');
+
+   const response = await api('/sessions', { body: { workspaceId: workspace.workspace.workspaceId } });
+   assert.equal(response.status, 201, await response.clone().text());
+   const path = '/sessions/' + (await response.json()).sessionId;
+   const accepted = await api(path + '/prompts', { body: { requestId: randomUUID(), text: 'Run the optional bundles fixture.' } });
+   assert.equal(accepted.status, 202, await accepted.text());
+   let completed = false;
+   for (let n = 0; n < 45; n++) {
+     const { events } = await api(path + '/events').then(result => result.json());
+     if (events.some(event => event.type === 'turn-ended')) {
+       assert.ok(events.some(event => event.type === 'turn-ended' && event.outcome === 'completed'), JSON.stringify(events));
+       completed = true;
+       break;
+     }
+     await new Promise(resolve => setTimeout(resolve, 1000));
+   }
+   assert.ok(completed, 'model request with the optional bundles timed out');
+   console.log('OPTIONAL BUNDLES, TENANT-LOCAL PROXY AND MODEL SESSION: PASS');
+ }
  if (upgrade === 'prepare') {
    const manifestPath = profile + '/package.json';
    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
