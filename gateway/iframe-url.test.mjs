@@ -60,6 +60,14 @@ function runBridge() {
     get src() { return this.storedSrc; }
     set src(value) { this.storedSrc = value; }
   };
+  sandbox.HTMLImageElement = class extends sandbox.Element {
+    constructor() {
+      super('IMG');
+      this.storedSrc = '';
+    }
+    get src() { return this.storedSrc; }
+    set src(value) { this.storedSrc = value; }
+  };
   vm.runInNewContext(bridge, sandbox);
   return sandbox;
 }
@@ -92,4 +100,18 @@ test('setAttribute on any other element is untouched', () => {
   const element = new sandbox.Element('DIV');
   element.setAttribute('src', '/mcp-connector/ui/');
   assert.equal(element.src, '/mcp-connector/ui/');
+});
+
+test('Agent Teams artwork resolves under the app prefix for DOM image requests', () => {
+  const sandbox = runBridge();
+  const image = new sandbox.HTMLImageElement();
+  const asset = '/plugins/dsh-agent-teams/assets/member-qa-v2.png';
+  image.src = asset;
+  assert.equal(image.src, BASE + asset);
+  image.setAttribute('src', 'https://vos.example' + asset + '?rev=1');
+  assert.equal(image.src, 'https://vos.example' + BASE + asset + '?rev=1');
+  image.src = 'https://other.example' + asset;
+  assert.equal(image.src, 'https://other.example' + asset);
+  image.src = '/img/platform.svg';
+  assert.equal(image.src, '/img/platform.svg');
 });

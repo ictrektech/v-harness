@@ -178,6 +178,17 @@ test('a plugin route moves under the application path', () => {
   assert.deepEqual(bridge.xhr, ['/app/com.ictrek.v-harness/dsh-gitea/status']);
 });
 
+test('Agent Teams state and plan requests use the VOS application route', () => {
+  const basePath = '/app/com.ictrek.v-harness';
+  const bridge = loadBridge(basePath);
+  bridge.context.fetch('/plugins/dsh-agent-teams/state?summary=1');
+  bridge.context.fetch(new URL('https://vos.example/plugins/dsh-agent-teams/plan'));
+  assert.deepEqual(bridge.fetch, [
+    basePath + '/plugins/dsh-agent-teams/state?summary=1',
+    'https://vos.example' + basePath + '/plugins/dsh-agent-teams/plan',
+  ]);
+});
+
 test('prefixing is idempotent and leaves the origin alone', () => {
   const bridge = loadBridge('/app/com.ictrek.v-harness');
   bridge.context.fetch('/app/com.ictrek.v-harness/dsh-gitea/config');

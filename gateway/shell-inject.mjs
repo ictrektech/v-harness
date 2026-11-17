@@ -156,9 +156,13 @@ function routesAtRoot(path) {
   }
   return false;
 }
+var AGENT_TEAMS_ROUTES = "/plugins/dsh-agent-teams/";
 function appPath(path) {
   if (!hasBase) return path;
   if (path === vh.base || path.indexOf(vh.base + "/") === 0 || path.indexOf(vh.base + "?") === 0) return path;
+  // Agent Teams registers its own Host routes under /plugins. VOS serves
+  // these only through the application prefix.
+  if (path.indexOf(AGENT_TEAMS_ROUTES) === 0) return vh.base + path;
   if (routesAtRoot(path)) return path;
   return vh.base + path;
 }
@@ -223,29 +227,38 @@ function moveFrameSource(value) {
     return value;
   }
 }
-if (typeof HTMLIFrameElement === "function" && HTMLIFrameElement.prototype) {
-  var frameSrcDef = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "src");
-  if (frameSrcDef && typeof frameSrcDef.set === "function" && frameSrcDef.configurable === true) {
-    try {
-      Object.defineProperty(HTMLIFrameElement.prototype, "src", {
-        configurable: true,
-        enumerable: frameSrcDef.enumerable,
-        get: frameSrcDef.get,
-        set: function (value) { frameSrcDef.set.call(this, moveFrameSource(value)); }
-      });
-    } catch (e) {}
+function moveTeamArtwork(value) {
+  try {
+    if (typeof value !== "string") return value;
+    var pathname = new URL(value, location.href).pathname;
+    return pathname.indexOf(AGENT_TEAMS_ROUTES + "assets/") === 0 ? fixUrl(value) : value;
+  } catch (e) {
+    return value;
   }
+}
+function wrapSourceProperty(element, moveSource) {
+  var source = Object.getOwnPropertyDescriptor(element.prototype, "src");
+  if (!source || typeof source.set !== "function" || source.configurable !== true) return;
+  try {
+    Object.defineProperty(element.prototype, "src", {
+      configurable: true,
+      enumerable: source.enumerable,
+      get: source.get,
+      set: function (value) { source.set.call(this, moveSource(value)); }
+    });
+  } catch (e) {}
+}
+if (typeof HTMLIFrameElement === "function") wrapSourceProperty(HTMLIFrameElement, moveFrameSource);
+if (typeof HTMLImageElement === "function") wrapSourceProperty(HTMLImageElement, moveTeamArtwork);
+if (typeof Element === "function" && typeof Element.prototype.setAttribute === "function") {
   var nativeSetAttribute = Element.prototype.setAttribute;
-  if (typeof nativeSetAttribute === "function") {
-    Element.prototype.setAttribute = function (name, value) {
-      try {
-        if (this && this.tagName === "IFRAME" && String(name).toLowerCase() === "src") {
-          return nativeSetAttribute.call(this, name, moveFrameSource(value));
-        }
-      } catch (e) {}
-      return nativeSetAttribute.call(this, name, value);
-    };
-  }
+  Element.prototype.setAttribute = function (name, value) {
+    if (String(name).toLowerCase() === "src") {
+      if (this.tagName === "IFRAME") value = moveFrameSource(value);
+      if (this.tagName === "IMG") value = moveTeamArtwork(value);
+    }
+    return nativeSetAttribute.call(this, name, value);
+  };
 }
 function wrapSocket(native) {
   if (typeof native !== "function") return native;
