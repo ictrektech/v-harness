@@ -173,7 +173,7 @@ function directoryEntries(
 
 /** Register one generic pi-ai adapter for all configured provider routes. */
 export function apply(ctx: Context, config: Config): void {
-  if (applyScheduler(ctx)) return
+  const managedProviders = new Set(applyScheduler(ctx))
   ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
   const settingsNs = ctx.fiber.entry?.options.id ?? NS
   let lastRaw: ReturnType<Config['providers']['get']> | undefined
@@ -191,6 +191,7 @@ export function apply(ctx: Context, config: Config): void {
     const raw = config.providers.get()
     if (raw === lastRaw && memoized !== undefined) return memoized
     const next = resolveProfiles(structuredClone(raw) as import('./config.ts').Options['providers'], 'deferred')
+    for (const name of managedProviders) next.delete(name)
     lastRaw = raw
     memoized = next
     return next
@@ -200,6 +201,9 @@ export function apply(ctx: Context, config: Config): void {
     const raw: unknown = next()
     if (fiber !== ctx.fiber) return raw
     const candidate = Config(raw as import('./config.ts').Options)
+    for (const name of Object.keys(candidate.providers.get())) {
+      if (managedProviders.has(name)) throw new LlmError(`Provider route "${name}" is reserved by V-Scheduler`, 'INVALID_CONFIG')
+    }
     assertServiceable(
       { providers: structuredClone(candidate.providers.get()) } as import('./config.ts').Options,
       { providers: structuredClone(config.providers.get()) } as import('./config.ts').Options,
@@ -218,6 +222,9 @@ export function apply(ctx: Context, config: Config): void {
     // (OPENAI_API_KEY and friends), billing another tenant for a request the
     // deployment meant to authenticate differently.
     if (ref === undefined) return undefined
+    if (managedProviders.size > 0 && ref.startsWith('VH_')) {
+      throw new LlmError('Personal providers require their own credential reference', 'MISSING_CREDENTIAL')
+    }
     const credentials = ctx.get('credentials')
     const hit = credentials !== undefined
       ? (await credentials.resolve(ref))?.value

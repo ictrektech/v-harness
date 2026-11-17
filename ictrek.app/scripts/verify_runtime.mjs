@@ -134,7 +134,7 @@ try {
    assert.ok(previousEvents.some(event => event.type === 'assistant-text' && event.text === replyText));
    assert.ok(previousEvents.some(event => event.type === 'turn-ended' && event.outcome === 'completed'));
    const legacyStorage = JSON.parse(await readFile(fixture.shadow + '/package.json', 'utf8'));
-   assert.equal(legacyStorage.version, '0.2.2-rc.2', 'retain the plugin-owned copy in the tenant profile');
+   assert.equal(legacyStorage.version, fixture.storageVersion, 'retain the plugin-owned copy in the tenant profile');
    const manifest = JSON.parse(await readFile(profile + '/package.json', 'utf8'));
    assert.ok(!Object.hasOwn(manifest.dependencies, 'ds-bot'));
    assert.ok(!manifest.dsh.profile.bundles.includes('ds-bot'));
@@ -211,7 +211,7 @@ try {
    const shadow = profile + '/node_modules/@deepseek-ai/dsh-storage-domain';
    await mkdir(profile + '/node_modules/@deepseek-ai', { recursive: true });
    await cp(runtimeModules + '/@deepseek-ai/dsh-storage-domain', shadow, {recursive:true});
-   await writeFile(fixtureFile, JSON.stringify({sessionId: createdBody.sessionId, shadow}), {mode:0o600});
+   await writeFile(fixtureFile, JSON.stringify({sessionId: createdBody.sessionId, shadow, storageVersion: JSON.parse(await readFile(shadow + '/package.json', 'utf8')).version}), {mode:0o600});
    console.log('PRIOR IMAGE SESSION AND STORAGE FIXTURE SAVED');
  }
 

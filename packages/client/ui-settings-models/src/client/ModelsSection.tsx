@@ -35,6 +35,7 @@ import type { ModelsOperations } from './operations.ts'
 import type { SettingsSchemaOperations } from './schema-operations.ts'
 import { ProviderEditor, type ProviderEditorProps } from './ProviderEditor.tsx'
 import type { en } from './locales.ts'
+import { SchedulerSection, type SchedulerController } from './SchedulerSection.tsx'
 import styles from './ModelsSection.module.css'
 
 /** Injected dependencies of {@link ModelsSection} (slot `inject`). */
@@ -49,6 +50,8 @@ export interface ModelsSectionInjected {
   operations: ModelsOperations
   /** Settings schema and immutable path callbacks. */
   schema: SettingsSchemaOperations
+  /** VOS default model selector. */
+  scheduler?: SchedulerController
   /** Section copy. */
   t: (key: keyof typeof en) => string
 }
@@ -236,16 +239,16 @@ export function providerCopy(template: string, target: ProviderIdentity): string
  * @returns the section, or null while the shell has not injected yet.
  */
 export function ModelsSection(props: ModelsSectionProps): ReactNode {
-  const { controller, useSnapshot, operations, schema, t, renderSlot } = props
+  const { controller, useSnapshot, operations, schema, t, renderSlot, scheduler } = props
   if (
     controller === undefined || useSnapshot === undefined || operations === undefined
     || schema === undefined || t === undefined
   ) return null
-  return <Loaded injected={{ controller, useSnapshot, operations, schema, t }} renderSlot={renderSlot} />
+  return <Loaded injected={{ controller, useSnapshot, operations, schema, t, scheduler }} renderSlot={renderSlot} />
 }
 
 function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderSlot: ModelsRenderSlot }): ReactNode {
-  const { controller, operations, schema, t } = injected
+  const { controller, operations, schema, t, scheduler } = injected
   const snapshot = injected.useSnapshot(value => value)
   const state = { ...snapshot, rows: snapshot.rows.map(row => row.entry.provider === 'deepseek-account'
     ? { ...row, entry: { ...row.entry, displayName: t('deepSeekAccount') } } : row) }
@@ -345,7 +348,8 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   if (!hasReadySnapshot && state.status !== 'ready') {
     return (
       <div className={styles['section']}>
-        <h2 className={styles['title']}>{t('title')}</h2>
+        {scheduler === undefined ? null : <SchedulerSection controller={scheduler} t={t} />}
+      <h2 className={styles['title']}>{t(scheduler === undefined ? 'title' : 'personalProviders')}</h2>
         <p className={styles['intro']}>{t('intro')}</p>
       </div>
     )

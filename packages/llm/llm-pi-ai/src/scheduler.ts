@@ -18,12 +18,12 @@ const ROUTES = [
 /**
  * Register managed discovery when the VOS gateway supplies an inference capability.
  * @param ctx - Host context owning the adapter registration.
- * @returns whether the VOS-managed adapter replaced standalone configuration.
+ * @returns the route IDs reserved by the VOS adapter.
  */
-export function applyScheduler(ctx: Context): boolean {
+export function applyScheduler(ctx: Context): readonly string[] {
   const environment = launchEnvironmentOf(ctx)
   const base = environment.get('VH_SCHEDULER_URL')?.value
-  if (!base) return false
+  if (!base) return []
   const key = environment.get('VH_SCHEDULER_KEY')?.value
   if (!key) throw new LlmError('V-Scheduler inference capability is missing', 'MISSING_CREDENTIAL')
   let profiles: ReturnType<typeof resolveProfiles> = new Map()
@@ -82,6 +82,7 @@ export function applyScheduler(ctx: Context): boolean {
       attachments, path => ctx.get('fs')?.processPathFromHostPath(path), ref,
     ),
   })
-  ctx.llm.registerAdapter(ROUTES.map(([provider]) => provider), adapter)
-  return true
+  const providers = ROUTES.map(([provider]) => provider)
+  ctx.llm.registerAdapter(providers, adapter)
+  return providers
 }

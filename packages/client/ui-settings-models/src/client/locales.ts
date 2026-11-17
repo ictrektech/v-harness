@@ -3,7 +3,8 @@
 /** English strings (the key-set source of truth for this pair). */
 export const en = {
   nav: 'Models',
-  schedulerIntro: 'Add and manage models in V-Scheduler. Models visible to your VOS account with chat or text completion capabilities appear here automatically.',
+  personalProviders: 'Personal model providers',
+  schedulerIntro: 'Choose a default from V-Scheduler or your personal providers. V-Scheduler models visible to your VOS account appear automatically.',
   schedulerOpen: 'Open V-Scheduler to add models',
   schedulerLoading: 'Loading models…',
   schedulerDefault: 'Default model for new conversations',
@@ -192,7 +193,8 @@ export type ModelsKey = keyof typeof en
 /** Chinese strings (same keys as {@link en}). */
 export const zh: { [Key in keyof typeof en]: string } = {
   nav: '模型',
-  schedulerIntro: '请在 V-Scheduler 中添加和管理模型。当前 VOS 账号可见、具备聊天或文本补全能力的模型会自动出现在列表中。',
+  personalProviders: '个人模型提供商',
+  schedulerIntro: '可选择 V-Scheduler 或个人提供商的模型作为默认。当前 VOS 账号可用的 V-Scheduler 模型会自动出现在列表中。',
   schedulerOpen: '前往 V-Scheduler 添加模型',
   schedulerLoading: '正在加载模型…',
   schedulerDefault: '新对话默认模型',
@@ -385,6 +387,7 @@ const vosFallback = {
   'schedulerOpen': en['schedulerOpen'],
   'schedulerRefresh': en['schedulerRefresh'],
   'schedulerSelectionHint': en['schedulerSelectionHint'],
+  'personalProviders': en['personalProviders'],
 }
 
 /** Japanese copy, checked against the English keys. */

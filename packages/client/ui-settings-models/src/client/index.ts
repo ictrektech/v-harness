@@ -17,7 +17,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // (settings/credentials invalidations ride the allowlist) into this program.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { ModelsSection } from './ModelsSection.tsx'
-import { SchedulerSection, SchedulerController } from './SchedulerSection.tsx'
+import { SchedulerController } from './SchedulerSection.tsx'
 import type { ModelsSectionInjected } from './ModelsSection.tsx'
 import { DeepSeekOnboardingDialog } from './DeepSeekOnboardingDialog.tsx'
 import type { DeepSeekOnboardingInjected } from './DeepSeekOnboardingDialog.tsx'
@@ -92,30 +92,24 @@ export function apply(ctx: ClientContext): void {
   // Registration-time text (the nav label thunk) and the inject faces share
   // one bound translate; copy freshness rides the locale revision.
   const t = ctx.locale.bind(NS) as ModelsSectionInjected['t']
-  if (managed) {
-    const scheduler = new SchedulerController({
-      load: async () => {
-        const response = await ctx.remote.session.modelCatalog()
-        if (!response.ok) throw new Error(response.error.message)
-        return response.value
-      },
-      select: async (provider, model) => {
-        const response = await ctx.remote.session.selectDefaultModel({ provider, model })
-        if (!response.ok) throw new Error(response.error.message)
-      },
-    })
-    ctx.slots.inject('settings.section', () => ctx.slots.register({
-      name: 'settings.section', id: 'models', order: 10, label: () => t('nav'),
-      inject: () => ({ t, controller: scheduler, hooks: { snapshot: scheduler.store } }),
-    }, SchedulerSection))
-    return
-  }
+  const scheduler = managed ? new SchedulerController({
+    load: async () => {
+      const response = await ctx.remote.session.modelCatalog()
+      if (!response.ok) throw new Error(response.error.message)
+      return response.value
+    },
+    select: async (provider, model) => {
+      const response = await ctx.remote.session.selectDefaultModel({ provider, model })
+      if (!response.ok) throw new Error(response.error.message)
+    },
+  }) : undefined
   const injected = (): ModelsSectionInjected => ({
     controller,
     hooks: { snapshot: controller.store },
     operations,
     schema,
     t,
+    scheduler,
   })
   const deepSeekOnboardingInjected = (): DeepSeekOnboardingInjected => ({
     automatic: credentialOnboarding,
@@ -126,12 +120,6 @@ export function apply(ctx: ClientContext): void {
     schema,
     t,
   })
-  const welcomeController = new WelcomeNoticeStore(ctx.configForms.get<Record<string, unknown>>(WELCOME_NOTICE_SETTINGS_NAMESPACE))
-  const welcomeInjected = (): WelcomeNoticeInjected => ({
-    controller: welcomeController,
-    hooks: { welcome: welcomeController.store },
-    t,
-  })
 
   // Pushed invalidations converge every open surface without polling. The
   // configForms injection makes ui-settings activate first, and remote
@@ -139,7 +127,10 @@ export function apply(ctx: ClientContext): void {
   // mirror refresh before this store joins that refresh. The welcome notice
   // follows its settings scope, so it needs no subscription here.
   ctx.effect(() => {
-    const refreshModels = (): void => { refreshIfLoaded(controller) }
+    const refreshModels = (): void => {
+      refreshIfLoaded(controller)
+      if (scheduler?.store.getSnapshot().catalog) void scheduler.load()
+    }
     const disposers = [
       ctx.remote.$on('settings/document-updated', () => { refreshModels() }),
       ctx.remote.$on('credentials/record-updated', refreshModels),
@@ -148,7 +139,6 @@ export function apply(ctx: ClientContext): void {
       ctx.on('connection/reset', refreshModels),
     ]
     return () => {
-      welcomeController.dispose()
       for (const dispose of disposers) dispose()
     }
   }, 'ui-settings-models: pushed invalidations')
@@ -164,6 +154,14 @@ export function apply(ctx: ClientContext): void {
       'settings.models.footer': { kind: 'list', scope: 'root' },
     },
   }, ModelsSection))
+  if (managed) return
+  const welcomeController = new WelcomeNoticeStore(ctx.configForms.get<Record<string, unknown>>(WELCOME_NOTICE_SETTINGS_NAMESPACE))
+  ctx.effect(() => () => welcomeController.dispose(), 'ui-settings-models: welcome settings')
+  const welcomeInjected = (): WelcomeNoticeInjected => ({
+    controller: welcomeController,
+    hooks: { welcome: welcomeController.store },
+    t,
+  })
   if (!('dshDesktop' in globalThis)) ctx.slots.inject('settings.onboarding', () => ctx.slots.register({
     name: 'settings.onboarding',
     id: 'welcome-notice',

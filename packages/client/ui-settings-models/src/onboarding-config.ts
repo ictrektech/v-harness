@@ -6,7 +6,7 @@ import z from '@deepseek-ai/schemastery'
 export interface Config {
   /** Offer the browser API-key step when no native shell owns credential onboarding. */
   credentialOnboarding: boolean
-  /** Show managed V-Scheduler settings instead of credential forms. */
+  /** Show the VOS catalog and default selection alongside credential forms. */
   schedulerManaged: boolean
 }
 

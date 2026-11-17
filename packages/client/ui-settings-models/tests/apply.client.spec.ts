@@ -86,6 +86,7 @@ describe('ui-settings-models apply', () => {
       const onboarding = slots.entries('settings.onboarding').find(entry => entry.options.id === 'deepseek-official')!
       expect((onboarding.inject as () => { automatic: boolean })().automatic).toBe(false)
       expect(slots.entries('settings.section').map(entry => entry.options.id)).toEqual(['models'])
+      expect(slots.entries('settings.section')[0]?.component).toBe(ModelsSection)
       await plugin.dispose()
       expect(slots.entries('settings.onboarding')).toEqual([])
       await host.dispose()
@@ -109,7 +110,7 @@ describe('ui-settings-models apply', () => {
     }
   })
 
-  it('replaces credential forms with managed settings and registers no onboarding dialogs in VOS', async () => {
+  it('keeps provider forms alongside managed settings and registers no onboarding dialogs in VOS', async () => {
     const { ctx, slots } = await bench()
     declare(slots)
     vi.stubGlobal(ONBOARDING_CONFIG_GLOBAL, { schedulerManaged: true })

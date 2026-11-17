@@ -1,8 +1,7 @@
 /** Managed model settings over the same catalog used by the conversation picker. */
-import { useEffect } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-remotes/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { en } from './locales.ts'
 import styles from './ModelsSection.module.css'
@@ -43,18 +42,16 @@ export class SchedulerController {
 
 interface Injected {
   controller: SchedulerController
-  hooks: { snapshot: SchedulerController['store'] }
   t: (key: keyof typeof en) => string
 }
 
 /**
- * Render V-Scheduler guidance and the default-model dropdown without credential dialogs.
+ * Render V-Scheduler guidance and select a default from all available providers.
  * @param props - injected catalog state, actions and localized copy.
  * @returns the managed Models settings section.
  */
-export function SchedulerSection(props: InjectFace<Injected>) {
-  const { controller, useSnapshot, t } = props
-  const state = useSnapshot(value => value)
+export function SchedulerSection({ controller, t }: Injected) {
+  const state = useSyncExternalStore(controller.store.subscribe, controller.store.getSnapshot)
   useEffect(() => { void controller.load() }, [controller])
   const rows = state.catalog?.groups.flatMap(group => group.models.map(model => ({
     key: JSON.stringify([group.id, model.id]), provider: group.id, model: model.id, name: model.name,
@@ -71,7 +68,13 @@ export function SchedulerSection(props: InjectFace<Injected>) {
         if (row) void controller.load(row)
       }}>
         <option value="" disabled>{state.busy ? t('schedulerLoading') : t('schedulerChoose')}</option>
-        {rows.map(row => <option key={row.key} value={row.key}>{row.name}</option>)}
+        {state.catalog?.groups.filter(group => group.models.length > 0).map(group =>
+          <optgroup key={group.id} label={group.name}>
+            {group.models.map(model => {
+              const key = JSON.stringify([group.id, model.id])
+              return <option key={key} value={key}>{model.name}</option>
+            })}
+          </optgroup>)}
       </select>
     </label>
     <div><Button disabled={state.busy} onClick={() => { void controller.load() }}>{t('schedulerRefresh')}</Button></div>
