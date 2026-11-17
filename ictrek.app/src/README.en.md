@@ -39,6 +39,13 @@ Open Plugins in the sidebar to find the preinstalled bundles. Open Settings → 
 
 - **Plugin Market** (`dshmarket@1.73.20`). Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
 
+### Assign roles in Agent Teams
+
+Specify the members to create, their responsibilities, task dependencies, and when to start in the conversation. Use the team panel to review the draft and track members and progress. In the draft, you can update existing members' roles and models and add, edit, or remove tasks. To add members or revise the division of work, select **Continue in chat** and describe the changes. Save the draft, select **Approve & Run**, then confirm. After the team starts, request changes to assignments in the conversation.
+
+> Create an Agent Teams team. Member A analyzes requirements and writes acceptance criteria without editing code. Member B implements the change after A finishes. Member C independently reviews the implementation and tests after B finishes. List the members, tasks, and dependencies in a draft plan. Wait for my approval before starting.
+
+
 Open **Settings → API documentation** for VOS OAuth2 authentication, session creation, task submission, reading results and handling errors.
 
 ## VOS operations
