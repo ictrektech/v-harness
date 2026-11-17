@@ -470,8 +470,8 @@ export async function syncClientPlugins(user) {
  * - the unpublished plugins and the carrier overwrite whatever the profile
  *   holds (a broken earlier hand-install must not survive, and an updated image
  *   must reach existing tenants);
- * - every other staged package is copied only when missing, so a published or
- *   runtime-resolved dependency is never shadowed by this payload.
+ * - Mnemon extensions are staged beside their parent package so their peer
+ *   imports resolve before a profile-scoped install.
  *
  * A published payload plugin (see {@link PROFILE_PLUGINS}) is staged *and*
  * declared: the copy makes the first boot work without a registry install, the
@@ -515,13 +515,19 @@ async function syncAgentPlugins(user) {
   let copiedLayer = false
   let copiedProfile = false
   let stampDirty = false
+  const mnemon = JSON.parse(await readFile(join(payloadModules, 'dsh-mnemon', 'package.json'), 'utf8')
+    .catch(error => {
+      if (error.code === 'ENOENT') return '{}'
+      throw error
+    }))
+  const mnemonExtensions = new Set(Object.keys(mnemon.dependencies ?? {}).filter(name => name.startsWith('dsh-mnemon-')))
   for (const relative of await stagedPackagePaths(payloadModules)) {
     const parts = relative.split('/')
     const name = relative.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
-    // A published plugin is a declared dependency: pnpm installs and keeps it,
-    // and the profile copy is the one it reconciles. Everything else is staged
-    // into the shared layer, the only place no profile-scoped install reaches.
-    const declared = PROFILE_PLUGINS.includes(name)
+    // Mnemon's sources, strategies and providers import its SDK as a peer.
+    // Stage them beside the parent package so they resolve the same instance
+    // before the first pnpm install. pnpm retains these transitive dependencies.
+    const declared = PROFILE_PLUGINS.includes(name) || mnemonExtensions.has(name)
     const root = declared ? profileModules : layer
     const target = join(root, relative)
     // The carrier and every manifest plugin are refreshed when the image's

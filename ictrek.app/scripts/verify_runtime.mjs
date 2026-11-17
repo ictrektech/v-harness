@@ -102,6 +102,11 @@ try {
      assert.match(response.headers.get('content-type') ?? '', /javascript/, name);
      await response.arrayBuffer();
    }
+   for (const name of ['dsh-mnemon-source-runtime', 'dsh-mnemon-source-documents',
+     'dsh-mnemon-source-memory-spaces', 'dsh-mnemon-source-skills', 'dsh-mnemon-strategy-default-three-tier']) {
+     const entry = inventory.find(item => item.moduleName === name);
+     assert.equal(entry?.fiberPhase, 'active', JSON.stringify(entry ?? { name }));
+   }
    assert.ok(!bundles.some(item => item.name === 'ds-bot'));
    assert.ok(!inventory.some(item => item.moduleName.startsWith('ds-bot')));
    assert.ok(inventory.some(item => item.moduleName === '@deepseek-ai/dsh-client-ui-settings-general' && item.enabled));

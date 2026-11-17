@@ -39,6 +39,11 @@ await writeFile(join(agent, 'manifest.json'), JSON.stringify({
 for (const [name, version] of Object.entries(registryPlugins)) {
   await packageDir(join(agent, 'node_modules', name), name, version);
 }
+await writeFile(join(agent, 'node_modules', 'dsh-mnemon', 'package.json'), JSON.stringify({
+  name: 'dsh-mnemon', version: registryPlugins['dsh-mnemon'],
+  dependencies: { 'dsh-mnemon-source-runtime': '0.5.21' },
+}));
+await packageDir(join(agent, 'node_modules', 'dsh-mnemon-source-runtime'), 'dsh-mnemon-source-runtime', '0.5.21');
 await packageDir(join(agent, 'node_modules', 'vh-agent-plugins'), 'vh-agent-plugins', '0.0.0');
 
 const { syncPlugins } = await import('./plugins.mjs');
@@ -72,6 +77,7 @@ test('a new profile declares the published payload plugins as dependencies', asy
     assert.equal(existsSync(join(user.profile, 'node_modules', name, 'package.json')), true, name);
   }
   assert.equal(existsSync(join(user.profile, 'node_modules', 'ds-bot')), false);
+  assert.equal(existsSync(join(user.profile, 'node_modules', 'dsh-mnemon-source-runtime', 'package.json')), true);
   // The undeclared ones live in the shared layer, out of every profile install's reach.
   assert.equal(existsSync(join(user.home, '.dsh', 'profiles', 'node_modules', 'vh-agent-plugins')), true);
   assert.equal(existsSync(join(user.profile, 'node_modules', 'vh-agent-plugins')), false);
