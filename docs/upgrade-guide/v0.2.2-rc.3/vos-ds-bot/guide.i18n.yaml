@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.2-rc.3/vos-ds-bot/guide.md
+/:
+  en: 788766822655db42
+  zh: 35152e90b240a004
+/ds-bot-removal-in-v-harness-on-vos:
+  en: 8264f5f39d66e14c
+  zh: b3c6ccb3aec66f74
+/ds-bot-removal-in-v-harness-on-vos/change:
+  en: 773e09782eb99855
+  zh: c51c7688730cedda
+/ds-bot-removal-in-v-harness-on-vos/migration:
+  en: 1f58304124098f14
+  zh: d01c4b98bc9c43ab
