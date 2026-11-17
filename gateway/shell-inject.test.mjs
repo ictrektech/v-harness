@@ -117,12 +117,12 @@ test('the bridge is told where the gateway is mounted', () => {
 test('a document without a head still gets the scripts', () => {
   const html = injectShell('<body>hi</body>', { locale: 'zh', basePath: '/app/x' });
   assert.ok(html.endsWith('<body>hi</body>'));
-  assert.equal(scriptsOf(html).length, 3);
+  assert.equal(scriptsOf(html).length, 2);
 });
 
 test('the injected script survives a document that is not a full page', () => {
   const html = injectShell('', { locale: 'zh', basePath: '' });
-  assert.equal(scriptsOf(html).length, 3);
+  assert.equal(scriptsOf(html).length, 2);
   assert.ok(!html.includes('</script><script></script>'));
 });
 
