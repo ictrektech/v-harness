@@ -31,20 +31,17 @@ Open Plugins in the sidebar to find the preinstalled bundles. Open Settings → 
 - **Skills Manager** (`@michengai/dsh-skills-manager@1.4.11`). Open Plugins → Skills Manager to browse and manage skills in your tenant. [Usage guide](https://github.com/MichengAI/dsh-skills-manager)
 - **Agent teamwork**. Select a workspace and open a top-level conversation in v-harness. Click the model and reasoning-level button at the bottom right of the composer, then turn on **Enable agent teamwork**. The switch starts off in new conversations and applies to the current top-level conversation. Describe the work to divide, then open **Task board** in the conversation header to see subagents and shared tasks. Turning off teamwork after a model request requires confirmation.
 - **Agent Teams** (`@nanmicoder/dsh-agent-teams@0.1.30`). In a workspace conversation, enter `/agent-teams` and describe a task, or explicitly ask for Agent Teams. Review and approve the plan, then open the team panel to track member progress. Use a model that supports tool calls. [Usage guide](https://github.com/NanmiCoder/dsh-agent-teams)
-
 - **Media Desk** (`dsh-media-desk@2.7.2`). Sign in to VOS, open v-harness, and select Media Desk in the sidebar. Add a note under Ideas, then open the card to generate a script, title, cover, illustrations, and storyboard. Schedule the draft in Calendar and enter or import metrics in Review. Drafting uses the v-harness default model unless you select another in Media Desk. For images, configure an image provider or select an available subscription image tool in Media Desk settings and generate a test image. You can explore with sample data or clear it before adding your own. [Upstream usage guide](https://github.com/woniuniuniu/dsh-media-desk/blob/main/README.en.md)
 - **IM Bot** (`@xmanrui/dsh-im@5.10.0`). Open Settings → IM Bot, choose a channel, and follow its QR code or credential setup. Assign a workspace and model, set conversation access, then send a test message from the chat app once connected. If the connection fails, check platform permissions, credentials, and network access. [Upstream channel guide](https://github.com/xmanrui/dsh-im)
 - Plugins run in the signed-in VOS user's isolated environment. Media Desk's `/media-desk/*` routes serve its own browser UI and ship with the plugin. IM platform connections are managed by each channel adapter.
 - **MCP Connector** (`dsh-mcp-connector@0.2.109`). Open MCP Connector from Plugins, add a server, then check its connection and tool list.
-
 - **Plugin Market** (`dshmarket@1.73.20`). Plugin Market defaults to the Global download region. Standard npm installs use the official registry. Change the download region in Plugin Market settings.
 
 ### Assign roles in Agent Teams
 
-Specify the members to create, their responsibilities, task dependencies, and when to start in the conversation. Use the team panel to review the draft and track members and progress. In the draft, you can update existing members' roles and models and add, edit, or remove tasks. To add members or revise the division of work, select **Continue in chat** and describe the changes. Save the draft, select **Approve & Run**, then confirm. After the team starts, request changes to assignments in the conversation.
+Specify the members to create, their responsibilities, task dependencies, and when to start in the conversation. Use the team panel to review the draft and track members and progress. In the draft, you can update existing members' roles and models and add, edit, or remove tasks. To add members or revise the division of work, select **Return to chat & revise** and describe the changes. Save the draft, select **Approve & Run**, then select **Confirm launch**. After the team starts, request changes to assignments in the conversation.
 
 > Create an Agent Teams team. Member A analyzes requirements and writes acceptance criteria without editing code. Member B implements the change after A finishes. Member C independently reviews the implementation and tests after B finishes. List the members, tasks, and dependencies in a draft plan. Wait for my approval before starting.
-
 
 Open **Settings → API documentation** for VOS OAuth2 authentication, session creation, task submission, reading results and handling errors.
 
