@@ -35,7 +35,7 @@ import optionalBundles from './agent-plugins/optional-bundles.json' with { type:
 const PLUGIN_ROOT = process.env.VH_PLUGIN_DIR ?? '/opt/v-harness/plugins'
 
 /** Where the image puts the built agent-side tool plugins and their carrier. */
-const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/agent-plugins'
+export const AGENT_PLUGIN_ROOT = process.env.VH_AGENT_PLUGIN_DIR ?? '/opt/v-harness/agent-plugins'
 
 /** The carrier bundle that mounts the agent-side plugin rows. */
 const AGENT_BUNDLE_NAME = 'vh-agent-plugins'

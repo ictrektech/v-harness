@@ -25,6 +25,7 @@ import { lookup } from 'node:dns/promises';
 import { instanceAddress, tenantLoopback } from './addressing.mjs';
 import { rememberProfile, restoreProfile } from './last-good.mjs';
 import { capabilitiesPluginShipped, syncPlugins } from './plugins.mjs';
+import { deploymentTrustPatch, dropTrustPatch } from './deployment-trust.mjs';
 import {
   CAPABILITY_ENV,
   rememberCapabilityContract,
@@ -718,6 +719,11 @@ async function launch(options) {
     uid: record.uid,
   });
 
+  // The plugin trust declaration is derived per launch (see below), so the
+  // argv reads it through this binding rather than a constant.
+  /** @type {string | undefined} */
+  let trustPatchPath;
+
   /**
    * The jail's arguments for one launch.
    * @param {{ patch?: string }} choice - the MCP overlay to add, if any.
@@ -728,6 +734,7 @@ async function launch(options) {
     nodeBin, dshBin, '--profile', 'web',
     '--patch', '/usr/local/share/v-harness/vos.patch.yml',
     ...(choice.patch === undefined ? [] : ['--patch', choice.patch]),
+    ...(trustPatchPath === undefined ? [] : ['--patch', trustPatchPath]),
     // The tenant's own loopback address: the kernel treats all of 127/8 as
     // local, and the per-tenant iptables rules keep every other uid off it.
     '--host', tenantLoopback(record.uid),
@@ -832,6 +839,29 @@ async function launch(options) {
       `plugin sync failed for ${account}, launching with the profile already on disk and keeping gateway-owned capability sockets:`,
       error instanceof Error ? error.message : error,
     );
+  }
+
+  // The gateway authenticates every tenant, so the plugins that gate remote
+  // management on their own `remoteAccess` config are told this deployment is
+  // trusted. The overlay is derived after the sync from what is actually
+  // installed — the image payload plus this tenant's own installs — so an
+  // upgraded or newly installed plugin is re-derived without a gateway
+  // restart. A derivation failure launches without the overlay: the plugin
+  // keeps its own default rather than the workspace going down.
+  try {
+    const trust = await deploymentTrustPatch({
+      home: paths.home,
+      jailHome,
+      uid: record.uid,
+      linuxName: account,
+    });
+    trustPatchPath = trust.patch;
+  } catch (error) {
+    console.error(
+      `plugin trust overlay not derived for ${account}, launching without it:`,
+      error instanceof Error ? error.message : error,
+    );
+    await dropTrustPatch({ home: paths.home }).catch(() => {});
   }
 
   // Hand this tenant's capability sockets to its own dsh when the image ships
@@ -960,6 +990,21 @@ async function launch(options) {
         return await startOnce(launchArgsFor({}));
       } catch (error) {
         console.error(`launch without the MCP service choice failed for ${account}:`, note(error));
+      }
+    }
+
+    // Then the configuration the gateway generated: the trust overlay is a
+    // pure function of what is installed, so a bundle the loader rejects is a
+    // composition bug worth a log, not a workspace that never boots. Dropping
+    // it restores the plugin's own default (remote read-only).
+    if (trustPatchPath !== undefined) {
+      try {
+        console.error(`dropping the plugin trust overlay for ${account} and launching again`);
+        await dropTrustPatch({ home: paths.home });
+        trustPatchPath = undefined;
+        return await startOnce(launchArgsFor({}));
+      } catch (error) {
+        console.error(`launch without the plugin trust overlay failed for ${account}:`, note(error));
       }
     }
 
