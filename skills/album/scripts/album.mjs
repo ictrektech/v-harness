@@ -35,6 +35,9 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
+import { assertSkillEnabled } from '../../.skill-guard.mjs'
+
+await assertSkillEnabled('album')
 import { pipeline } from 'node:stream/promises'
 
 const SOCKET_ENV = 'VH_ALBUM_SOCK'

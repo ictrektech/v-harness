@@ -107,6 +107,12 @@ import {
   handlePhotocraft,
 } from './photocraft.mjs';
 import {
+  listShippedSkills,
+  readSkillToggles,
+  saveSkillToggles,
+  syncTenantSkillToggles,
+} from './skill-toggles.mjs';
+import {
   CSRF_COOKIE,
   SESSION_COOKIE,
   cookie,
@@ -1609,6 +1615,52 @@ async function handleControl(req, res, url) {
       names === null || names === undefined ? undefined : /** @type {string[]} */ (names),
     );
     json(res, 200, { ok: true, selected: selected ?? null, restartRequired: true });
+    return;
+  }
+
+  // Which shipped product skills this tenant keeps in the Agent's catalog. The
+  // shipped skills are read-only inside the jail, so the list is applied by the
+  // provider that already watches the tenant home: no launch is involved.
+  if (url.pathname === '/__vh/skills/toggles') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method === 'GET') {
+      json(res, 200, {
+        disabled: await readSkillToggles(record.namespace),
+        skills: await listShippedSkills(),
+      });
+      return;
+    }
+    if (req.method !== 'PUT') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    // The list rewrites what the Agent can call, so it is refused where a
+    // browser would not attach the session on its own.
+    if (req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (error) {
+      console.error('skill toggles body rejected:', error?.message ?? error);
+      json(res, 400, { error: 'invalid-body', message: '请求体不是合法的 JSON 对象' });
+      return;
+    }
+    const disabled = body.disabled;
+    if (!Array.isArray(disabled) || !disabled.every((name) => typeof name === 'string')) {
+      json(res, 400, { error: 'invalid-selection', message: 'disabled 必须是字符串数组' });
+      return;
+    }
+    const saved = await saveSkillToggles(record.namespace, disabled);
+    await syncTenantSkillToggles({
+      home: userPaths(STATE_ROOT, record.account ?? record.linuxName).home,
+      namespace: record.namespace,
+      uid: record.uid,
+    });
+    json(res, 200, { ok: true, disabled: saved });
     return;
   }
 

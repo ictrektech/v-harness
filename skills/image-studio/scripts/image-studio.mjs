@@ -9,6 +9,9 @@ import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { assertSkillEnabled } from '../../.skill-guard.mjs'
+
+await assertSkillEnabled('image-studio')
 
 const DEFAULT_BASE_URL = 'http://image-studio-backend:5000'
 /** Overrides the socket path; explicit HTTP mode is selected instead when set. */

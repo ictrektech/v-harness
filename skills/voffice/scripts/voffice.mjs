@@ -29,6 +29,9 @@ import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { assertSkillEnabled } from '../../.skill-guard.mjs'
+
+await assertSkillEnabled('voffice')
 
 /** Suffixes the storage service accepts; anything else is rejected upstream. */
 const ALLOWED_EXT = new Set([

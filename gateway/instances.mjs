@@ -36,6 +36,7 @@ import {
   dropMcphubLaunchPatch, mcphubEnvironment, mcphubLaunchPatch, saveMcphubSelection,
 } from './mcphub.mjs';
 import { schedulerEnvironment } from './scheduler.mjs';
+import { syncTenantSkillToggles, tenantTogglesPath } from './skill-toggles.mjs';
 import { listUsers } from './users.mjs';
 import {
   COOKIE_MAX_AGE_MS, adoptable, backfillInstanceState, probeInstance,
@@ -691,6 +692,9 @@ async function launch(options) {
   const state = await readRegistry(statePath);
   await adoptTenantRoots(paths.home, paths.dshHome, record.uid, account);
   await rewriteJailPaths(paths.dshHome, record.namespace, account);
+  // The disabled-skill list is handed over before the process starts, so a
+  // toggle recorded while the instance was down still governs the first catalog.
+  await syncTenantSkillToggles({ home: paths.home, namespace: record.namespace, uid: record.uid });
 
   // vh-jail drops to the user *after* entering a mount+pid+uts namespace. The
   // jailed paths are what the process sees and what dsh records, so HOME and
@@ -760,6 +764,9 @@ async function launch(options) {
       DSH_BUNDLED_SKILL_DIR: BUNDLED_SKILL_DIR,
       // Same root under the name the Image Studio tool resolves its CLI by.
       VH_SKILLS_DIR: BUNDLED_SKILL_DIR,
+      // The tenant's disabled-skill list. The provider watches this file, so a
+      // toggle applies on the next catalog read instead of the next launch.
+      DSH_SKILL_EXCLUDE_FILE: tenantTogglesPath(jailHome),
       // The tenant's VOS interface language: vos.patch.yml turns it into the
       // persona's answer language, and the gateway publishes the same value to
       // the browser as its host locale.
