@@ -1,0 +1,34 @@
+# Written by docker/vos-dev/vos-dev.sh; removed when the dev container stops.
+#
+# Priority 2000 outranks both routers of the installed app
+# (`/app/com.ictrek.v-harness` and the `/__vh` control router), so the platform
+# reaches this container instead. Deleting the file returns platform traffic to
+# the installed app, which keeps running for the whole session.
+http:
+  routers:
+    __NAME__-dev-app:
+      rule: "PathPrefix(`/app/__APP_ID__`)"
+      service: __NAME__-dev
+      priority: 2000
+      middlewares:
+        - __NAME__-dev-strip
+      entrypoints:
+        - web
+        - web-internal
+    __NAME__-dev-control:
+      rule: "PathPrefix(`/__vh`)"
+      service: __NAME__-dev
+      priority: 2000
+      entrypoints:
+        - web
+        - web-internal
+  middlewares:
+    __NAME__-dev-strip:
+      stripPrefix:
+        prefixes:
+          - /app/__APP_ID__
+  services:
+    __NAME__-dev:
+      loadBalancer:
+        servers:
+          - url: "http://__HOST__:__PORT__"

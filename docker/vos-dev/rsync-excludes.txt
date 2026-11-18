@@ -1,0 +1,17 @@
+# Excluded from the copy of the checkout in the `source` volume. Directories
+# named here are also protected from `rsync --delete`, which is what keeps the
+# workspace install and the build outputs across syncs and container restarts.
+.git/
+node_modules/
+lib/
+dist/
+*.tsbuildinfo
+.release/
+/native/system/packages/*/bin/
+.vos-dev/
+.pnpm-store/
+.cache/
+coverage/
+.storages/
+.sessions/
+tmp/

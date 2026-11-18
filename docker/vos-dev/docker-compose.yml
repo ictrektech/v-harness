@@ -1,0 +1,95 @@
+# Live-debug container for this source tree; docker/vos-dev/vos-dev.sh drives it.
+#
+# The image is the installed application's own image, so the system packages,
+# the released dsh installation, the payload plugins under
+# /opt/v-harness/{plugins,agent-plugins} and the VOS patch are the ones being
+# debugged. The mounts replace only what this checkout owns: the gateway, the
+# boot helpers and the product skills run from the host tree, and the
+# entrypoint builds the workspace under /usr/local/share/v-harness/src, where
+# each tenant jail reaches it through the /usr bind vh-jail already takes.
+#
+# Traefik is not part of this file. vos-dev.sh writes a temporary dynamic route
+# with a priority above the installed app's routers and removes it on exit.
+#
+# The project name is not the directory default: other applications keep their
+# own dev container in a `vos-dev` project, and a bare `docker compose down`
+# there would remove theirs.
+name: vh-vos-dev
+services:
+  v-harness-dev:
+    image: ${VH_DEV_BASE_IMAGE:?docker/vos-dev/vos-dev.sh resolves the installed image}
+    container_name: v-harness-vos-dev
+    working_dir: /usr/local/share/v-harness/src
+    entrypoint: ["/opt/vos-dev/entrypoint.sh"]
+    # Written by vos-dev.sh from the installed container, so a deployment that
+    # adds a VOS or sibling-service address does not need an edit here.
+    env_file:
+      - ${VH_DEV_ENV_FILE:?docker/vos-dev/vos-dev.sh writes the installed app environment}
+    environment:
+      # Released settings that stay identical, spelled out because the image
+      # cannot be assumed to keep them: PORT is the container port the image
+      # healthcheck and the Traefik service both use.
+      PORT: "8080"
+      DATA_ROOT: /data
+      STATE_ROOT: /data/.vh
+      # The workspace build of dsh, not the released installation. It sits
+      # under /usr because that is the shared runtime a tenant jail binds.
+      DSH_BIN: /usr/local/share/v-harness/src/apps/cli/lib/bin.js
+      # corepack fetches the version pinned in package.json, and the workspace
+      # install fetches its packages, from mirrors the deployment can reach.
+      # pnpm reads the lowercased name; npm and corepack read the uppercased one.
+      NPM_CONFIG_REGISTRY: ${VH_DEV_NPM_REGISTRY:-https://registry.npmmirror.com}
+      pnpm_config_registry: ${VH_DEV_NPM_REGISTRY:-https://registry.npmmirror.com}
+      COREPACK_NPM_REGISTRY: ${VH_DEV_NPM_REGISTRY:-https://registry.npmmirror.com}
+      # Restarted on source edits; the supervisor stays PID 1, so tenant dsh
+      # processes survive a gateway restart.
+      VH_GATEWAY_ENTRY: ${VH_DEV_WATCH_GATEWAY:-/opt/vos-dev/gateway-watch.mjs}
+      VH_DEV_SKIP_INSTALL: ${VH_DEV_SKIP_INSTALL:-0}
+      VH_DEV_SKIP_BUILD: ${VH_DEV_SKIP_BUILD:-0}
+      VH_DEV_WATCH: ${VH_DEV_WATCH:-1}
+    ports:
+      - "${VOS_DEV_PORT:-38092}:8080"
+    volumes:
+      # Read-only on purpose: the entrypoint copies this tree under /usr, so
+      # neither the workspace install nor its build outputs ever appear in the
+      # developer's checkout, and never as root-owned files.
+      - ${VH_DEV_SOURCE:?}:/host-src:ro
+      - ${VH_DEV_DATA_DIR:?}:/data
+      - ${VH_DEV_SOURCE}/gateway:/opt/v-harness/gateway:ro
+      - ${VH_DEV_SOURCE}/gateway/vos.patch.yml:/usr/local/share/v-harness/vos.patch.yml:ro
+      # The boot helpers and product skills a tenant process executes directly.
+      # Their executable bits are the repository's, so they are mounted as they
+      # are instead of being copied from the synced tree under /usr.
+      - ${VH_DEV_SOURCE}/bin:/opt/v-harness/bin:ro
+      - ${VH_DEV_SOURCE}/skills:/opt/v-harness/skills:ro
+      - ${VH_DEV_SOURCE}/docker/vos-dev:/opt/vos-dev:ro
+      # The tenant Docker capability, held by the gateway and filtered per
+      # tenant (gateway/docker-proxy.mjs). Without it the container panel and
+      # tenant containers are unavailable, which is part of what is debugged.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Same privilege set as the installed app: vh-jail needs mount, pid and ipc
+    # namespaces per tenant, and CAP_NET_ADMIN for the per-tenant iptables rules.
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+      - NET_ADMIN
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/__vh/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      start_period: 1200s
+      retries: 3
+    networks:
+      vos_default:
+        # The installed app answers to `v-harness` on this network; a distinct
+        # alias keeps sibling apps on the released instance until the dev one
+        # is deliberately pointed at.
+        aliases:
+          - v-harness-dev
+
+networks:
+  vos_default:
+    external: true
