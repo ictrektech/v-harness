@@ -200,6 +200,8 @@ pnpm run dev:desktop     # build, then launch Desktop
 
 Arguments after a Web command reach `dsh web`, for example `pnpm run dev:web --no-open --port 3081`; `dev:web` also accepts `--skip-build` to reuse the existing artifact tree and `--no-serve` to run only the rebuild watchers beside a server started elsewhere. Both Web commands use the normal Harness home, while the Desktop commands use the isolated development home described in the [Desktop README](../apps/desktop/README.md). The root `Makefile` names the same commands as `make web`, `make dev-web`, `make desktop`, `make dev-desktop`, and `make build`; `ARGS='--no-open'` forwards options.
 
+The VOS application is debugged in place instead: `make vos-dev` runs this checkout inside the platform, starting a container from the installed app's own image and pointing the platform's Traefik at it with a temporary route, so the gateway and every tenant dsh process are the source build. `make vos-dev-down` removes the route and stops the container, `make vos-dev-build` rebuilds the Host artifacts after editing a package under `packages/`, and `make vos-dev-shell` opens a shell in the container. Platform traffic reaches the dev instance while the route exists, and the installed app and its data stay untouched; [docker/vos-dev/vos-dev.sh](../docker/vos-dev/vos-dev.sh) documents the port, the data directory, and every override.
+
 ### TODO markers
 
 Use one of three comment tags to flag known issues in the code, ordered by urgency:

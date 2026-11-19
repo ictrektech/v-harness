@@ -205,6 +205,8 @@ pnpm run dev:desktop     # build, then launch Desktop
 
 Web 命令后面的参数会传给 `dsh web`，例如 `pnpm run dev:web --no-open --port 3081`；`dev:web` 还接受 `--skip-build` 复用现有产物树，以及 `--no-serve` 只运行重建 watcher、配合别处启动的服务器。两个 Web 命令使用正常的 Harness home，而 Desktop 命令使用 [Desktop README](../apps/desktop/README.zh.md) 描述的隔离开发 home。根目录 `Makefile` 以 `make web`、`make dev-web`、`make desktop`、`make dev-desktop` 和 `make build` 命名同一套命令；`ARGS='--no-open'` 用于转发参数。
 
+VOS 应用改为就地调试：`make vos-dev` 把当前 checkout 跑进平台内，以已安装应用自己的镜像启动容器，并用一条临时路由把平台 Traefik 指向该容器，因此网关和每个租户 dsh 进程都是源码构建产物。`make vos-dev-down` 撤掉路由并停止容器，`make vos-dev-build` 在修改 `packages/` 下的包后重建 Host 产物，`make vos-dev-shell` 打开容器内的 shell。路由存在期间平台流量进入 dev 实例，已安装的应用及其数据不受影响；端口、数据目录和全部可覆盖项记录在 [docker/vos-dev/vos-dev.sh](../docker/vos-dev/vos-dev.sh) 中。
+
 ### TODO 标记
 
 请使用以下三种注释标签之一标记代码中的已知问题，按紧急程度排序：
