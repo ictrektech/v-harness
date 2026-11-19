@@ -317,10 +317,9 @@
 .localBuildBrand {
   flex: none;
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 1px;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
   height: 24px;
   white-space: nowrap;
 }
@@ -334,8 +333,8 @@
 }
 
 .localBuildTitle {
-  font-size: 12px;
-  line-height: 13px;
+  font-size: 15px;
+  line-height: 24px;
   letter-spacing: 0;
 }
 
@@ -406,17 +405,21 @@
 
 .buildVersion {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  height: 10px;
-  padding: 0 3px;
-  border-radius: 2px;
+  display: inline-block;
+  height: 13px;
+  padding: 0 5px;
+  border-radius: 3px;
   color: var(--dsw-alias-label-primary-inverted);
   background: var(--dsw-alias-label-primary);
   font-family: var(--ds-font-family-code);
-  font-size: 6px;
+  font-size: 8px;
   font-weight: 500;
-  line-height: 10px;
+  line-height: 13px;
+  /* A release string is longer than the commit hash the badge was sized for;
+     cap the chip and let the hover title carry the full version. */
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
