@@ -18,13 +18,24 @@ jobs:
   package:
     # 平台自带 runner：job 容器挂了宿主 docker socket，但没有 docker CLI。
     runs-on: ubuntu-latest
+    env:
+      # auto：有可用 docker 就构建；1：强制构建；0：只校验应用定义（如 GARM 的 LXD runner）。
+      VOS_BUILD: 'auto'
     steps:
       - name: clone
         run: |
-          base="${GITEA_BASE:-http://gitea:8080/app/com.ictrek.gitea}"
-          url="http://x-access-token:${{ github.token }}@${base#http://}/${{ github.repository }}.git"
+          # GITHUB_SERVER_URL 是 runner 注册时登记的地址，各机器自适应。
+          base="${GITEA_BASE:-${GITHUB_SERVER_URL:-http://gitea:8080/app/com.ictrek.gitea}}"
+          base="${base%/}"
+          echo "[INFO] gitea base: $base (GITHUB_SERVER_URL=${GITHUB_SERVER_URL:-<unset>})"
+          case "$base" in
+            https://*) scheme=https; host="${base#https://}" ;;
+            http://*)  scheme=http;  host="${base#http://}" ;;
+            *)         scheme=http;  host="$base" ;;
+          esac
+          url="$scheme://x-access-token:${{ github.token }}@$host/${{ github.repository }}.git"
           git clone --depth 1 "$url" src \
-            || { echo "[ERROR] clone failed from $base; set GITEA_BASE for another Gitea address" >&2; exit 1; }
+            || { echo "[ERROR] clone failed from $base; set GITEA_BASE to a reachable Gitea address" >&2; exit 1; }
           printf '%s' "$base" > /tmp/gitea-base
           echo "[INFO] cloned from $base"
 
@@ -34,27 +45,46 @@ jobs:
             docker version --format 'server={{.Server.Version}}'
             exit 0
           fi
-          if ! command -v apt-get >/dev/null 2>&1; then
-            echo "[WARN] no docker CLI and no apt-get; build will be skipped" >&2
+          # 装不上不算失败：没有 docker 时 build 只校验应用定义。
+          # GARM 的 LXD 实例以非 root 用户直接执行步骤，apt-get 无写权限，也没有 sudo。
+          if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            apt() { sudo apt-get "$@"; }
+          elif [ "$(id -u)" = "0" ]; then
+            apt() { apt-get "$@"; }
+          else
+            echo "[WARN] no docker CLI and no permission to install it; build will be skipped" >&2
             exit 0
           fi
-          echo "[INFO] installing docker CLI into the job container"
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends docker.io >/dev/null
+          if ! apt update -qq || ! apt install -y -qq --no-install-recommends docker.io >/dev/null; then
+            echo "[WARN] docker CLI install failed; build will be skipped" >&2
+            exit 0
+          fi
           docker version --format 'server={{.Server.Version}}'
 
       - name: build
         run: |
-          if command -v docker >/dev/null 2>&1; then
+          build() {
             bash src/ictrek.app/scripts/package-local.sh
             ls -l src/dist
-          else
-            echo "[INFO] no docker CLI; validating the app definition only"
+          }
+          validate() {
             # icon.png 由 package-local.sh 生成，不是仓库源文件。
             for file in manifest.yml docker-compose.yml configs.yml routers.yml; do
               [ -f "src/ictrek.app/src/$file" ] || { echo "[ERROR] missing ictrek.app/src/$file" >&2; exit 1; }
             done
-          fi
+            echo "[INFO] app definition validated ($1); no package built"
+          }
+          case "${VOS_BUILD:-auto}" in
+            0) validate "VOS_BUILD=0" ;;
+            1) build ;;
+            *)
+              if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+                build
+              else
+                validate "docker unavailable"
+              fi
+              ;;
+          esac
 
       - name: publish tag and release
         run: |

@@ -70,7 +70,8 @@ const apiBase = new URL('api/', document.baseURI)
 
 - 需要 `git`；构建还要 `docker` CLI 与可用 socket、`python3`、`tar`、`gzip`。
 - job 容器有宿主 socket 但没有 docker CLI，`ensure docker` 步骤补装，构建因此跑在宿主 daemon 上。
-- 不要用 GARM 的 LXD 实例构建：嵌套 overlay 被拒，报 containerd overlayfs `permission denied`。
-- 缺 docker 时只校验 `ictrek.app/src` 的源文件，不出包，也不发布 Release。
-- 克隆地址默认 `http://gitea:8080/app/com.ictrek.gitea`，可用 `GITEA_BASE` 覆盖。
+- 不要用 GARM 的 LXD 实例构建：缺 registry 代理先报 `i/o timeout`；`vfs` 加关闭 containerd 快照器可过解包；最后卡在 `mount "cgroup" ... permission denied`，LXD 不允许嵌套容器挂 cgroup。
+- `VOS_BUILD` 控制是否构建：`auto`（有可用 docker 就构建）、`1`、`0`（只校验应用定义）。GARM 池上用 `0`。
+- 缺 docker 或 `docker info` 失败时只校验 `ictrek.app/src` 的源文件，不出包，也不发布 Release。`ensure docker` 装不上也只警告：GARM 的 LXD 实例以非 root 用户执行步骤，`apt-get` 无写权限。
+- 克隆地址取 `GITHUB_SERVER_URL`（runner 注册地址）：平台 runner 是 `gitea:8080`，GARM 的 LXD 实例是宿主网桥地址，如 `10.184.191.1:1182`。硬编码 `gitea:8080` 在 LXD 上会报 `Could not resolve host: gitea`；`GITEA_BASE` 可覆盖。
 - 运行长期停在 `waiting` 表示该标签没有空闲 runner，不是 workflow 的问题。

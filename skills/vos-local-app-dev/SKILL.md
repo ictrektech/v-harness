@@ -83,8 +83,10 @@ workflow 在平台自带的 `ubuntu-latest` runner 上跑，不用任何 Node ac
 | runner 有 `python3`、`tar`、`gzip` | 打包失败 |
 
 - 平台 runner 的 job 容器挂了宿主 docker socket，但没有 docker CLI；`ensure docker` 步骤用 `apt-get install docker.io` 补上，实测约 2.5 分钟，`server=27.0.3`。构建跑在宿主 daemon 上。
-- 不要用 GARM 的 LXD 实例构建：非特权 LXD 容器拒绝嵌套 `overlay` 挂载，`docker build` 报 containerd overlayfs `permission denied`。
-- 克隆地址默认 `http://gitea:8080/app/com.ictrek.gitea`，其他地址用 `GITEA_BASE` 覆盖。不要用 `actions/checkout`：它拼出的地址缺子路径，报 `repository not found`。
+- `ensure docker` 装不上时只警告，不失败：GARM 的 LXD 实例以非 root 用户执行步骤（无 `sudo`，`apt-get` 报 `Permission denied`），随后 `build` 只校验应用定义。
+- 不要用 GARM 的 LXD 实例构建，三层限制都实测过：缺 registry 代理时报 `registry-1.docker.io ... i/o timeout`；加代理后解包报 `overlay ... permission denied`，改 `storage-driver=vfs` 加 `features.containerd-snapshotter=false` 可过；随后 `RUN` 报 `mount "cgroup" ... permission denied`，LXD 不允许嵌套容器挂 cgroup。
+- 用 `VOS_BUILD` 控制构建：`auto`（默认，有可用 docker 就构建）、`1`（强制构建）、`0`（只校验应用定义）。在 GARM 池上跑时设 `0`。
+- 克隆地址取 `GITHUB_SERVER_URL`，它等于 runner 注册时登记的地址：平台 runner 是 `http://gitea:8080/app/com.ictrek.gitea`，GARM 的 LXD 实例是宿主网桥地址（如 `http://10.184.191.1:1182/app/com.ictrek.gitea`）。`GITEA_BASE` 优先，用于手工覆盖。不要用 `actions/checkout`：它拼出的地址缺子路径，报 `repository not found`。
 - 发布：推 tag 发布该 tag；推 `main` 按 `VERSION` 发布 `v<VERSION>`；没有构建出包时输出 `[WARN] no built package` 并跳过。
 - 重跑发布会留下同名资产（Gitea 允许重名），workflow 上传前先 `DELETE`。
 - 设备侧下载走浏览器：租户容器访问 Gitea API 返回 401。
