@@ -70,3 +70,8 @@
 - id: plugin-manager
   config:
     fallbackRegistries: []
+# Plugin remote-trust declarations (the ecosystem's `remoteAccess` field) are
+# not patched here: the gateway derives a trust overlay per launch from the
+# installed plugin bundles — see gateway/deployment-trust.mjs. A static row
+# would replace the whole config and drift from the plugin's versioned bundle
+# defaults.

@@ -142,10 +142,10 @@ exports[`sidebar shell snapshots > renders Windows caption controls in expanded 
               >
                 <svg
                   aria-hidden="true"
-                  data-content="965fe321"
+                  data-content="4c3ba89b"
                   fill="none"
-                  height="17.6580310880829"
-                  viewBox="0 0 23.16 17.04"
+                  height="16.31438127090301"
+                  viewBox="0 0 1196 813"
                   width="24"
                 />
               </span>
@@ -169,6 +169,7 @@ exports[`sidebar shell snapshots > renders Windows caption controls in expanded 
                 </span>
                 <span
                   class="buildVersion"
+                  title="1.2.3-rc.4-abc1234-dirty"
                 >
                   1.2.3-rc.4-abc1234-dirty
                 </span>
@@ -433,10 +434,10 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
               >
                 <svg
                   aria-hidden="true"
-                  data-content="965fe321"
+                  data-content="4c3ba89b"
                   fill="none"
-                  height="17.6580310880829"
-                  viewBox="0 0 23.16 17.04"
+                  height="16.31438127090301"
+                  viewBox="0 0 1196 813"
                   width="24"
                 />
               </span>
@@ -460,6 +461,7 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
                 </span>
                 <span
                   class="buildVersion"
+                  title="1.2.3-rc.4-abc1234-dirty"
                 >
                   1.2.3-rc.4-abc1234-dirty
                 </span>
@@ -599,10 +601,10 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
               >
                 <svg
                   aria-hidden="true"
-                  data-content="965fe321"
+                  data-content="4c3ba89b"
                   fill="none"
-                  height="17.6580310880829"
-                  viewBox="0 0 23.16 17.04"
+                  height="16.31438127090301"
+                  viewBox="0 0 1196 813"
                   width="24"
                 />
               </span>
@@ -626,6 +628,7 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
                 </span>
                 <span
                   class="buildVersion"
+                  title="1.2.3-rc.4-abc1234-dirty"
                 >
                   1.2.3-rc.4-abc1234-dirty
                 </span>

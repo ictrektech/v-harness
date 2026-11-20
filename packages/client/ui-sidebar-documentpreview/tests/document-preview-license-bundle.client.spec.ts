@@ -44,7 +44,10 @@ function runPnpm(args: string[], cwd: string, timeout: number): string {
 }
 
 describe('published document preview licenses', () => {
-  it.skipIf(!existsSync(bundlePath))('keeps bundled licenses in the packed lazy chunks', ({ task }) => {
+  // Packing a workspace package is not a sub-second command on every machine;
+  // the five-second default flaked locally, so the run carries its own budget.
+  it.skipIf(!existsSync(bundlePath))('keeps bundled licenses in the packed lazy chunks', { timeout: 60_000 }, ({ task }) => {
+    expect(task.timeout).toBeGreaterThanOrEqual(60_000)
     expect(existsSync(pdfChunkPath)).toBe(true)
     const output = mkdtempSync(join(tmpdir(), 'dsh-document-preview-pack-'))
     try {

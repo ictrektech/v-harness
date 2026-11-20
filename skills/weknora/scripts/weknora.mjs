@@ -25,6 +25,9 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { assertSkillEnabled } from '../../.skill-guard.mjs'
+
+await assertSkillEnabled('weknora')
 
 const SOCKET_ENV = 'VH_WEKNORA_SOCK'
 const REQUEST_TIMEOUT_MS = 120_000

@@ -20,7 +20,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { open, readFile, unlink } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
@@ -35,6 +35,7 @@ import {
   removeCapabilityContract,
 } from './capability-registry.mjs';
 import { startOwnedCapabilities } from './capability-ownership.mjs';
+import { CAPABILITY_NAMES, missingTenantSockets } from './capability-reconciler.mjs';
 import { capabilitiesPluginShipped } from './plugins.mjs';
 import { EGRESS_PREFIX, egressRefusal, handleEgress } from './egress.mjs';
 
@@ -107,6 +108,12 @@ import {
   handlePhotocraft,
 } from './photocraft.mjs';
 import {
+  listShippedSkills,
+  readSkillToggles,
+  saveSkillToggles,
+  syncTenantSkillToggles,
+} from './skill-toggles.mjs';
+import {
   CSRF_COOKIE,
   SESSION_COOKIE,
   cookie,
@@ -139,7 +146,13 @@ import {
   resolveService,
   stopService,
 } from './services.mjs';
-import { closeDockerCapabilities, ensureDockerCapability, resolveContainerPort } from './docker-proxy.mjs';
+import {
+  closeDockerCapabilities,
+  ensureBridgeIsolation,
+  ensureDockerCapability,
+  forgetDockerCapability,
+  resolveContainerPort,
+} from './docker-proxy.mjs';
 import { handleScheduler, restoreSchedulerKey } from './scheduler.mjs';
 import { readRegistry } from './instance-state.mjs';
 
@@ -156,6 +169,38 @@ const SESSION_DB_FILE = process.env.SESSION_DB_FILE ?? join(STATE_ROOT, 'session
 // VOS credentials live beside the session DB in the root-only state directory,
 // never in a tenant home; the store itself enforces 0600.
 const VOS_TOKENS_FILE = process.env.VOS_TOKENS_FILE ?? join(STATE_ROOT, 'vos-tokens.json');
+
+/**
+ * Refuse to run two gateways over one state directory.
+ *
+ * The supervisor already starts exactly one gateway per container, but the
+ * state directory is a volume that a second container (or a hand-started
+ * process) can mount too. Two gateways then publish the same socket paths and
+ * each one replaces the other's paths, which is indistinguishable from the
+ * silent unlink this reconciler exists to repair. The lock turns that race into
+ * a startup failure instead. It is scoped to one pid namespace: a process in a
+ * different container cannot be proven alive, so a deployment that shares one
+ * volume across containers still needs a single writer by contract.
+ * @returns {Promise<import('node:fs/promises').FileHandle>} held open for the process lifetime
+ */
+async function acquireGatewayLock() {
+  const lockPath = join(STATE_ROOT, 'gateway.lock');
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(lockPath, 'wx', 0o600);
+      await handle.writeFile(`${process.pid}\n`, 'utf8');
+      return handle;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      const holder = (await readFile(lockPath, 'utf8').catch(() => '')).trim();
+      const alive = holder !== ''
+        && (await readFile(`/proc/${holder}/cmdline`, 'utf8').catch(() => '')).includes('gateway/server.mjs');
+      if (alive) throw new Error(`another gateway (pid ${holder}) owns ${lockPath}; refusing to start`);
+      await unlink(lockPath).catch(() => {});
+    }
+  }
+  throw new Error(`could not acquire ${lockPath}`);
+}
 const DSH_BIN = process.env.DSH_BIN ?? '/opt/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js';
 const NODE_BIN = process.env.NODE_BIN ?? process.execPath;
 const USER_HELPER = process.env.USER_HELPER ?? '/opt/v-harness/bin/vh-userctl';
@@ -241,6 +286,8 @@ const sessions = await openSessionStore(SESSION_DB_FILE, { ttlMs: SESSION_TTL_MS
 initTokenStore(VOS_TOKENS_FILE);
 // One boot finishes the persistent-state key migration (namespace → subject);
 // later boots find nothing to move and leave the file alone.
+// One writer per state directory; two would replace each other's socket paths.
+const gatewayLockHandle = await acquireGatewayLock();
 await migrateInstanceStateKeys(STATE_FILE, USERS_FILE);
 // Tenant service registrations survive a gateway restart; a stopped service
 // stays listed so the UI can offer restart.
@@ -1612,6 +1659,52 @@ async function handleControl(req, res, url) {
     return;
   }
 
+  // Which shipped product skills this tenant keeps in the Agent's catalog. The
+  // shipped skills are read-only inside the jail, so the list is applied by the
+  // provider that already watches the tenant home: no launch is involved.
+  if (url.pathname === '/__vh/skills/toggles') {
+    const record = await requireUser(req, res);
+    if (!record) return;
+    if (req.method === 'GET') {
+      json(res, 200, {
+        disabled: await readSkillToggles(record.namespace),
+        skills: await listShippedSkills(),
+      });
+      return;
+    }
+    if (req.method !== 'PUT') {
+      json(res, 405, { error: 'method-not-allowed' });
+      return;
+    }
+    // The list rewrites what the Agent can call, so it is refused where a
+    // browser would not attach the session on its own.
+    if (req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (error) {
+      console.error('skill toggles body rejected:', error?.message ?? error);
+      json(res, 400, { error: 'invalid-body', message: '请求体不是合法的 JSON 对象' });
+      return;
+    }
+    const disabled = body.disabled;
+    if (!Array.isArray(disabled) || !disabled.every((name) => typeof name === 'string')) {
+      json(res, 400, { error: 'invalid-selection', message: 'disabled 必须是字符串数组' });
+      return;
+    }
+    const saved = await saveSkillToggles(record.namespace, disabled);
+    await syncTenantSkillToggles({
+      home: userPaths(STATE_ROOT, record.account ?? record.linuxName).home,
+      namespace: record.namespace,
+      uid: record.uid,
+    });
+    json(res, 200, { ok: true, disabled: saved });
+    return;
+  }
+
   // One management action on one service: start/stop it, or reload its
   // connection. The page holds no VOS token, so the gateway signs the upstream
   // call with the session user's own; MCPHub decides whether that user may act
@@ -1717,7 +1810,9 @@ async function handleControl(req, res, url) {
   }
 
   if (url.pathname === '/__vh/health') {
-    json(res, 200, { ok: true });
+    // `missing` is the reconcile snapshot: it stays empty while every expected
+    // socket answers, and names the tenant plus capability when one does not.
+    json(res, 200, { ok: true, capabilities: capabilityHealth });
     return;
   }
 
@@ -2053,6 +2148,87 @@ async function startCapabilities(record, control = {}) {
       ? () => instanceAnswers(record, STATE_FILE)
       : undefined,
   });
+}
+
+/** How often a published capability socket is re-probed. */
+const RECONCILE_INTERVAL_MS = 30_000;
+/** Last reconcile result, served by `/__vh/health` without probing on request. */
+let capabilityHealth = { checkedAt: 0, expected: 0, missing: [] };
+/** One reconcile at a time: a slow pass must not stack up behind the timer. */
+let reconciling = false;
+/** Forget table for reconciliation; `docker` has no entry in `startCapabilities`. */
+const forgetByCapability = {
+  voffice: forgetOfficeCapability,
+  weknora: forgetWeknoraCapability,
+  album: forgetAlbumCapability,
+  'image-studio': forgetImageStudioCapability,
+  photocraft: forgetPhotocraftCapability,
+  'vh-services': forgetServicesCapability,
+  docker: forgetDockerCapability,
+};
+
+/**
+ * Repair capability sockets that disappeared after they were published.
+ *
+ * The binders cache one listener per subject and return it without looking at
+ * the path again, so a path removed underneath that cache — a volume remount, a
+ * second writer, a bind that never landed — stays missing until the gateway
+ * restarts. This pass turns that into a bounded repair: probe every expected
+ * socket, forget only the ones that do not answer, and let the ordinary launch
+ * path rebind them. Failures are logged and surfaced through `/__vh/health`
+ * rather than killing a tenant.
+ * @returns {Promise<void>}
+ */
+async function reconcileCapabilities() {
+  if (reconciling) return;
+  reconciling = true;
+  try {
+    const missing = [];
+    let expected = 0;
+    for (const record of await listUsers(USERS_FILE)) {
+      const home = userPaths(STATE_ROOT, record.account ?? record.linuxName).home;
+      // A delegated capability belongs to the tenant's plugin: while the
+      // instance is not running nothing can dial it yet, so its absence is the
+      // contract working rather than a fault. Once the instance runs, a socket
+      // the plugin does not answer is a real miss the take-back path repairs.
+      const contract = await readAuthoritativeContract(STATE_ROOT, record.subject);
+      const delegated = new Set(contract?.capabilities ?? []);
+      const running = await instanceAnswers(record, STATE_FILE);
+      const names = CAPABILITY_NAMES.filter((name) => !(delegated.has(name) && !running));
+      expected += names.length;
+      const gone = await missingTenantSockets({ home, uid: record.uid }, names);
+      if (gone.length === 0) continue;
+      for (const { name } of gone) {
+        await forgetByCapability[name]?.(record.subject);
+      }
+      try {
+        await startCapabilities(record, { requireRunning: true });
+      } catch (error) {
+        console.error(`capability reconcile failed for ${record.namespace}:`, error);
+      }
+      // Report what is still missing after the rebind, not what was repaired:
+      // a successful repair must not look like an outage in /__vh/health.
+      const stillMissing = await missingTenantSockets(
+        { home, uid: record.uid },
+        gone.map((entry) => entry.name),
+      );
+      if (stillMissing.length === 0) {
+        console.error(
+          `capability reconcile: ${record.namespace} rebound ${gone.map((entry) => entry.name).join(', ')}`,
+        );
+      } else {
+        console.error(
+          `capability reconcile: ${record.namespace} still missing ${stillMissing.map((entry) => entry.name).join(', ')}`,
+        );
+        missing.push(...stillMissing.map((entry) => ({ namespace: record.namespace, name: entry.name })));
+      }
+    }
+    capabilityHealth = { checkedAt: Date.now(), expected, missing };
+  } catch (error) {
+    console.error('capability reconcile failed:', error);
+  } finally {
+    reconciling = false;
+  }
 }
 
 /**
@@ -2831,6 +3007,15 @@ server.on('upgrade', (req, socket, head) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`v-harness gateway listening on ${HOST}:${String(PORT)}`);
+  // Warm up once, then keep watching: a socket can disappear long after the
+  // launch that published it, and nothing else revisits the path.
+  void reconcileCapabilities();
+  setInterval(() => { void reconcileCapabilities(); }, RECONCILE_INTERVAL_MS).unref();
+  // The host rule lives outside this container and is lost with the host's
+  // netfilter state; reinstall it on every gateway boot.
+  void ensureBridgeIsolation().catch((error) => {
+    console.error('tenant bridge isolation failed:', error);
+  });
 });
 
 /**
@@ -2840,6 +3025,7 @@ server.listen(PORT, HOST, () => {
 function shutdown(signal) {
   console.log(`received ${signal}, stopping instances`);
   server.close();
+  void gatewayLockHandle.close().catch(() => {});
   const deadline = setTimeout(() => process.exit(1), 8_000);
   void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closeImageStudioCapabilities(), closePhotocraftCapabilities(), closeServicesCapabilities(), closeDockerCapabilities()]).finally(() => {
     clearTimeout(deadline);

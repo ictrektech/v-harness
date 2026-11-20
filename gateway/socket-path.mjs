@@ -4,36 +4,40 @@
  * The gateway and a tenant's dsh can both be asked to serve the same path: the
  * gateway rebinds its sockets on every restart, while a tenant process that
  * survived that restart still holds the old listener. Ownership is decided by
- * the contract, but the two processes can still race between reading it and
- * binding. The gateway always wins that race, because it is the process that
- * survives: it unlinks whatever sits at the path, retries an `EADDRINUSE` a
- * bounded number of times, and never deletes a directory.
+ * the contract, and the gateway wins the race by replacing the path atomically.
  *
- * A symlink is unlinked, never followed, so a tenant cannot aim this deletion
- * at a file elsewhere.
+ * Replacing matters because the reverse order is unsafe: unlinking the path
+ * first creates a window in which the path exists for nobody, and if the bind
+ * then fails the path stays missing while the old listener keeps running on an
+ * unlinked inode. Every dialer gets ECONNREFUSED until somebody restarts the
+ * gateway. Binding beside the target and renaming it into place has neither
+ * failure mode: the path a client dials always names a live listener, and a
+ * failed bind leaves the previous one untouched.
+ *
+ * A symlink is replaced, never followed, so a tenant cannot aim this rename at
+ * a file elsewhere. A directory is refused rather than deleted.
  * @module v-harness/gateway/socket-path
  */
 
-import { lstat, unlink } from 'node:fs/promises';
-
-/** How many times a bind may lose the path before the failure is real. */
-const BIND_ATTEMPTS = 3;
+import { lstat, rename, unlink } from 'node:fs/promises';
 
 /**
  * Listen on a unix socket path, replacing whatever may be left there.
  * @param {import('node:net').Server} server server to bind
  * @param {string} socketPath absolute socket path
- * @returns {Promise<void>} resolves once the server is listening
+ * @returns {Promise<void>} resolves once the server is listening at socketPath
  */
 export async function listenOnSocket(server, socketPath) {
-  for (let attempt = 1; ; attempt += 1) {
-    await clearSocketPath(socketPath);
-    try {
-      await bind(server, socketPath);
-      return;
-    } catch (error) {
-      if (attempt >= BIND_ATTEMPTS || error?.code !== 'EADDRINUSE') throw error;
-    }
+  // The staging path stays beside the target: rename is only atomic within one
+  // directory, and a different filesystem would turn it into a copy.
+  const staging = `${socketPath}.${String(process.pid)}.new`;
+  await clearSocketPath(staging);
+  try {
+    await bind(server, staging);
+    await rename(staging, socketPath);
+  } catch (error) {
+    await unlink(staging).catch(() => {});
+    throw error;
   }
 }
 

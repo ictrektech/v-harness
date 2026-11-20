@@ -70,6 +70,12 @@ export interface Config {
   watchFollowSymlinks?: boolean
   /** Bundled skill root; defaults to `$DSH_BUNDLED_SKILL_DIR` when default roots are included, otherwise mounts none. */
   bundledSkillDir?: string
+  /**
+   * Absolute JSON file listing skill names this provider omits, shaped
+   * `{ "exclude": ["name"] }`. Read once and — under `watch` — followed, so an
+   * operator turns a shipped skill off without restarting the process.
+   */
+  excludeFile?: string
 }
 
 export const Config: Schema<Config> = z.object({
@@ -85,6 +91,7 @@ export const Config: Schema<Config> = z.object({
   watchMaxProjects: z.number().default(DEFAULT_WATCH_MAX_PROJECTS),
   watchFollowSymlinks: z.boolean().default(true),
   bundledSkillDir: z.string(),
+  excludeFile: z.string(),
 })
 
 interface SkillRoot {
@@ -154,6 +161,7 @@ export class FileSystemSkillProvider implements SkillProvider {
   private readonly customSkillDirs: string[]
   private readonly watchManager: SkillWatchManager
   private readonly bundledSkillDir: string | undefined
+  private readonly exclusion: SkillExclusion | undefined
   private disposal: Promise<void> | undefined
 
   constructor(
@@ -174,6 +182,13 @@ export class FileSystemSkillProvider implements SkillProvider {
     const bundledSkillDir = config.bundledSkillDir
       ?? (this.includeDefaultRoots ? process.env.DSH_BUNDLED_SKILL_DIR : undefined)
     this.bundledSkillDir = bundledSkillDir === undefined ? undefined : resolve(bundledSkillDir)
+    // The exclusion file follows the bundled root's rule: a default root reads
+    // its location from the environment, an isolated provider stays explicit.
+    const excludeFile = config.excludeFile
+      ?? (this.includeDefaultRoots ? process.env.DSH_SKILL_EXCLUDE_FILE : undefined)
+    this.exclusion = excludeFile === undefined
+      ? undefined
+      : new SkillExclusion(ctx, resolve(excludeFile), control.invalidate, config.watch ?? true)
   }
 
   /**
@@ -204,7 +219,8 @@ export class FileSystemSkillProvider implements SkillProvider {
         this.ctx.logger.warn(`skill root "${root.path}" skipped: ${errorMessage(error)}. Other roots remain available; check this directory's permissions and symlinks. Discovery retries on the next lookup.`)
       }
     }
-    return complete ? candidates : { candidates, complete }
+    const kept = this.exclusion === undefined ? candidates : await this.exclusion.filter(candidates)
+    return complete ? kept : { candidates: kept, complete }
   }
 
   /**
@@ -244,8 +260,16 @@ export class FileSystemSkillProvider implements SkillProvider {
    * @returns a shared promise that settles when every watcher reaches quiescence.
    */
   dispose(): Promise<void> {
-    this.disposal ??= this.watchManager.dispose()
+    this.disposal ??= this.closeAll()
     return this.disposal
+  }
+
+  /**
+   * Close the root watchers and the exclusion list together.
+   * @returns resolves once every watcher reaches quiescence.
+   */
+  private async closeAll(): Promise<void> {
+    await Promise.all([this.watchManager.dispose(), this.exclusion?.dispose()])
   }
 
   private async roots(cwd: string | undefined): Promise<SkillRoot[]> {
@@ -288,6 +312,99 @@ interface RootWatchState {
 interface WatchHandle {
   mode: RootWatchMode
   close(): Promise<void> | void
+}
+
+/**
+ * Deployment-provided list of skill names this provider omits from its catalog.
+ *
+ * The list is a file rather than plugin config because a running tenant cannot
+ * be handed new config: an operator turns a shipped skill off, the next catalog
+ * read already agrees, and nothing restarts.
+ */
+class SkillExclusion {
+  private names = new Set<string>()
+  private watcher: ReturnType<typeof chokidar.watch> | undefined
+  private loading: Promise<void> | undefined
+  private settle: (() => void) | undefined
+  private closed = false
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly path: string,
+    private readonly invalidate: () => void,
+    private readonly watch: boolean,
+  ) {}
+
+  /**
+   * Read the list once and, when watching, follow it.
+   * @returns resolves after the first read.
+   */
+  ready(): Promise<void> {
+    this.loading ??= this.open()
+    return this.loading
+  }
+
+  /**
+   * Drop the candidates the deployment excluded.
+   * @param candidates - candidates discovered in root order.
+   * @returns the candidates that stay visible to consumers.
+   */
+  async filter(candidates: SkillCandidate[]): Promise<SkillCandidate[]> {
+    await this.ready()
+    if (this.names.size === 0) return candidates
+    return candidates.filter(candidate => !this.names.has(candidate.name))
+  }
+
+  /**
+   * Stop following the list.
+   * @returns resolves once the watcher is closed.
+   */
+  async dispose(): Promise<void> {
+    this.closed = true
+    this.settle?.()
+    this.settle = undefined
+    const watcher = this.watcher
+    this.watcher = undefined
+    if (watcher !== undefined) await watcher.close()
+  }
+
+  private async open(): Promise<void> {
+    await this.reload(false)
+    if (this.closed || !this.watch) return
+    const watcher = chokidar.watch(this.path, { ignoreInitial: true, followSymlinks: false })
+    const follow = (): void => { void this.reload(true) }
+    watcher.on('add', follow).on('change', follow).on('unlink', follow)
+    this.watcher = watcher
+    // A write that lands before the adapter reports readiness is dropped, so
+    // the first catalog read waits for it. Disposal settles the wait too: a
+    // closed watcher never reports readiness.
+    await new Promise<void>((resolve) => {
+      watcher.once('ready', () => { resolve() })
+      this.settle = resolve
+    })
+    this.settle = undefined
+  }
+
+  private async reload(notify: boolean): Promise<void> {
+    const text = await readFile(this.path, 'utf8').catch(() => undefined)
+    const next = new Set<string>()
+    if (text !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(text)
+        const listed = parsed !== null && typeof parsed === 'object' && 'exclude' in parsed ? parsed.exclude : undefined
+        if (Array.isArray(listed)) {
+          for (const entry of listed) {
+            if (typeof entry === 'string' && isSkillName(entry)) next.add(entry)
+          }
+        }
+      } catch (error) {
+        this.ctx.logger.warn(`skill exclusion file "${this.path}" is not valid JSON (${errorMessage(error)}); every skill stays visible.`)
+      }
+    }
+    if (next.size === this.names.size && [...next].every(entry => this.names.has(entry))) return
+    this.names = next
+    if (notify) this.invalidate()
+  }
 }
 
 /** Owns bounded host watchers while discovery and reads remain on the filesystem service. */

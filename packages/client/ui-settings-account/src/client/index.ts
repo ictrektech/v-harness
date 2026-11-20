@@ -22,6 +22,8 @@ import { AccountOnboarding } from './AccountOnboarding.tsx'
 import { AccountPlatformHost, type AccountPlatformHostInjected } from './AccountPlatformHost.tsx'
 import { ApiDocsSection, apiDocsEn, apiDocsZh, type ApiDocsKey } from './ApiDocsSection.tsx'
 import { VosOpsConfirmation, VosOpsSection, vosOpsEn, vosOpsZh, type VosOpsKey } from './VosOpsSection.tsx'
+import { SkillTogglesSection } from './SkillTogglesSection.tsx'
+import { skillTogglesEn, skillTogglesZh, type SkillTogglesKey } from './locales/skill-toggles.ts'
 import { AccountMenu } from './AccountMenu.tsx'
 import { createPlatformPages, type PlatformPages } from './platform-pages.ts'
 import { AccountSection, type AccountSnapshot, type AccountSectionInjected } from './AccountSection.tsx'
@@ -41,7 +43,7 @@ export type { AccountKey } from './locales.ts'
 export type { AccountUi, AccountUiState, AccountNotificationsOwnerProps } from './account-ui.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface LocaleNamespaceMap { 'settings.account': AccountKey; 'settings.vh-api': ApiDocsKey; 'settings.vh-ops': VosOpsKey }
+  interface LocaleNamespaceMap { 'settings.account': AccountKey; 'settings.vh-api': ApiDocsKey; 'settings.vh-ops': VosOpsKey; 'settings.vh-skills': SkillTogglesKey }
 }
 
 /** Services required by account settings. */
@@ -66,6 +68,14 @@ export function apply(ctx: Context): void {
       name: 'settings.section', id: 'vh-ops', order: 91, label: () => vosOps('title'),
       locale: 'settings.vh-ops',
     }, VosOpsSection))
+    // The shipped-skill switches sit beside the operations panel: both are
+    // deployment-owned surfaces the page reaches through the gateway.
+    ctx.effect(() => ctx.locale.register('settings.vh-skills', { en: skillTogglesEn, zh: skillTogglesZh }), 'VOS product skills')
+    const skillToggles = ctx.locale.bind('settings.vh-skills')
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section', id: 'vh-skills', order: 92, label: () => skillToggles('title'),
+      locale: 'settings.vh-skills',
+    }, SkillTogglesSection))
     ctx.slots.inject('shell.overlay', () => ctx.slots.register({
       name: 'shell.overlay', id: 'vh-ops-confirmation', locale: 'settings.vh-ops',
     }, VosOpsConfirmation))

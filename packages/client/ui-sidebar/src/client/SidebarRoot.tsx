@@ -351,7 +351,8 @@ export function SidebarRoot({
                     : (
                       <span className={clsx(css.localBuildBrand, css.copyVersion)} data-copy-version onClick={copyVersion(buildVersion)}>
                         <span className={css.localBuildTitle}>{t('brand.localBuild')}</span>
-                        <span className={css.buildVersion}>{buildVersion}</span>
+                        {/* The chip may truncate a long release string; the hover title carries the full one. */}
+                        <span className={css.buildVersion} title={buildVersion}>{buildVersion}</span>
                       </span>
                     ),
                 })}

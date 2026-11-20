@@ -32,7 +32,7 @@ import { chmodSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
 import { tenantPacketMark } from './addressing.mjs';
 
-const SOCKET_NAME = 'docker.sock';
+export const SOCKET_NAME = 'docker.sock';
 const STATE_FILE = 'docker-objects.json';
 
 /**
@@ -947,6 +947,166 @@ export function tenantSubnet(tenant) {
   return `${octets[0]}.${octets[1]}.${slot}.0/24`;
 }
 
+/** Legacy-table chain that keeps tenant bridges apart and off host services. */
+const ISOLATION_CHAIN = 'VH-ISOLATION';
+/** Subnet set the policy was last installed for; skips redundant helper runs. */
+let isolationInstalledFor;
+/** Docker bridge gateway a tenant container reaches host-published ports through. */
+const HOST_BRIDGE_GATEWAY = process.env.VH_DOCKER_BRIDGE_GATEWAY ?? '172.17.0.1';
+/** VOS ports reachable through that gateway; every other published port is dropped. */
+const VOS_GATEWAY_PORTS = Object.freeze(
+  String(process.env.VH_TENANT_VOS_PORTS ?? '1182,29081,22888')
+    .split(',')
+    .map((entry) => Number(entry.trim()))
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65_536),
+);
+/** VOS subnet that serves a business port directly instead of through the gateway. */
+const VOS_DIRECT_SUBNET = process.env.VH_VOS_SUBNET ?? '192.168.64.0/20';
+/** Ports a VOS container serves directly on that subnet. */
+const VOS_DIRECT_PORTS = Object.freeze(
+  String(process.env.VH_TENANT_VOS_DIRECT_PORTS ?? '3000')
+    .split(',')
+    .map((entry) => Number(entry.trim()))
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65_536),
+);
+/** Chain that blocks tenant containers from host-published non-business ports. */
+const INPUT_BLOCK_CHAIN = 'VH-HOST-BLOCK';
+/**
+ * Host-published ports a tenant container must not reach.
+ *
+ * Those ports are served by docker-proxy on the host, so the packet enters the
+ * host's INPUT chain rather than FORWARD; the bridge policy cannot see it. The
+ * list is a deny list on purpose: INPUT also carries VOS ingress and the
+ * gateway port, and dropping everything from the tenant pool there would cut
+ * the one path the product needs.
+ */
+const HOST_PORT_BLOCKLIST = Object.freeze(
+  String(process.env.VH_TENANT_BLOCKED_HOST_PORTS ?? '12434,12436,12437,2283,27474,22710,32222,3425,53430')
+    .split(',')
+    .map((entry) => Number(entry.trim()))
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65_536),
+);
+
+/**
+ * The image this gateway runs from, so the isolation helper can be started from
+ * the same payload instead of pulling something else onto the host.
+ * @returns {Promise<string>}
+ */
+async function selfImage() {
+  const declared = process.env.VH_SELF_IMAGE;
+  if (declared !== undefined && declared !== '') return declared;
+  const self = selfContainerId();
+  if (self === undefined) throw new Error('cannot determine the gateway image: no container id');
+  const inspected = await daemonCall('GET', `/containers/${self}/json`);
+  const image = /** @type {{ Config?: { Image?: unknown } }} */ (inspected.payload)?.Config?.Image;
+  if (typeof image !== 'string' || image === '') {
+    throw new Error(`cannot determine the gateway image from container ${self}`);
+  }
+  return image;
+}
+
+/**
+ * Tenant bridges must not reach one another.
+ *
+ * Docker already writes that policy into its `DOCKER-ISOLATION` chains, but on
+ * this host those chains live in the nft table while plain `iptables` is the
+ * legacy frontend. Both tables sit on the same filter hook, the legacy table's
+ * `FORWARD` policy is ACCEPT with no rules, and a verdict from one table ends
+ * the hook: every cross-bridge packet is accepted before the nft chain is
+ * reached. The rule therefore has to be installed where it is evaluated — the
+ * legacy table — and it has to be installed from the host network namespace,
+ * which neither this process nor a tenant jail has.
+ *
+ * A one-shot container with host networking and NET_ADMIN runs it. The gateway
+ * creates it from its own image; a tenant cannot create, find or drive it, and
+ * the containerd-level capabilities are dropped for tenant containers anyway.
+ *
+ * Same-tenant containers stay reachable (compose needs that), the rest of the
+ * tenant pool is dropped, and traffic outside the pool is untouched.
+ * @returns {Promise<void>}
+ */
+export async function ensureBridgeIsolation() {
+  if (/^(0|false|no)$/i.test(process.env.VH_TENANT_BRIDGE_ISOLATION ?? '1')) return;
+  const listed = await daemonCall('GET', '/networks');
+  if (listed.status !== 200 || !Array.isArray(listed.payload)) {
+    throw new Error(`cannot list networks: ${JSON.stringify(listed.payload)}`);
+  }
+  const subnets = new Set();
+  for (const entry of listed.payload) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = /** @type {Record<string, unknown>} */ (entry);
+    const name = String(record.Name ?? '');
+    const driver = String(record.Driver ?? '');
+    if (driver !== 'bridge' || !/^vh-.+-default$/.test(name)) continue;
+    const ipam = /** @type {{ Config?: unknown }} */ (record.IPAM);
+    const config = Array.isArray(ipam?.Config) ? ipam.Config : [];
+    for (const item of config) {
+      const subnet = /** @type {{ Subnet?: unknown }} */ (item)?.Subnet;
+      if (typeof subnet === 'string' && subnet !== '') subnets.add(subnet);
+    }
+  }
+  if (subnets.size === 0) return;
+  const fingerprint = `${[...subnets].sort().join(',')}|${HOST_PORT_BLOCKLIST.join(',')}`;
+  if (isolationInstalledFor === fingerprint) return;
+
+  const script = [
+    `iptables-legacy -N ${ISOLATION_CHAIN} 2>/dev/null || true`,
+    `iptables-legacy -F ${ISOLATION_CHAIN}`,
+    `iptables-legacy -A ${ISOLATION_CHAIN} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`,
+    // Same-tenant containers talk to each other; compose depends on it.
+    ...[...subnets].sort().map(
+      (subnet) => `iptables-legacy -A ${ISOLATION_CHAIN} -s ${subnet} -d ${subnet} -j ACCEPT`,
+    ),
+    // VOS business ports reached through the docker bridge gateway.
+    ...VOS_GATEWAY_PORTS.map(
+      (port) => `iptables-legacy -A ${ISOLATION_CHAIN} -s ${TENANT_SUBNET} -p tcp -m conntrack --ctorigdst ${HOST_BRIDGE_GATEWAY} --ctorigdstport ${port} -j ACCEPT`,
+    ),
+    // VOS business ports served on the VOS subnet itself (mcphub and friends).
+    ...VOS_DIRECT_PORTS.map(
+      (port) => `iptables-legacy -A ${ISOLATION_CHAIN} -s ${TENANT_SUBNET} -p tcp -m conntrack --ctorigdst ${VOS_DIRECT_SUBNET} --ctorigdstport ${port} -j ACCEPT`,
+    ),
+    // Everything else on private address space belongs to the host, not a tenant.
+    `iptables-legacy -A ${ISOLATION_CHAIN} -s ${TENANT_SUBNET} -d 172.16.0.0/12 -j DROP`,
+    `iptables-legacy -A ${ISOLATION_CHAIN} -s ${TENANT_SUBNET} -d 192.168.0.0/16 -j DROP`,
+    `iptables-legacy -A ${ISOLATION_CHAIN} -s ${TENANT_SUBNET} -d ${TENANT_SUBNET} -j DROP`,
+    `iptables-legacy -C FORWARD -j ${ISOLATION_CHAIN} >/dev/null 2>&1 || iptables-legacy -I FORWARD 1 -j ${ISOLATION_CHAIN}`,
+    // Host-published ports are reached through docker-proxy, so those packets
+    // enter INPUT rather than FORWARD: same deny list, evaluated where the
+    // packet actually goes. VOS ingress and the gateway port are not on it.
+    ...(HOST_PORT_BLOCKLIST.length === 0
+      ? [`iptables-legacy -D INPUT -j ${INPUT_BLOCK_CHAIN} >/dev/null 2>&1 || true`]
+      : [
+        `iptables-legacy -N ${INPUT_BLOCK_CHAIN} 2>/dev/null || true`,
+        `iptables-legacy -F ${INPUT_BLOCK_CHAIN}`,
+        `iptables-legacy -A ${INPUT_BLOCK_CHAIN} -s ${TENANT_SUBNET} -p tcp -m multiport --dports ${HOST_PORT_BLOCKLIST.join(',')} -j DROP`,
+        `iptables-legacy -C INPUT -j ${INPUT_BLOCK_CHAIN} >/dev/null 2>&1 || iptables-legacy -I INPUT 1 -j ${INPUT_BLOCK_CHAIN}`,
+      ]),
+  ].join('\n');
+
+  const created = await daemonCall('POST', '/containers/create', JSON.stringify({
+    Image: await selfImage(),
+    Entrypoint: ['/bin/sh', '-c', script],
+    HostConfig: { NetworkMode: 'host', CapAdd: ['NET_ADMIN'], AutoRemove: false },
+  }));
+  if (created.status !== 201) {
+    throw new Error(`cannot create the isolation helper: ${JSON.stringify(created.payload)}`);
+  }
+  const id = /** @type {{ Id?: unknown }} */ (created.payload)?.Id;
+  if (typeof id !== 'string' || id === '') throw new Error('isolation helper has no id');
+  try {
+    const started = await daemonCall('POST', `/containers/${id}/start`);
+    if (started.status !== 204 && started.status !== 304) {
+      throw new Error(`cannot start the isolation helper: ${JSON.stringify(started.payload)}`);
+    }
+    const waited = await daemonCall('POST', `/containers/${id}/wait`);
+    const code = /** @type {{ StatusCode?: unknown }} */ (waited.payload)?.StatusCode;
+    if (code !== 0) throw new Error(`isolation helper exited with ${String(code)}`);
+  } finally {
+    await daemonCall('DELETE', `/containers/${id}?force=1`).catch(() => {});
+  }
+  isolationInstalledFor = fingerprint;
+}
+
 /**
  * Create the tenant's network the first time a container asks for it, then make
  * sure the gateway is on it.
@@ -972,6 +1132,14 @@ async function ensureNetwork(tenant, name) {
   }
   await attachSelf(name);
   await syncNetworkIsolation(tenant, name);
+  // Re-evaluated per new network: the policy names every tenant subnet that
+  // exists, so a new tenant has to extend the allow-list. A failure here is
+  // logged rather than fatal: refusing to create the network would take the
+  // tenant's containers down with it, while the boot pass already reports the
+  // same failure where an operator looks first.
+  await ensureBridgeIsolation().catch((error) => {
+    console.error(`tenant bridge isolation failed for ${name}:`, error);
+  });
 }
 
 /** The gateway port a container may open on this container's interfaces. */
