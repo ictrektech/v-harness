@@ -12,7 +12,9 @@
 | `ictrek.app/src/routers.yml` | 前端入口的 id、标题、`iframe-src` |
 | `Dockerfile` | 应用镜像的构建步骤 |
 | `VERSION` | 首次发布版本 |
-| `.gitea/workflows/local-build.yml` | runner 标签 |
+| `.gitea/workflows/local-build.yml` | runner 标签；`install to vos` 步骤的 secrets |
+
+`ictrek.app/scripts/install-to-vos.sh` 负责发布后自动安装，一般不需要改：它按包名推导架构 profile，用平台接口上传并安装。改过 `manifest.yml` 的 profile 名时，必须用仓库 secret `VOS_PROFILES` 覆盖。
 
 运行用户必须保持 root。VOS 把存储挂到容器 `/data`，该目录在宿主上是 `nobody:nogroup`、权限 `0700`，容器内只有 root 可写；Dockerfile 写 `USER app` 会让应用启动即崩，日志为 `Error: unable to open database file`。
 
@@ -60,16 +62,38 @@ const apiBase = new URL('api/', document.baseURI)
 
 `docker-compose.yml` 的 `PathPrefix` 规则与 `stripprefix` 中间件必须成对出现，缺一个会 404 或让前缀重复。
 
+## 注释语言
+
+- workflow 的 `run:` 块注释用英文。
+- 注释只写代码在做什么，不写这次改了什么、为什么改。
+
 ## 运行验证
 
 `docker run -d` 在受限 Docker 能力下可能挂住。用 `docker create` 加 `docker start` 加 `docker logs`，或 `vh-service run --name <name> --port <port> -- node src/server.js`。
+
+## 发布后自动安装
+
+`publish tag and release` 之后紧跟 `install to vos` 步骤，调用 `install-to-vos.sh`：
+
+1. 用 `VOS_ADMIN_USER` 与 `VOS_ADMIN_PASSWORD` 调 `POST /v1000/user/login` 换 `access_token`。
+2. 取 `dist/*-*.tar` 调 `POST /v1000/app-store/upload_app`，拿到 `#local:<ULID>`、`app_id`、`version`。
+3. 查 `GET /v1000/app/status?app_id=`：已安装走 `upgrade_async`，未安装走 `install_async`。
+4. 轮询同一端点，直到 `state` 为 `installed` 或 `error`。
+
+- 首次安装必须给卷：`VOS_VOLUME_ID` 或 `VOS_VOLUME`。升级沿用旧记录的存储配置。
+- profile 缺省按包名推导：`amd64` → `amd`，`arm64` → `arm`。
+- 凭据优先级：`VOS_TOKEN` → 账号密码 → `/var/lib/vos-context/access-token`。第三条要 runner 把应用上下目录挂进 job 容器，见 SKILL.md「自动安装」。
+- 缺凭据或缺构建产物时脚本退出 0，只打警告。
+- 安装失败返回 2，workflow 变红，但 Release 已经发布完成。
 
 ## CI 与 runner
 
 `.gitea/workflows/local-build.yml` 跑在平台自带的 `ubuntu-latest` runner 上，只用 shell。
 
 - 需要 `git`；构建还要 `docker` CLI 与可用 socket、`python3`、`tar`、`gzip`。
-- job 容器有宿主 socket 但没有 docker CLI，`ensure docker` 步骤补装，构建因此跑在宿主 daemon 上。
+- job 容器有宿主 socket 但没有 docker CLI，`ensure docker` 先下载静态 CLI，失败才用 apt 兜底，构建因此跑在宿主 daemon 上。
+- 两条路径都先测速选源（aliyun 对官方源），国内和国外都不用改配置。
+- 这台机器上 apt 约 55 KB/s（同容器 curl 4.7 MB/s），用 apt 装 `docker.io` 要 14 分钟以上；静态 CLI 约 25 秒，整轮 workflow 约 1 分钟。
 - 不要用 GARM 的 LXD 实例构建：缺 registry 代理先报 `i/o timeout`；`vfs` 加关闭 containerd 快照器可过解包；最后卡在 `mount "cgroup" ... permission denied`，LXD 不允许嵌套容器挂 cgroup。
 - `VOS_BUILD` 控制是否构建：`auto`（有可用 docker 就构建）、`1`、`0`（只校验应用定义）。GARM 池上用 `0`。
 - 缺 docker 或 `docker info` 失败时只校验 `ictrek.app/src` 的源文件，不出包，也不发布 Release。`ensure docker` 装不上也只警告：GARM 的 LXD 实例以非 root 用户执行步骤，`apt-get` 无写权限。
