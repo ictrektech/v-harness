@@ -37,6 +37,11 @@ shutdown() {
 }
 trap shutdown TERM INT
 
+# One listener per capability per tenant: 6 × N descriptors, plus the
+# connections they accept. The default 1024 runs out at a few dozen tenants and
+# the gateway then fails to publish sockets with EMFILE.
+ulimit -n 65535 2>/dev/null || true
+
 while [[ "$stopping" -eq 0 ]]; do
   started_at=$(date +%s)
   if [[ ${#SQLITE_FLAGS[@]} -gt 0 ]]; then

@@ -32,7 +32,7 @@ import { chmodSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
 import { tenantPacketMark } from './addressing.mjs';
 
-const SOCKET_NAME = 'docker.sock';
+export const SOCKET_NAME = 'docker.sock';
 const STATE_FILE = 'docker-objects.json';
 
 /**
@@ -947,6 +947,108 @@ export function tenantSubnet(tenant) {
   return `${octets[0]}.${octets[1]}.${slot}.0/24`;
 }
 
+/** Legacy-table chain that keeps two tenant bridges from reaching each other. */
+const ISOLATION_CHAIN = 'VH-ISOLATION';
+/** Subnet set the policy was last installed for; skips redundant helper runs. */
+let isolationInstalledFor;
+
+/**
+ * The image this gateway runs from, so the isolation helper can be started from
+ * the same payload instead of pulling something else onto the host.
+ * @returns {Promise<string>}
+ */
+async function selfImage() {
+  const declared = process.env.VH_SELF_IMAGE;
+  if (declared !== undefined && declared !== '') return declared;
+  const self = selfContainerId();
+  if (self === undefined) throw new Error('cannot determine the gateway image: no container id');
+  const inspected = await daemonCall('GET', `/containers/${self}/json`);
+  const image = /** @type {{ Config?: { Image?: unknown } }} */ (inspected.payload)?.Config?.Image;
+  if (typeof image !== 'string' || image === '') {
+    throw new Error(`cannot determine the gateway image from container ${self}`);
+  }
+  return image;
+}
+
+/**
+ * Tenant bridges must not reach one another.
+ *
+ * Docker already writes that policy into its `DOCKER-ISOLATION` chains, but on
+ * this host those chains live in the nft table while plain `iptables` is the
+ * legacy frontend. Both tables sit on the same filter hook, the legacy table's
+ * `FORWARD` policy is ACCEPT with no rules, and a verdict from one table ends
+ * the hook: every cross-bridge packet is accepted before the nft chain is
+ * reached. The rule therefore has to be installed where it is evaluated — the
+ * legacy table — and it has to be installed from the host network namespace,
+ * which neither this process nor a tenant jail has.
+ *
+ * A one-shot container with host networking and NET_ADMIN runs it. The gateway
+ * creates it from its own image; a tenant cannot create, find or drive it, and
+ * the containerd-level capabilities are dropped for tenant containers anyway.
+ *
+ * Same-tenant containers stay reachable (compose needs that), the rest of the
+ * tenant pool is dropped, and traffic outside the pool is untouched.
+ * @returns {Promise<void>}
+ */
+export async function ensureBridgeIsolation() {
+  if (/^(0|false|no)$/i.test(process.env.VH_TENANT_BRIDGE_ISOLATION ?? '1')) return;
+  const listed = await daemonCall('GET', '/networks');
+  if (listed.status !== 200 || !Array.isArray(listed.payload)) {
+    throw new Error(`cannot list networks: ${JSON.stringify(listed.payload)}`);
+  }
+  const subnets = new Set();
+  for (const entry of listed.payload) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = /** @type {Record<string, unknown>} */ (entry);
+    const name = String(record.Name ?? '');
+    const driver = String(record.Driver ?? '');
+    if (driver !== 'bridge' || !/^vh-.+-default$/.test(name)) continue;
+    const ipam = /** @type {{ Config?: unknown }} */ (record.IPAM);
+    const config = Array.isArray(ipam?.Config) ? ipam.Config : [];
+    for (const item of config) {
+      const subnet = /** @type {{ Subnet?: unknown }} */ (item)?.Subnet;
+      if (typeof subnet === 'string' && subnet !== '') subnets.add(subnet);
+    }
+  }
+  if (subnets.size === 0) return;
+  const fingerprint = [...subnets].sort().join(',');
+  if (isolationInstalledFor === fingerprint) return;
+
+  const script = [
+    `iptables-legacy -N ${ISOLATION_CHAIN} 2>/dev/null || true`,
+    `iptables-legacy -F ${ISOLATION_CHAIN}`,
+    `iptables-legacy -A ${ISOLATION_CHAIN} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`,
+    ...[...subnets].sort().map(
+      (subnet) => `iptables-legacy -A ${ISOLATION_CHAIN} -s ${subnet} -d ${subnet} -j ACCEPT`,
+    ),
+    `iptables-legacy -A ${ISOLATION_CHAIN} -s ${TENANT_SUBNET} -d ${TENANT_SUBNET} -j DROP`,
+    `iptables-legacy -C FORWARD -j ${ISOLATION_CHAIN} >/dev/null 2>&1 || iptables-legacy -I FORWARD 1 -j ${ISOLATION_CHAIN}`,
+  ].join('\n');
+
+  const created = await daemonCall('POST', '/containers/create', JSON.stringify({
+    Image: await selfImage(),
+    Entrypoint: ['/bin/sh', '-c', script],
+    HostConfig: { NetworkMode: 'host', CapAdd: ['NET_ADMIN'], AutoRemove: false },
+  }));
+  if (created.status !== 201) {
+    throw new Error(`cannot create the isolation helper: ${JSON.stringify(created.payload)}`);
+  }
+  const id = /** @type {{ Id?: unknown }} */ (created.payload)?.Id;
+  if (typeof id !== 'string' || id === '') throw new Error('isolation helper has no id');
+  try {
+    const started = await daemonCall('POST', `/containers/${id}/start`);
+    if (started.status !== 204 && started.status !== 304) {
+      throw new Error(`cannot start the isolation helper: ${JSON.stringify(started.payload)}`);
+    }
+    const waited = await daemonCall('POST', `/containers/${id}/wait`);
+    const code = /** @type {{ StatusCode?: unknown }} */ (waited.payload)?.StatusCode;
+    if (code !== 0) throw new Error(`isolation helper exited with ${String(code)}`);
+  } finally {
+    await daemonCall('DELETE', `/containers/${id}?force=1`).catch(() => {});
+  }
+  isolationInstalledFor = fingerprint;
+}
+
 /**
  * Create the tenant's network the first time a container asks for it, then make
  * sure the gateway is on it.
@@ -972,6 +1074,14 @@ async function ensureNetwork(tenant, name) {
   }
   await attachSelf(name);
   await syncNetworkIsolation(tenant, name);
+  // Re-evaluated per new network: the policy names every tenant subnet that
+  // exists, so a new tenant has to extend the allow-list. A failure here is
+  // logged rather than fatal: refusing to create the network would take the
+  // tenant's containers down with it, while the boot pass already reports the
+  // same failure where an operator looks first.
+  await ensureBridgeIsolation().catch((error) => {
+    console.error(`tenant bridge isolation failed for ${name}:`, error);
+  });
 }
 
 /** The gateway port a container may open on this container's interfaces. */
