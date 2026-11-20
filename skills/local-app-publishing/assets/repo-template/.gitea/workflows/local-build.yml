@@ -1,0 +1,118 @@
+name: local-build
+
+# 在 Gitea 里构建离线包并发布 Release。workflow 只用 shell，不用任何 Node action：
+# 子路径部署下 actions/checkout 会拼出缺 /app/com.ictrek.gitea 的克隆地址。
+#
+# 发布规则：
+#   - 推送 tag（v*）→ 发布该 tag 的 Release。
+#   - 推送 main → 读 VERSION，发布 v<VERSION>。
+# 构建需要 docker CLI。没有时只校验应用定义，不发布 Release。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  package:
+    # 平台自带 runner：job 容器挂了宿主 docker socket，但没有 docker CLI。
+    runs-on: ubuntu-latest
+    steps:
+      - name: clone
+        run: |
+          base="${GITEA_BASE:-http://gitea:8080/app/com.ictrek.gitea}"
+          url="http://x-access-token:${{ github.token }}@${base#http://}/${{ github.repository }}.git"
+          git clone --depth 1 "$url" src \
+            || { echo "[ERROR] clone failed from $base; set GITEA_BASE for another Gitea address" >&2; exit 1; }
+          printf '%s' "$base" > /tmp/gitea-base
+          echo "[INFO] cloned from $base"
+
+      - name: ensure docker
+        run: |
+          if command -v docker >/dev/null 2>&1; then
+            docker version --format 'server={{.Server.Version}}'
+            exit 0
+          fi
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "[WARN] no docker CLI and no apt-get; build will be skipped" >&2
+            exit 0
+          fi
+          echo "[INFO] installing docker CLI into the job container"
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends docker.io >/dev/null
+          docker version --format 'server={{.Server.Version}}'
+
+      - name: build
+        run: |
+          if command -v docker >/dev/null 2>&1; then
+            bash src/ictrek.app/scripts/package-local.sh
+            ls -l src/dist
+          else
+            echo "[INFO] no docker CLI; validating the app definition only"
+            # icon.png 由 package-local.sh 生成，不是仓库源文件。
+            for file in manifest.yml docker-compose.yml configs.yml routers.yml; do
+              [ -f "src/ictrek.app/src/$file" ] || { echo "[ERROR] missing ictrek.app/src/$file" >&2; exit 1; }
+            done
+          fi
+
+      - name: publish tag and release
+        run: |
+          auth="Authorization: token ${{ github.token }}"
+          api="$(cat /tmp/gitea-base)/api/v1/repos/$GITHUB_REPOSITORY"
+
+          # 1) tag 推送用自己的 tag；main 推送用 VERSION。
+          case "$GITHUB_REF" in
+            refs/tags/*) tag="$GITHUB_REF_NAME" ;;
+            *)
+              version="$(tr -d ' \t\r\n' < src/VERSION)"
+              [ -n "$version" ] || { echo "[ERROR] VERSION is empty" >&2; exit 1; }
+              tag="v$version"
+              ;;
+          esac
+          echo "[INFO] publishing tag $tag"
+
+          # 2) 没有包就不发布：空 Release 会让人误以为安装包已就绪。
+          pkg="$(ls src/dist/*-*.tar 2>/dev/null | head -n1)"
+          if [ -z "$pkg" ]; then
+            echo "[WARN] no built package; skip tag and release"
+            exit 0
+          fi
+
+          # 3) tag 不存在就创建，指向本次提交。
+          if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "$auth" "$api/tags/$tag")" != "200" ]; then
+            curl -sf -X POST "$api/tags" -H "$auth" -H 'Content-Type: application/json' \
+              -d "{\"tag_name\":\"$tag\",\"target\":\"$GITHUB_SHA\"}" -o /tmp/tag.json \
+              || { echo "[ERROR] tag create failed" >&2; exit 1; }
+            echo "[INFO] created tag $tag"
+          fi
+
+          # 4) Release 已存在就复用，避免重复推送失败。
+          if ! curl -sf -H "$auth" "$api/releases/tags/$tag" -o /tmp/release.json; then
+            curl -sf -X POST "$api/releases" -H "$auth" -H 'Content-Type: application/json' \
+              -d "{\"tag_name\":\"$tag\",\"name\":\"$tag\",\"prerelease\":false,\"draft\":false}" -o /tmp/release.json \
+              || { echo "[ERROR] release create failed" >&2; exit 1; }
+          fi
+
+          # 5) 只取第一个 "id"：release JSON 里 author 与 assets 也带 "id"。
+          id="$(grep -o '"id":[0-9][0-9]*' /tmp/release.json | head -n1 | cut -d: -f2)"
+          [ -n "$id" ] || { echo "[ERROR] release id missing" >&2; cat /tmp/release.json; exit 1; }
+
+          # 6) 先删同名资产：Gitea 允许重名，重跑发布会堆积。
+          #    列表取自 release JSON，本部署没有 GET /releases/{id}/assets 路由。
+          name="$(basename "$pkg")"
+          assets_json="$(sed -n 's/.*"assets":\(\[.*\]\).*/\1/p' /tmp/release.json)"
+          ids="$(printf '%s' "${assets_json:-[]}" | sed 's/},{/}\n{/g' \
+                 | grep -F "\"name\":\"$name\"" \
+                 | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')" || true
+          for aid in $ids; do
+            curl -sf -X DELETE -H "$auth" "$api/releases/$id/assets/$aid" \
+              && echo "[INFO] removed old asset $name (id=$aid)"
+          done
+
+          # 7) 上传外层包。
+          curl -sf -X POST "$api/releases/$id/assets?name=$name" \
+            -H "$auth" -H 'Content-Type: application/octet-stream' \
+            --data-binary @"$pkg" -o /tmp/asset.json \
+            || { echo "[ERROR] asset upload failed" >&2; exit 1; }
+          echo "[INFO] published $name to release $tag"

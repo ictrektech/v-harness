@@ -1,0 +1,54 @@
+# 把 com.example.myapp 替换为你的应用 id，并同步修改其他文件中的路径。
+id: com.example.myapp
+name:
+  zh-CN: 我的应用
+  en: My App
+description:
+  zh-CN: 本地开发的 VOS 应用。
+  en: A locally developed VOS app.
+version: __APP_VERSION__
+author: local
+category: [productivity]
+icon: icon.png
+arch: [amd64, arm64]
+
+frontend:
+  enabled: true
+  basePath: /app/com.example.myapp
+
+platform:
+  version: ">=3.0.0"
+
+assets:
+  - kind: docker-archive
+    arch: host
+    filename: myapp-__APP_VERSION__.tar.gz
+
+profiles:
+  - name: amd
+    title:
+      zh-CN: AMD64
+      en: AMD64
+    description:
+      zh-CN: AMD64 平台。
+      en: AMD64 platform.
+    caps:
+      arch: amd64
+    conflicts: [arm]
+  - name: arm
+    title:
+      zh-CN: ARM64
+      en: ARM64
+    description:
+      zh-CN: ARM64 平台。
+      en: ARM64 platform.
+    caps:
+      arch: arm64
+    conflicts: [amd]
+
+require-profiles: true
+
+storage:
+  directories:
+    - path: data
+      mode: "0700"

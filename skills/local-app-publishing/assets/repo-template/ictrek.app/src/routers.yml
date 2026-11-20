@@ -1,0 +1,12 @@
+routers:
+  - id: myapp
+    kind: page
+    title:
+      zh-CN: 我的应用
+      en: My App
+    icon: lucide:box
+    order: 300
+    iframe-src: /app/com.example.myapp/?v=__APP_VERSION__
+    keep-alive: true
+    entry-point: true
+    embed: true

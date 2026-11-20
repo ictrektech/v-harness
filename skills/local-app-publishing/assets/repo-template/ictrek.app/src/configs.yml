@@ -1,0 +1,10 @@
+configs:
+  - name: MYAPP_LOG_LEVEL
+    type: string
+    title:
+      zh-CN: 日志级别
+      en: Log level
+    description:
+      zh-CN: 应用日志级别。
+      en: Application log level.
+    default: info
