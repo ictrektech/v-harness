@@ -29,11 +29,11 @@
 bash ictrek.app/scripts/package-local.sh
 ```
 
-产物在 `dist/app.tar.gz`。
+产物是 `dist/<name>-<version>-<arch>.tar`（外层归档，含 `app.tar.gz` 与 `assets/<arch>/` 下的镜像）。
 
 ## 安装
 
-把 `dist/app.tar.gz` 交给本地安装命令。安装入口见 v-harness 的 `local-app-publishing` skill。
+把外层归档 `dist/<name>-<version>-<arch>.tar` 交给本地安装命令；`dist/app.tar.gz` 是内层包，安装会拒绝。安装入口见 v-harness 的 `vos-local-app-dev` skill。
 
 ## 注意
 

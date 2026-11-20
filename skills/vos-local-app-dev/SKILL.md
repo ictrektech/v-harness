@@ -1,6 +1,6 @@
 ---
-name: local-app-publishing
-description: 在本地开发、构建并安装 VOS 应用。使用 Gitea 与本地离线安装包，不推送远端镜像、不写飞书、不发布应用商店。当用户要求开发 VOS app、本地构建镜像、生成离线安装包、安装到本地 VOS 时触发。
+name: vos-local-app-dev
+description: 开发 VOS 应用并安装到本地 VOS：复制模板建仓库、Gitea CI 构建离线包与 Release、本地安装与运行验证。不推送远端镜像、不写飞书、不发布应用商店。当用户要求开发 VOS app、构建离线安装包、安装到本地 VOS 时触发。
 ---
 
 # 本地应用发布
@@ -42,7 +42,7 @@ todo-0.1.0-amd64.tar
 ## 模板
 
 ```bash
-cp -a /opt/v-harness/skills/local-app-publishing/assets/repo-template/. <仓库目录>/
+cp -a /opt/v-harness/skills/vos-local-app-dev/assets/repo-template/. <仓库目录>/
 ```
 
 - `ictrek.app/src/`：`manifest.yml`、`docker-compose.yml`、`configs.yml`、`routers.yml`。`icon.png` 由构建脚本生成，不入库。
