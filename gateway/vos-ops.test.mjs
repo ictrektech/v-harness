@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createVosOps, OPS_PATH } from './vos-ops.mjs';
+import { createVosOps, OPS_PATH, OpsError } from './vos-ops.mjs';
 
 const appId = 'com.ictrek.demo';
 const containerId = 'a'.repeat(64);
@@ -19,7 +19,9 @@ function fixture() {
   const state = { admin: true, sessionAllowed: true, sid: 'a', installedVersion: '2.0', now: 1, containers: [{ ...container }], images: [
     { Id: imageId, RepoTags: [], RepoDigests: [], Created: 1, Size: 100 },
   ], calls: [], logData: Buffer.from('sample log'),
-    inspect: { State: { Status: 'exited' }, RestartCount: 0 } };
+    inspect: { State: { Status: 'exited' }, RestartCount: 0 },
+    nodeViews: [], managed: { can_manage: true, items: [] }, backends: [],
+    schedulerDown: false, schedulerForbidden: false, schedulerCalls: [] };
   const handle = createVosOps({
     sessionFor: () => ({ sid: state.sid, subject: 'test' }), tokenFor: () => 'test',
     agentSessionAllowed: async (_subject, id) => id === 'session-1' && state.sessionAllowed,
@@ -34,6 +36,40 @@ function fixture() {
       }] };
       state.calls.push([path, body]);
       return { task_id: 'task' };
+    },
+    async scheduler(token, path, body) {
+      state.schedulerCalls.push([path, body]);
+      if (state.schedulerForbidden) throw new OpsError(403, 'scheduler-forbidden');
+      if (state.schedulerDown) throw new OpsError(502, 'scheduler-unavailable');
+      if (path === '/scheduler/api/v1/nodes') return state.nodeViews;
+      if (path === '/scheduler/api/v1/managed-nodes') return state.managed;
+      if (path === '/scheduler/api/v1/backend-deployments') return { items: state.backends };
+      const change = /^\/scheduler\/api\/v1\/backend-deployments\/([^/]+)\/(start|stop)$/.exec(path);
+      if (change) {
+        const row = state.backends.find(item => item.id === change[1]);
+        if (!row) throw new Error('missing backend');
+        row.state = change[2] === 'start' ? 'pending' : 'stopping';
+        row.last_error = null;
+        return row;
+      }
+      const node = /^\/scheduler\/api\/v1\/nodes\/([^/]+)\/(drain|revoke)$/.exec(path);
+      if (node) {
+        const row = state.nodeViews.find(item => item.id === decodeURIComponent(node[1]));
+        if (!row) throw new OpsError(404, 'not-found');
+        if (node[2] === 'drain') {
+          row.draining = body?.draining === true;
+          return { draining: row.draining };
+        }
+        row.managed = false;
+        return { node_id: row.id, state: 'revoked' };
+      }
+      const rescan = /^\/scheduler\/api\/v1\/managed-nodes\/([^/]+)\/rescan$/.exec(path);
+      if (rescan) {
+        const row = state.managed.items.find(item => item.id === decodeURIComponent(rescan[1]));
+        if (!row) throw new OpsError(404, 'not-found');
+        return { ...row, status: 'online' };
+      }
+      throw new Error(`unexpected scheduler path ${path}`);
     },
     daemon: async path => path.startsWith('/containers/') ? state.containers : state.images,
     async daemonCall(method, path) {
@@ -515,4 +551,263 @@ test('host diagnose follows host-mode authorization and stays agent-only', async
   assert.equal((await send('/host-diagnose?id=' + 'e'.repeat(64), null, undefined, {}, agent)).status, 404);
   state.admin = false;
   assert.equal((await send('/host-diagnose?id=' + containerId, null, undefined, {}, agent)).status, 403);
+});
+
+const at = ms => new Date(ms).toISOString();
+
+function nodeViews(state) {
+  return [
+    { id: 'local', display_name: 'here', heartbeat: at(state.now - 1000), health_state: 'ready',
+      managed: true, management_enabled: true, draining: false,
+      capacities: { cpu_millicores: 1000, memory_mib: 2048, gpu_slots: 1, gpu_memory_mib: 4096 },
+      vos_applications: { data: [{ app_id: appId, installed_app_id: 'i1', version: '9.9', state: 'installed' }],
+        observed_at: at(state.now - 1000), fresh: true },
+      vos_metrics: { data: { hostname: 'here', cpu_logical_count: 8, cpu_used_percent: 12,
+        memory_total_mib: 100, memory_used_mib: 40, disk: { size_bytes: 10, used_bytes: 4 } },
+      observed_at: at(state.now - 1000), fresh: true } },
+    { id: 'vos:member-2', display_name: 'gpu-2', heartbeat: at(state.now - 60000), health_state: 'unavailable',
+      managed: false, management_enabled: false, draining: true,
+      report: { observed_at: at(state.now - 5000), arch: 'aarch64', gpus: [{ name: 'Orin' }, { name: '' }] },
+      vos_applications: { data: [{ app_id: appId, installed_app_id: 'i2', version: '1.0', state: 'stopped' }],
+        observed_at: at(state.now - 60000), fresh: false, error_code: 'SOURCE_UNAVAILABLE' } },
+  ];
+}
+
+test('answers this machine instead of failing when the scheduler cannot be read', async () => {
+  const { send, state } = fixture();
+  const { body: { grant } } = await send('/authorize', {});
+  state.schedulerDown = true;
+  const fallback = await send('/nodes', null, grant);
+  assert.equal(fallback.status, 200);
+  assert.equal(fallback.body.source, 'local-fallback');
+  assert.equal(fallback.body.error, 'scheduler-unavailable');
+  assert.deepEqual(fallback.body.nodes.map(node => node.id), ['local']);
+  assert.ok(fallback.body.nodes[0].capabilities.includes('logs'));
+  state.admin = false;
+  assert.equal((await send('/nodes', null, grant)).status, 403);
+});
+
+test('merges scheduler nodes with SSH-managed machines and drops connection settings', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-23T10:00:00Z');
+  state.nodeViews = nodeViews(state);
+  state.managed = { can_manage: true, items: [{ id: 'edge-1', name: 'edge', status: 'online', arch: 'arm64',
+    gpu_model: 'Orin', profile: 'jetson-orin', detected_profile: 'jetson-orin',
+    compatible_profiles: ['jetson-orin'], last_checked_at: at(state.now - 5000),
+    host: '10.0.0.9', ssh_user: 'root', ssh_port: 22, has_password: true }] };
+  const { body: { grant } } = await send('/authorize', {});
+  const catalog = await send('/nodes', null, grant);
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.body.source, 'scheduler');
+  assert.deepEqual(catalog.body.nodes.map(node => node.id), ['local', 'vos:member-2', 'edge-1']);
+  const [local, remote, managed] = catalog.body.nodes;
+  assert.equal(local.health, 'ready');
+  assert.equal(local.status, 'online');
+  // This machine's own VOS outranks the scheduler's cached 9.9 observation.
+  assert.deepEqual(local.apps.rows.map(app => [app.appId, app.version]), [[appId, '2.0']]);
+  assert.equal(remote.status, 'offline');
+  assert.equal(remote.fresh, false);
+  assert.equal(remote.arch, 'aarch64');
+  assert.equal(remote.gpuModel, 'Orin');
+  assert.deepEqual(remote.capabilities, ['apps', 'metrics']);
+  for (const key of ['host', 'ssh_user', 'ssh_port', 'has_password']) assert.equal(key in managed, false);
+});
+
+test('reads one machine application list and refuses unknown nodes', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-23T10:00:00Z');
+  state.nodeViews = nodeViews(state);
+  const { body: { grant } } = await send('/authorize', {});
+  const local = await send('/nodes/apps', null, grant);
+  assert.equal(local.status, 200);
+  assert.equal(local.body.source, 'vos');
+  assert.equal(local.body.apps[0].appId, appId);
+  const remote = await send('/nodes/apps?node=vos:member-2', null, grant);
+  assert.equal(remote.body.local, false);
+  assert.equal(remote.body.error, 'SOURCE_UNAVAILABLE');
+  assert.deepEqual(remote.body.apps.map(app => [app.appId, app.version]), [[appId, '1.0']]);
+  assert.equal((await send('/nodes/apps?node=missing', null, grant)).status, 404);
+  assert.equal((await send('/nodes/apps?node=bad%20id', null, grant)).status, 400);
+});
+
+test('lists compute backends and repairs one through a confirmed proposal', async () => {
+  const { send, state } = fixture();
+  state.backends = [{ id: 'bk-1', app_id: 'image-studio', image: 'demo:1.0', target_kind: 'ssh',
+    target_id: 'edge-1', host: '10.0.0.9', host_port: 42811, container_port: 8000,
+    state: 'failed', last_error: 'BACKEND_START_FAILED', updated_at: '2026-11-23T10:00:00Z' }];
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/backends', null, grant);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.available, true);
+  assert.deepEqual(listed.body.backends.map(row => [row.id, row.state, row.error, row.endpoint]),
+    [['bk-1', 'failed', 'BACKEND_START_FAILED', null]]);
+  // Only a stopped or failed backend may start; a stale target is refused.
+  const preview = await send('/preview', { action: 'backend-start', id: 'bk-1' }, grant);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.target.state, 'failed');
+  const done = await send('/execute', { confirmation: preview.body.confirmation, targetId: 'bk-1' }, grant);
+  assert.equal(done.status, 200);
+  assert.equal(done.body.state, 'pending');
+  const backendCalls = state.schedulerCalls.filter(([path]) => path.includes('/backend-deployments'));
+  assert.ok(backendCalls.some(([path, body]) =>
+    path === '/scheduler/api/v1/backend-deployments/bk-1/start' && JSON.stringify(body) === '{}'));
+  // The re-read after the change reports the state the scheduler reached.
+  assert.equal(backendCalls.at(-1)[0], '/scheduler/api/v1/backend-deployments');
+  assert.equal((await send('/preview', { action: 'backend-start', id: 'bk-1' }, grant)).status, 409);
+  assert.equal((await send('/preview', { action: 'backend-stop', id: 'missing' }, grant)).status, 409);
+});
+
+test('keeps the last machine list only while the scheduler is unreachable', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-23T10:00:00Z');
+  state.nodeViews = nodeViews(state);
+  const { body: { grant } } = await send('/authorize', {});
+  const first = await send('/nodes', null, grant);
+  assert.equal(first.body.source, 'scheduler');
+  assert.equal(first.body.stale, false);
+  assert.equal(first.body.error, null);
+  state.now += 60_000;
+  state.schedulerDown = true;
+  const cached = await send('/nodes', null, grant);
+  assert.equal(cached.status, 200);
+  assert.equal(cached.body.source, 'cache');
+  assert.equal(cached.body.stale, true);
+  assert.equal(cached.body.error, 'scheduler-unavailable');
+  // The machines it answered before survive; this machine's own applications
+  // are re-read live rather than replayed from the cache.
+  assert.deepEqual(cached.body.nodes.map(node => node.id), ['local', 'vos:member-2']);
+  assert.equal(cached.body.nodes[0].apps.rows[0].appId, appId);
+  assert.equal(cached.body.observedAt, at(state.now - 60_000));
+  // A withdrawn scheduler role is not an outage: the stale list must not stand in.
+  state.schedulerDown = false;
+  state.schedulerForbidden = true;
+  const refused = await send('/nodes', null, grant);
+  assert.equal(refused.status, 200);
+  assert.equal(refused.body.source, 'local-fallback');
+  assert.equal(refused.body.error, 'scheduler-forbidden');
+  assert.deepEqual(refused.body.nodes.map(node => node.id), ['local']);
+});
+
+test('reports a truncated backend register and retries an unconfirmed cleanup', async () => {
+  const { send, state } = fixture();
+  state.backends = Array.from({ length: 200 }, (_, index) => ({
+    id: `bk-${index}`, app_id: 'image-studio', image: 'demo:1.0', target_kind: 'ssh',
+    target_id: 'edge-1', host: '10.0.0.9', host_port: 42000 + index, state: 'running',
+    last_error: null, updated_at: '2026-11-23T10:00:00Z',
+  }));
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/backends', null, grant);
+  assert.equal(listed.body.total, 200);
+  assert.equal(listed.body.truncated, true);
+  const other = await send('/backends?node=other', null, grant);
+  assert.deepEqual(other.body.backends, []);
+  // The ledger page is still a page: a node filter cannot claim completeness.
+  assert.equal(other.body.truncated, true);
+  assert.equal((await send('/backends?node=bad%20id', null, grant)).status, 400);
+  assert.equal((await send('/backends?node=edge-1', null, grant)).body.backends.length, 200);
+  state.backends = [{ id: 'bk-1', app_id: 'image-studio', image: 'demo:1.0', target_kind: 'ssh',
+    target_id: 'edge-1', host: '10.0.0.9', host_port: 42811, state: 'cleanup_failed',
+    last_error: 'BACKEND_CLEANUP_FAILED', updated_at: '2026-11-23T10:00:00Z' }];
+  const preview = await send('/preview', { action: 'backend-stop', id: 'bk-1' }, grant);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.target.state, 'cleanup_failed');
+  const done = await send('/execute', { confirmation: preview.body.confirmation, targetId: 'bk-1' }, grant);
+  assert.equal(done.status, 200);
+  assert.equal(done.body.state, 'stopping');
+  assert.ok(state.schedulerCalls.some(([path]) =>
+    path === '/scheduler/api/v1/backend-deployments/bk-1/stop'));
+});
+
+test('summarizes one machine from register facts without log bodies', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-23T10:00:00Z');
+  state.nodeViews = nodeViews(state);
+  state.backends = [
+    { id: 'bk-1', app_id: 'image-studio', image: 'demo:1.0', target_kind: 'ssh',
+      target_id: 'vos:member-2', host: '10.0.0.9', host_port: 42811, state: 'failed',
+      last_error: 'BACKEND_START_FAILED', updated_at: at(state.now) },
+    { id: 'bk-2', app_id: 'v-voice', image: 'voice:1', target_kind: 'ssh',
+      target_id: 'edge-1', host: '10.0.0.7', host_port: 42812, state: 'cleanup_failed',
+      last_error: 'BACKEND_CLEANUP_FAILED', updated_at: at(state.now) },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const remote = await send('/nodes/diagnose?node=vos:member-2', null, grant);
+  assert.equal(remote.status, 200);
+  assert.equal(remote.body.node.id, 'vos:member-2');
+  assert.equal(remote.body.backends.total, 2);
+  assert.equal(remote.body.backends.scoped, 1);
+  assert.deepEqual(remote.body.backends.byState, { failed: 1 });
+  assert.equal(remote.body.catalog.source, 'scheduler');
+  const codes = remote.body.findings.map(finding => finding.code);
+  for (const code of ['node-offline', 'node-observation-only', 'node-draining',
+    'node-observation-stale', 'backend-failed']) {
+    assert.ok(codes.includes(code), code);
+  }
+  // A summary carries state, never log text.
+  assert.equal(JSON.stringify(remote.body).includes('ERROR'), false);
+  const local = await send('/nodes/diagnose', null, grant);
+  assert.equal(local.status, 200);
+  assert.equal(local.body.node.local, true);
+  assert.equal(local.body.apps.total, 1);
+  assert.deepEqual(local.body.apps.byState, { installed: 1 });
+  assert.equal((await send('/nodes/diagnose?node=missing', null, grant)).status, 404);
+  assert.equal((await send('/nodes/diagnose?node=bad%20id', null, grant)).status, 400);
+  // The authorized Agent reads the same summary; nothing else is added for it.
+  const agent = { session: { subject: 'test' }, sessionId: 'session-1' };
+  assert.equal((await send('/nodes/diagnose?node=vos:member-2', null, undefined, {}, agent)).status, 200);
+});
+
+test('drains, resumes, revokes and rescans machines through confirmed proposals', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-23T10:00:00Z');
+  state.nodeViews = [...nodeViews(state), {
+    id: 'vos:member-3', display_name: 'gpu-3', heartbeat: at(state.now - 1000),
+    health_state: 'ready', managed: true, management_enabled: true, draining: false,
+    capacities: { cpu_millicores: 1000, memory_mib: 1024, gpu_slots: 1, gpu_memory_mib: 1024 },
+  }];
+  state.managed = { can_manage: true, items: [{ id: 'edge-1', name: 'edge', status: 'online',
+    arch: 'arm64', gpu_model: 'Orin', profile: 'jetson-orin', detected_profile: 'jetson-orin',
+    compatible_profiles: ['jetson-orin'], last_checked_at: '2026-11-23T10:00:00Z',
+    host: '10.0.0.9', ssh_user: 'root', ssh_port: 22, has_password: true }] };
+  const { body: { grant } } = await send('/authorize', {});
+  const preview = (action, id) => send('/preview', { action, id }, grant);
+  const execute = (proposal, id) =>
+    send('/execute', { confirmation: proposal.confirmation, targetId: id }, grant);
+
+  // An observation-only machine carries no budget to drain, and this machine is
+  // not a managed node at all.
+  assert.equal((await preview('node-drain', 'vos:member-2')).status, 409);
+  assert.equal((await preview('node-rescan', 'local')).status, 400);
+
+  const drain = await preview('node-drain', 'vos:member-3');
+  assert.equal(drain.status, 200);
+  assert.equal(drain.body.target.managed, true);
+  assert.equal((await execute(drain.body, 'vos:member-3')).body.state, 'draining');
+  assert.ok(state.schedulerCalls.some(([path, body]) =>
+    path === '/scheduler/api/v1/nodes/vos%3Amember-3/drain' && body.draining === true));
+
+  const undrain = await preview('node-undrain', 'vos:member-3');
+  assert.equal(undrain.status, 200);
+  assert.equal((await execute(undrain.body, 'vos:member-3')).body.state, 'ready');
+  assert.ok(state.schedulerCalls.some(([path, body]) =>
+    path === '/scheduler/api/v1/nodes/vos%3Amember-3/drain' && body.draining === false));
+
+  // A drain applied between confirmation and execution invalidates the proposal.
+  const stale = await preview('node-drain', 'vos:member-3');
+  state.nodeViews.find(row => row.id === 'vos:member-3').draining = true;
+  assert.equal((await execute(stale.body, 'vos:member-3')).status, 409);
+
+  const rescan = await preview('node-rescan', 'edge-1');
+  assert.equal(rescan.status, 200);
+  assert.equal((await execute(rescan.body, 'edge-1')).body.state, 'online');
+  assert.ok(state.schedulerCalls.some(([path]) =>
+    path === '/scheduler/api/v1/managed-nodes/edge-1/rescan'));
+
+  const revoke = await preview('node-revoke', 'vos:member-3');
+  assert.equal(revoke.status, 200);
+  assert.equal((await execute(revoke.body, 'vos:member-3')).body.state, 'revoked');
+  assert.ok(state.schedulerCalls.some(([path]) =>
+    path === '/scheduler/api/v1/nodes/vos%3Amember-3/revoke'));
+  // A revoked machine is no longer schedulable, so a second proposal is stale.
+  assert.equal((await preview('node-undrain', 'vos:member-3')).status, 409);
 });

@@ -27,6 +27,25 @@ const en = {
   targetList: 'Targets', removed: 'Removed', removalFailed: 'Removal failed',
   targetIdLabel: 'ID', targetName: 'Container', targetImage: 'Image', targetVersion: 'Version',
 
+  nodes: 'Machines', targetNode: 'Target machine', nodeLocal: 'This machine',
+  nodeStatus: 'Status', nodeHealth: 'Health', nodeObserved: 'Observed', nodeFresh: 'Fresh',
+  nodeStale: 'Stale', nodeDraining: 'Draining', nodeApps: 'Applications on this machine',
+  nodeHardwareOnly: 'This machine reports hardware only; its applications are not collected.',
+  nodeRemoteOnly: 'Other machines expose health and their installed applications. Container work stays on this machine.',
+  nodesNone: 'V-Scheduler returned no machines; showing this machine.',
+  backends: 'Application backends', backendState: 'State', backendEndpoint: 'Endpoint',
+  backendError: 'Last error', backendNone: 'V-Scheduler reports no application backends.',
+  backendUnavailable: 'V-Scheduler is not reachable; backend states are unknown.',
+  backendStart: 'Start backend', backendStop: 'Stop backend',
+  backendTruncated: 'The register answered its newest 200 records; older instances may be missing.',
+  nodeStaleData: 'V-Scheduler is unreachable. Showing the last machine list it answered.',
+  nodeObservationOnly: 'Observation only',
+  nodeDiagnose: 'Diagnose machine', nodeFindings: 'Findings', nodeInstanceStates: 'Instances by state',
+  nodeRescan: 'Refresh hardware profile', nodeDrain: 'Drain machine', nodeUndrain: 'Resume scheduling',
+  nodeRevoke: 'Revoke machine',
+  schedulerForbidden: 'V-Scheduler does not accept this account as its administrator.',
+  schedulerFailed: 'V-Scheduler refused the request.',
+
   skip: 'Skip', close: 'End diagnostics', tagged: 'Tagged images with no container references',
 } satisfies Record<string, string>
 const zh: Record<keyof typeof en, string> = {
@@ -55,6 +74,25 @@ const zh: Record<keyof typeof en, string> = {
   targetList: '操作目标', removed: '已删除', removalFailed: '删除失败',
   targetIdLabel: '标识符', targetName: '容器', targetImage: '镜像', targetVersion: '版本',
 
+  nodes: '机器', targetNode: '目标机器', nodeLocal: '本机',
+  nodeStatus: '状态', nodeHealth: '健康', nodeObserved: '采集于', nodeFresh: '新鲜',
+  nodeStale: '已过期', nodeDraining: '排空中', nodeApps: '该机器上的应用',
+  nodeHardwareOnly: '该机器只采集硬件信息，没有应用清单。',
+  nodeRemoteOnly: '其它机器只提供健康状态与已安装应用。容器相关操作仍在本机进行。',
+  nodesNone: 'V-Scheduler 未返回任何机器，当前显示本机。',
+  backends: '应用后端', backendState: '状态', backendEndpoint: '接入地址',
+  backendError: '最近错误', backendNone: 'V-Scheduler 未登记任何应用后端。',
+  backendUnavailable: 'V-Scheduler 不可达，后端状态未知。',
+  backendStart: '启动后端', backendStop: '停止后端',
+  backendTruncated: '台账只返回最新的 200 条，更早的实例可能缺失。',
+  nodeStaleData: 'V-Scheduler 暂不可达，显示上次成功返回的机器清单。',
+  nodeObservationOnly: '仅观察',
+  nodeDiagnose: '诊断该机器', nodeFindings: '诊断结论', nodeInstanceStates: '实例状态分布',
+  nodeRescan: '刷新硬件 Profile', nodeDrain: '排空该机器', nodeUndrain: '恢复调度',
+  nodeRevoke: '撤销该机器',
+  schedulerForbidden: 'V-Scheduler 不认可当前账号为管理员。',
+  schedulerFailed: 'V-Scheduler 拒绝了该请求。',
+
   skip: '跳过', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
 }
 
@@ -64,7 +102,9 @@ export type VosOpsKey = keyof typeof en
 const hostLabels = {
   'host-start': 'hostStart', 'host-stop': 'hostStop', 'host-restart': 'hostRestart', 'host-remove': 'hostRemove',
 } as const
-type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image' | keyof typeof hostLabels
+type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image'
+  | 'backend-start' | 'backend-stop'
+  | 'node-rescan' | 'node-drain' | 'node-undrain' | 'node-revoke' | keyof typeof hostLabels
 type Inventory = {
   apps: { appId: string; version: string; state: string; lastError: string }[]
   containers: {
@@ -92,11 +132,91 @@ type TargetSummary = {
   stack?: { version: string }
 }
 type Preview = { action: Action; confirmation: string; targetId: string; target: unknown }
+type NodeApp = { appId: string; version: string; state: string; error: string | null }
+type NodeRow = {
+  id: string
+  name: string
+  local: boolean
+  kind: string
+  managed: boolean
+  status: string
+  health: string | null
+  draining: boolean
+  observedAt: string | null
+  fresh: boolean | null
+  apps: { count: number; rows: NodeApp[]; observedAt: string | null; fresh: boolean; error: string | null } | null
+  arch: string | null
+  gpuModel: string | null
+  profile: string | null
+  capabilities: string[]
+}
+type Catalog = {
+  source: 'scheduler' | 'local-fallback' | 'cache'
+  error: string | null
+  stale: boolean
+  nodes: NodeRow[]
+}
+type NodeApps = { node: string; apps: NodeApp[]; observedAt: string | null; fresh: boolean; error: string | null }
+type BackendRow = {
+  id: string
+  appId: string
+  image: string
+  targetKind: string
+  targetId: string
+  host: string | null
+  port: number | null
+  endpoint: string | null
+  state: string
+  error: string | null
+  updatedAt: string | null
+}
+type Backends = {
+  available: boolean
+  error: string | null
+  node: string | null
+  truncated: boolean
+  total: number
+  backends: BackendRow[]
+}
+type Finding = { code: string; level: string; subject?: string; detail?: string | null }
+type NodeDiagnosis = {
+  node: NodeRow
+  catalog: { source: Catalog['source']; error: string | null; stale: boolean; observedAt: string | null }
+  apps: {
+    total: number
+    byState: Record<string, number>
+    fresh: boolean
+    observedAt: string | null
+    error: string | null
+    failing: { appId: string; version: string; state: string; error: string | null }[]
+  } | null
+  backends: {
+    total: number
+    scoped: number
+    truncated: boolean
+    byState: Record<string, number>
+    failing: BackendRow[]
+  } | null
+  findings: Finding[]
+}
+
+/** Every action names one dictionary entry; the record keeps that total. */
+const actionLabels: Record<Action, VosOpsKey> = {
+  ...hostLabels,
+  restart: 'restart', 'stop-container': 'stopContainer',
+  'remove-container': 'removeContainer', 'remove-image': 'removeImage',
+  'backend-start': 'backendStart', 'backend-stop': 'backendStop',
+  'node-rescan': 'nodeRescan', 'node-drain': 'nodeDrain',
+  'node-undrain': 'nodeUndrain', 'node-revoke': 'nodeRevoke',
+}
 
 function actionLabel(action: Action): VosOpsKey {
-  if (action === 'host-start' || action === 'host-stop' || action === 'host-restart' || action === 'host-remove') return hostLabels[action]
-  if (action === 'stop-container') return 'stopContainer'
-  return action === 'restart' ? 'restart' : action === 'remove-container' ? 'removeContainer' : 'removeImage'
+  return actionLabels[action]
+}
+
+/** One line of `state count` pairs for a diagnosis summary. */
+function stateLine(counts: Record<string, number>): string {
+  return Object.entries(counts).map(([state, count]) => `${state} ${count}`).join(' · ')
 }
 
 async function request<T>(path: string, grant?: string, body?: object): Promise<T> {
@@ -111,6 +231,11 @@ async function request<T>(path: string, grant?: string, body?: object): Promise<
     if (failure?.error === 'target-changed') throw new Error('targetChanged')
     if (failure?.error === 'image-delete-conflict') throw new Error('imageDeleteConflict')
     if (failure?.error === 'confirmation-unavailable') throw new Error('confirmationUnavailable')
+    // The scheduler refusing this account is not an expired VOS session, and
+    // clearing the grant would send the administrator after the wrong fix.
+    if (failure?.error === 'scheduler-forbidden' || failure?.error === 'scheduler-rejected') {
+      throw new Error(failure.error === 'scheduler-forbidden' ? 'schedulerForbidden' : 'schedulerFailed')
+    }
     throw new Error(String(response.status))
   }
   return response.json() as Promise<T>
@@ -126,6 +251,12 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<VosOpsKey>()
   const [task, setTask] = useState<string>()
+  const [nodes, setNodes] = useState<NodeRow[]>()
+  const [node, setNode] = useState('local')
+  const [nodeApps, setNodeApps] = useState<NodeApps>()
+  const [nodeNote, setNodeNote] = useState<VosOpsKey>()
+  const [backends, setBackends] = useState<Backends>()
+  const [diagnosis, setDiagnosis] = useState<NodeDiagnosis>()
   const run = async (operation: () => Promise<void>) => {
     setBusy(true)
     setMessage(undefined)
@@ -134,7 +265,9 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       await operation()
     } catch (error) {
       const status = error instanceof Error ? error.message : ''
-      if (status === '401' || status === '403') {
+      if (status === 'schedulerForbidden' || status === 'schedulerFailed') {
+        setMessage(status)
+      } else if (status === '401' || status === '403') {
         setGrant(undefined)
         setInventory(undefined)
         setPreview(undefined)
@@ -148,13 +281,48 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       setBusy(false)
     }
   }
+  const loadBackends = async (value: string, id: string) => {
+    const query = id === 'local' ? '' : '?node=' + encodeURIComponent(id)
+    setBackends(await request<Backends>('backends' + query, value).catch(() => undefined))
+  }
+  const loadMachines = async (value: string, id: string) => {
+    const catalog = await request<Catalog>('nodes', value)
+    setNodes(catalog.nodes)
+    setNodeNote(catalog.stale ? 'nodeStaleData'
+      : catalog.source === 'local-fallback' ? 'nodesNone' : undefined)
+    await loadBackends(value, id)
+  }
   const authorize = () => run(async () => {
     const result = await request<{ grant: string }>('authorize', undefined, {})
     setGrant(result.grant)
     setPreview(undefined)
     setLog(undefined)
     setAppStatus(undefined)
+    setNode('local')
+    setNodeApps(undefined)
+    setDiagnosis(undefined)
+    await loadMachines(result.grant, 'local')
     setInventory(await request<Inventory>('inventory', result.grant))
+  })
+  const selectNode = (id: string) => run(async () => {
+    setNode(id)
+    setPreview(undefined)
+    setLog(undefined)
+    setAppStatus(undefined)
+    setNodeApps(undefined)
+    setDiagnosis(undefined)
+    if (!grant) return
+    await loadBackends(grant, id)
+    if (id === 'local') {
+      setInventory(await request<Inventory>('inventory', grant))
+      return
+    }
+    setNodeApps(await request<NodeApps>('nodes/apps?node=' + encodeURIComponent(id), grant))
+  })
+  const diagnoseNode = () => run(async () => {
+    setDiagnosis(undefined)
+    setDiagnosis(await request<NodeDiagnosis>(
+      'nodes/diagnose?node=' + encodeURIComponent(node), grant))
   })
   const prepare = (action: Action, id: string) => run(async () => {
     setPreview(undefined)
@@ -169,6 +337,7 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
     if (result.taskId) setTask(result.taskId)
   })
   const pre = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 260, overflow: 'auto' } as const
+  const selected = node === 'local' ? undefined : nodes?.find(row => row.id === node)
   const button = (label: VosOpsKey, onClick: () => void) =>
     <button type="button" disabled={busy} onClick={onClick}>{t(label)}</button>
 
@@ -177,7 +346,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
     {button('authorize', authorize)}{' '}
     {grant && button('refresh', () => run(async () => {
       setPreview(undefined)
-      setInventory(await request<Inventory>('inventory', grant))
+      setDiagnosis(undefined)
+      await loadMachines(grant, node)
+      if (node === 'local') setInventory(await request<Inventory>('inventory', grant))
+      else setNodeApps(await request<NodeApps>('nodes/apps?node=' + encodeURIComponent(node), grant))
     }))}
     {grant && button('close', () => run(async () => {
       await request('close', grant, {})
@@ -195,6 +367,93 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       <pre style={pre}>{JSON.stringify(preview.target, null, 2)}</pre>
       {button('confirm', () => void execute(preview))}{' '}
       {button('skip', () => setPreview(undefined))}
+    </section>}
+    {nodes && <section aria-label={t('nodes')}>
+      <h3>{t('nodes')}</h3>
+      {nodeNote && <p role="status">{t(nodeNote)}</p>}
+      {nodes.length > 1
+        ? <label>{t('targetNode')}{' '}
+          <select value={node} disabled={busy} onChange={event => void selectNode(event.target.value)}>
+            {nodes.map(row => <option key={row.id} value={row.id}>
+              {(row.local ? t('nodeLocal') : row.name) + ' · ' + row.status + (row.health ? ' · ' + row.health : '')}
+            </option>)}
+          </select>
+        </label>
+        : <p>{t('nodeLocal')} · {nodes[0]?.name}</p>}
+      {grant && <> {button('nodeDiagnose', diagnoseNode)}</>}
+      <ul>{nodes.map(row => <li key={row.id}>
+        <strong>{row.local ? t('nodeLocal') : row.name}</strong>
+        {' · '}{row.status}
+        {/* A managed machine reports no health verdict and no observation, so
+            those fields are omitted instead of printing "unknown" twice. */}
+        {row.health && <>{' · '}{t('nodeHealth')} {row.health}</>}
+        {/* An observation-only machine carries no budget, so it must never read
+            as a target that can be drained, revoked or scheduled. */}
+        {!row.local && !row.managed && <>{' · '}{t('nodeObservationOnly')}</>}
+        {row.fresh !== null && <>{' · '}{row.fresh ? t('nodeFresh') : t('nodeStale')}</>}
+        {row.draining && <>{' · '}{t('nodeDraining')}</>}
+        {row.arch && <>{' · '}{row.arch}</>}
+        {row.gpuModel && <>{' · '}{row.gpuModel}</>}
+        {row.profile && <>{' · '}{row.profile}</>}
+        {row.observedAt && <>{' · '}{t('nodeObserved')} <code>{row.observedAt}</code></>}
+        {/* Machine actions act on the scheduler's own registers: an SSH machine
+            can be rescanned, a schedulable node drained, resumed or revoked.
+            This machine is not one of them, so it gets no such button. */}
+        {!row.local && row.capabilities.includes('rescan') &&
+          <> {' '}{button('nodeRescan', () => prepare('node-rescan', row.id))}</>}
+        {!row.local && row.managed && <> {' '}{row.draining
+          ? button('nodeUndrain', () => prepare('node-undrain', row.id))
+          : button('nodeDrain', () => prepare('node-drain', row.id))}
+        {' '}{button('nodeRevoke', () => prepare('node-revoke', row.id))}</>}
+      </li>)}</ul>
+    </section>}
+    {diagnosis && <section aria-label={t('nodeFindings')}>
+      <h3>{t('nodeFindings')}</h3>
+      <p>{diagnosis.node.name || diagnosis.node.id} · {diagnosis.node.status}
+        {' · '}{diagnosis.catalog.source}
+        {diagnosis.catalog.error && <> · <code>{diagnosis.catalog.error}</code></>}</p>
+      <ul>{diagnosis.findings.map((finding, index) => <li key={index}>
+        <code>{finding.code}</code> · {finding.level}
+        {finding.subject && <> · <code>{finding.subject}</code></>}
+        {finding.detail && <> · {finding.detail}</>}
+      </li>)}</ul>
+      {!diagnosis.findings.length && <p>{t('none')}</p>}
+      {diagnosis.apps && <p>{t('nodeApps')}: {stateLine(diagnosis.apps.byState)}</p>}
+      {diagnosis.backends && <p>{t('nodeInstanceStates')}: {stateLine(diagnosis.backends.byState)}
+        {diagnosis.backends.truncated && <> · {t('backendTruncated')}</>}</p>}
+    </section>}
+    {node !== 'local' && <section aria-label={t('nodeApps')}>
+      <h3>{t('nodeApps')}</h3>
+      {/* A machine whose VOS is not collected has no application list at all;
+          saying "stale" would imply an earlier one existed. */}
+      {selected?.capabilities.includes('apps') !== true
+        ? <p>{t('nodeHardwareOnly')}</p>
+        : <>
+          <p>{t('nodeRemoteOnly')}</p>
+          {nodeApps && nodeApps.node === node && (nodeApps.apps.length > 0
+            ? <ul>{nodeApps.apps.map(app => <li key={app.appId}>
+              <strong>{app.appId}</strong> {app.version} · {app.state}
+              {app.error && <> · <code>{app.error}</code></>}
+            </li>)}</ul>
+            : <p>{nodeApps.fresh ? t('none') : t('nodeStale')}</p>)}
+        </>}
+    </section>}
+    {backends && <section aria-label={t('backends')}>
+      <h3>{t('backends')}</h3>
+      {!backends.available && <p role="status">{t('backendUnavailable')}</p>}
+      {backends.available && backends.truncated && <p role="status">{t('backendTruncated')}</p>}
+      {backends.available && backends.backends.length === 0 &&
+        <p>{backends.node && backends.node !== 'local' ? t('none') : t('backendNone')}</p>}
+      <ul>{backends.backends.map(backend => <li key={backend.id}>
+        <strong>{backend.appId}</strong> · {backend.image}
+        {' · '}{t('backendState')} {backend.state}
+        {backend.endpoint && <>{' · '}{t('backendEndpoint')} <code>{backend.endpoint}</code></>}
+        {backend.error && <>{' · '}{t('backendError')} <code>{backend.error}</code></>}
+        {' '}{['stopped', 'failed'].includes(backend.state) &&
+          button('backendStart', () => prepare('backend-start', backend.id))}
+        {['running', 'pending', 'cleanup_failed'].includes(backend.state) &&
+          button('backendStop', () => prepare('backend-stop', backend.id))}
+      </li>)}</ul>
     </section>}
     {inventory && <>
       <h3>{t('applications')}</h3>

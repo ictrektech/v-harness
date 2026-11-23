@@ -21,7 +21,8 @@ const HOST_ACTIONS = new Map([
 ]);
 const CLEANUP_ACTIONS = new Set(['remove-container', 'host-remove', 'remove-image']);
 const MAX_CLEANUP_TARGETS = 20;
-const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image']);
+const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image',
+  'backend-start', 'backend-stop', 'node-rescan', 'node-drain', 'node-undrain', 'node-revoke']);
 const LOG_QUERY = 'stdout=1&stderr=1&timestamps=1&tail=';
 const LOG_DEFAULT_TAIL = 150;
 const LOG_SCAN_TAIL = 1000;
@@ -41,11 +42,40 @@ const DIAGNOSE_ERROR_GROUPS = 40;
 const DIAGNOSE_ERROR_SAMPLE = 300;
 const DIAGNOSE_HEALTH_OUTPUT = 500;
 const ERROR_LINE = /\b(?:error|fatal|panic|exception|traceback|failed|failure)\b/i;
+// V-Scheduler owns every cross-machine fact: the machines themselves, the VOS
+// applications each one runs, and the compute backends it deploys onto them.
+// This gateway reads those registers and never dials another machine itself.
+const SCHEDULER_NODES = '/scheduler/api/v1/nodes';
+const SCHEDULER_MANAGED_NODES = '/scheduler/api/v1/managed-nodes';
+const SCHEDULER_BACKENDS = '/scheduler/api/v1/backend-deployments';
+const SCHEDULER_ORIGIN = process.env.V_SCHEDULER_URL ?? 'http://v-scheduler:8080';
+const NODE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+const BACKEND_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const LOCAL_NODE = 'local';
+const NODE_APPS_LIMIT = 400;
+const NODE_ACTIONS = new Set(['node-rescan', 'node-drain', 'node-undrain', 'node-revoke']);
+// Scheduler treats a node without a heartbeat inside 12 seconds as offline and
+// a telemetry report older than 30 seconds as stale (backend/src/controller.rs).
+const NODE_HEARTBEAT_MS = 12_000;
+const NODE_REPORT_MS = 30_000;
+// `ApplicationBackendList` answers the newest 200 records and exposes no total,
+// so a full page is the only truncation signal the scheduler gives.
+const BACKEND_LIMIT = 200;
+// `POST /backend-deployments/{id}/start` accepts a stopped or failed backend;
+// stop also retries a cleanup that could not be confirmed, which is exactly the
+// remote failure this panel exists to repair.
+const BACKEND_STARTABLE = ['stopped', 'failed'];
+const BACKEND_STOPPABLE = ['running', 'pending', 'cleanup_failed'];
+// The last node list that succeeded, per VOS user; a failed read falls back to
+// it instead of claiming every other machine disappeared.
+const NODE_CACHE_LIMIT = 64;
+const LOCAL_CAPABILITIES = ['inventory', 'status', 'logs', 'app-logs', 'diagnose', 'operations', 'apps', 'metrics'];
 
-class OpsError extends Error {
-  constructor(status, code) {
+export class OpsError extends Error {
+  constructor(status, code, detail = null) {
     super(code);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -349,13 +379,225 @@ function errorGroups(records) {
   return [...groups.values()].sort((a, b) => b.count - a.count).slice(0, DIAGNOSE_ERROR_GROUPS);
 }
 
+/**
+ * One authenticated call against V-Scheduler's v1 API.
+ *
+ * The scheduler answers `Envelope { code, data }`; anything else means the
+ * caller is not the administrator those routes require, or the scheduler is
+ * unavailable. The three refusals stay distinct so a caller can tell a missing
+ * role from an unreachable scheduler and never reports one as the other.
+ * Callers decide whether that degrades to this machine instead of failing.
+ */
+async function schedulerCall(token, path, body) {
+  const response = await fetch(new URL(path, SCHEDULER_ORIGIN), {
+    redirect: 'error',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json',
+      ...(body ? { 'content-type': 'application/json' } : {}) },
+    method: body ? 'POST' : 'GET',
+    body: body ? JSON.stringify(body) : undefined,
+    // A start or stop waits for the scheduler's own reconcile step, so it gets
+    // the longer bound; reads answer from its database.
+    signal: AbortSignal.timeout(body ? 20000 : 8000),
+  }).catch(error => {
+    throw new OpsError(502, 'scheduler-unavailable', bounded(error?.cause?.code ?? error?.message, 120) || null);
+  });
+  const payload = await response.json().catch(() => null);
+  if (response.status === 401) throw new OpsError(401, 'sign-in-required');
+  // A 403 is the scheduler saying this account is not its administrator. It is
+  // not an expired VOS session, and must not read as one.
+  if (response.status === 403) throw new OpsError(403, 'scheduler-forbidden');
+  if (response.status === 404) throw new OpsError(404, 'not-found');
+  if (!payload || typeof payload.code !== 'string') {
+    throw new OpsError(502, 'scheduler-unavailable', bounded(payload?.msg, 120) || null);
+  }
+  if (payload.code !== 'OK') {
+    // The scheduler refuses with its own business code (`BACKEND_DEPLOYMENT_FORBIDDEN`,
+    // unconfirmed reservations and so on); carrying it through is what makes a
+    // refusal actionable instead of a generic upstream failure.
+    throw new OpsError(502, 'scheduler-rejected',
+      bounded(payload.error?.code ?? payload.code, 80) || null);
+  }
+  return payload.data;
+}
+
+const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/** Millisecond age of an upstream stamp; null when the stamp is unparsable. */
+function age(iso, nowMs) {
+  const at = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  return Number.isNaN(at) ? null : nowMs - at;
+}
+
+const within = (iso, nowMs, windowMs) => {
+  const ms = age(iso, nowMs);
+  return ms !== null && ms >= -windowMs && ms < windowMs;
+};
+
+/** The public application projection a node observation carries. */
+function appRows(observation) {
+  const rows = Array.isArray(observation?.data) ? observation.data : [];
+  return rows.slice(0, NODE_APPS_LIMIT).flatMap(row => {
+    const appId = typeof row?.app_id === 'string' ? row.app_id : '';
+    if (!APP_ID.test(appId)) return [];
+    return [{ appId, installationId: bounded(row.installed_app_id, 128),
+      version: bounded(row.version, 64), state: bounded(row.state, 40),
+      error: bounded(row.last_error, 200) || null }];
+  });
+}
+
+/** A node's VOS hardware/usage observation, or null when it was never read. */
+function metricsRow(observation) {
+  const data = observation?.data;
+  if (!data || typeof data !== 'object') return null;
+  return {
+    hostname: bounded(data.hostname, 128), deviceName: bounded(data.device_name, 128),
+    cpuLogicalCount: finite(data.cpu_logical_count), cpuUsedPercent: finite(data.cpu_used_percent),
+    memoryTotalMib: finite(data.memory_total_mib), memoryUsedMib: finite(data.memory_used_mib),
+    diskSizeBytes: finite(data.disk?.size_bytes), diskUsedBytes: finite(data.disk?.used_bytes),
+    observedAt: observation.observed_at ?? null, fresh: observation.fresh === true,
+    error: observation.error_code ?? null,
+  };
+}
+
+/**
+ * The first device name a machine reports.
+ *
+ * A schedulable node names its devices in its telemetry report and a ModelInfer
+ * node in its inventory sample; names are the only stable identity the
+ * scheduler keeps for them, so the first non-empty one represents the machine.
+ */
+function gpuName(view) {
+  for (const list of [view?.report?.gpus, view?.modelinfer_source?.node?.host_resources?.gpus]) {
+    if (!Array.isArray(list)) continue;
+    const name = list.map(gpu => typeof gpu?.name === 'string' ? gpu.name.trim() : '')
+      .find(value => value !== '');
+    if (name !== undefined) return name;
+  }
+  return null;
+}
+
+/**
+ * One row of the scheduler's merged node view.
+ *
+ * `health_state` is the scheduler's own verdict and passes through unchanged;
+ * only `status` needs a local reading because the scheduler exposes it as a
+ * heartbeat timestamp. A discovered node reports `observing`, which the panel
+ * marks as observation-only.
+ */
+function schedulerNodeRow(view, nowMs) {
+  const id = typeof view?.id === 'string' ? view.id : '';
+  if (!NODE_ID.test(id)) return null;
+  const local = id === LOCAL_NODE;
+  const apps = appRows(view.vos_applications);
+  const metrics = metricsRow(view.vos_metrics);
+  const heartbeat = typeof view.heartbeat === 'string' ? view.heartbeat : null;
+  // A failed collection still stores an observation (empty data plus an error
+  // code), so presence of the observation decides reporting, not a non-empty list.
+  const observed = view.vos_applications && typeof view.vos_applications === 'object'
+    ? view.vos_applications : null;
+  return {
+    id, local,
+    name: bounded(view.display_name ?? view.vos_node?.display_name ?? id, 200),
+    kind: local ? 'local' : id.startsWith('vos:') ? 'cluster' : id.startsWith('modelinfer:') ? 'application' : 'scheduler',
+    status: heartbeat === null ? 'unknown' : within(heartbeat, nowMs, NODE_HEARTBEAT_MS) ? 'online' : 'offline',
+    health: bounded(view.health_state, 40) || null,
+    managed: view.managed === true, managementEnabled: view.management_enabled === true,
+    draining: view.draining === true, heartbeat,
+    capacity: view.capacities ?? null,
+    observedAt: observed?.observed_at ?? metrics?.observedAt ?? null,
+    fresh: observed ? observed.fresh === true : metrics ? metrics.fresh : null,
+    reportFresh: within(view.report?.observed_at, nowMs, NODE_REPORT_MS),
+    apps: observed ? { count: observed.data?.length ?? apps.length, rows: apps,
+      observedAt: observed.observed_at ?? null,
+      fresh: observed.fresh === true, error: observed.error_code ?? null } : null,
+    metrics,
+    // A discovered machine reports architecture and device names through its
+    // telemetry report, never a deployment profile: profiles belong to the SSH
+    // register that chooses them.
+    arch: bounded(view.report?.arch, 64) || null,
+    gpuModel: bounded(gpuName(view), 128) || null,
+    profile: null,
+    capabilities: local ? [...LOCAL_CAPABILITIES] : metrics || observed ? ['apps', 'metrics'] : ['hardware'],
+  };
+}
+
+/** One row of the scheduler's SSH-managed compute nodes (the other machines). */
+function managedNodeRow(row) {
+  const id = typeof row?.id === 'string' ? row.id : '';
+  if (!NODE_ID.test(id)) return null;
+  return {
+    id, local: false, name: bounded(row.name ?? id, 200), kind: 'managed',
+    status: row.status === 'online' ? 'online' : row.status === 'offline' ? 'offline' : 'unknown',
+    health: null, managed: true, managementEnabled: true, draining: false,
+    heartbeat: null, capacity: null,
+    observedAt: typeof row.last_checked_at === 'string' ? row.last_checked_at : null,
+    fresh: null, reportFresh: null, apps: null, metrics: null,
+    arch: bounded(row.arch, 64) || null, gpuModel: bounded(row.gpu_model, 128) || null,
+    profile: bounded(row.profile, 64) || null,
+    detectedProfile: bounded(row.detected_profile, 64) || null,
+    compatibleProfiles: Array.isArray(row.compatible_profiles)
+      ? row.compatible_profiles.filter(value => typeof value === 'string').slice(0, 8) : [],
+    capabilities: ['hardware', 'rescan'],
+  };
+}
+
+/** The machine this gateway runs on, used whenever the scheduler has no answer. */
+function localNodeRow() {
+  return {
+    id: LOCAL_NODE, local: true, name: bounded(hostname(), 200), kind: 'local',
+    status: 'unknown', health: null, managed: false, managementEnabled: false, draining: false,
+    heartbeat: null, capacity: null, observedAt: null, fresh: null,
+    reportFresh: null, apps: null, metrics: null, arch: null, gpuModel: null, profile: null,
+    capabilities: [...LOCAL_CAPABILITIES],
+  };
+}
+
+/**
+ * One backend the scheduler deployed onto a machine.
+ *
+ * `state` and `last_error` are the scheduler's reconcile verdicts, passed
+ * through so a failure reads as a failure here.
+ */
+function backendRow(row) {
+  const id = typeof row?.id === 'string' ? row.id : '';
+  if (!BACKEND_ID.test(id)) return null;
+  return {
+    id, appId: bounded(row.app_id, 128), image: bounded(row.image, 300),
+    targetKind: bounded(row.target_kind, 32), targetId: bounded(row.target_id, 128),
+    profile: bounded(row.profile, 64) || null,
+    host: bounded(row.host, 128) || null,
+    port: Number.isInteger(row.host_port) ? row.host_port : null,
+    endpoint: typeof row.endpoint === 'string' ? row.endpoint : null,
+    state: bounded(row.state, 32), error: bounded(row.last_error, 200) || null,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+  };
+}
+
+/**
+ * The fields that must still match between confirmation and execution.
+ *
+ * Container and image targets are compared whole. Backend and node targets
+ * carry volatile facts (endpoint, heartbeat, observation stamps), so only the
+ * fields that decide eligibility are compared; comparing the rest would expire
+ * every confirmation for a reason the caller cannot act on.
+ */
+function snapshotKey(action, row) {
+  if (NODE_ACTIONS.has(action)) return JSON.stringify([row?.id, row?.managed, row?.draining]);
+  if (action === 'backend-start' || action === 'backend-stop') return JSON.stringify([row?.id, row?.state]);
+  return JSON.stringify(row);
+}
+
 export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, sessionExists = async () => false, browserSessionActive = () => false,
   userinfoUrl, readBody, respond, daemon = dockerJson,
-  daemonCall = engine, platform = vos, now = Date.now, audit = console.info }) {
+  daemonCall = engine, platform = vos, now = Date.now, audit = console.info,
+  scheduler = schedulerCall }) {
   const grants = new Map();
   const hostModes = new Map();
   const proposals = new Map();
   const grantTtl = 15 * 60 * 1000;
+  // The last node list each administrator successfully read. Only an
+  // unreachable scheduler falls back to it, and only for the same user.
+  const nodeCache = new Map();
 
   async function inventory(token, base) {
     const listing = await platform(token, '/v1000/app/list', undefined, base);
@@ -370,7 +612,224 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     }));
   }
 
+  /** The scheduler's own merged node view, without the SSH-managed list. */
+  async function nodeViews(token) {
+    const data = await scheduler(token, SCHEDULER_NODES);
+    const ms = now();
+    return (Array.isArray(data) ? data : [])
+      .map(view => schedulerNodeRow(view, ms)).filter(row => row !== null);
+  }
+
+  /** The SSH-managed compute machines, as rows the panel can render. */
+  async function managedNodes(token) {
+    const data = await scheduler(token, SCHEDULER_MANAGED_NODES);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    return items.map(managedNodeRow).filter(row => row !== null);
+  }
+
+  /**
+   * Record one machine list as the fallback for this administrator.
+   *
+   * This machine's application list is dropped first: it is re-read live on
+   * every answer, and a cached copy would show a deploy the scheduler has not
+   * observed yet as the authoritative one.
+   */
+  function rememberNodes(subject, rows, ms) {
+    if (typeof subject !== 'string' || subject === '') return;
+    if (nodeCache.size >= NODE_CACHE_LIMIT && !nodeCache.has(subject)) {
+      nodeCache.delete(nodeCache.keys().next().value);
+    }
+    nodeCache.set(subject, { at: ms, nodes: rows.map(row => row.local
+      ? { ...row, apps: null, observedAt: null, fresh: null } : row) });
+  }
+
+  /**
+   * Every machine this administrator may target.
+   *
+   * The scheduler merges its own nodes (this machine's agent, VOS cluster
+   * members, application-discovered nodes) and separately lists SSH-managed
+   * compute nodes; both are read so the selector matches what the platform says
+   * exists. The two lists form one snapshot, so a failed half falls back to the
+   * previous complete one instead of splicing a partial view together.
+   *
+   * A withdrawn session or role does not fall back: the last good list is for
+   * an unreachable scheduler, not for an account that may no longer see it.
+   * `source` and `error` tell the panel which of the three states it is reading.
+   */
+  async function catalog(token, base, subject) {
+    const ms = now();
+    let rows = null;
+    let error = null;
+    let cachedAt = null;
+    try {
+      // Both registers form one snapshot; reading them together keeps a slow
+      // scheduler from doubling the wait and keeps the two lists in one epoch.
+      const [views, managed] = await Promise.all([nodeViews(token), managedNodes(token)]);
+      rows = [...views, ...managed];
+      rememberNodes(subject, rows, ms);
+    } catch (failure) {
+      error = failure instanceof OpsError ? failure.message : 'scheduler-unavailable';
+      const fallback = error === 'sign-in-required' || error === 'scheduler-forbidden'
+        ? undefined : nodeCache.get(subject);
+      if (fallback) {
+        rows = fallback.nodes.map(row => ({ ...row, fresh: row.fresh === null ? null : false }));
+        cachedAt = fallback.at;
+      }
+    }
+    if (rows === null) rows = [localNodeRow()];
+    if (!rows.some(row => row.local)) rows.unshift(localNodeRow());
+    // This machine's own VOS answers for its application list; the scheduler's
+    // cached observation can lag behind a deploy or have failed outright.
+    const local = rows.find(row => row.local);
+    const apps = await inventory(token, base).catch(() => null);
+    if (local && apps) {
+      const observedAt = new Date(ms).toISOString();
+      local.apps = { count: apps.length, rows: apps.map(app => ({
+        appId: app.appId, version: app.version, state: app.state,
+        error: app.lastError || null })), observedAt, fresh: true, error: null };
+      local.observedAt = observedAt;
+      local.fresh = true;
+    }
+    return {
+      source: error === null ? 'scheduler' : cachedAt === null ? 'local-fallback' : 'cache',
+      error, stale: cachedAt !== null,
+      observedAt: new Date(cachedAt ?? ms).toISOString(), nodes: rows,
+    };
+  }
+
+  /**
+   * The compute backends the scheduler deploys and reconciles on the machines.
+   *
+   * The ledger answers the newest 200 records with no total, so a full page is
+   * reported as possibly truncated rather than silently presented as complete.
+   * `node` narrows the answer to one machine's instances; the flag stays, since
+   * a truncated ledger can hide that machine's rows too.
+   */
+  async function backends(token, nodeId = null) {
+    const data = await scheduler(token, SCHEDULER_BACKENDS);
+    const raw = Array.isArray(data?.items) ? data.items : [];
+    const items = raw.slice(0, BACKEND_LIMIT).map(backendRow).filter(row => row !== null);
+    const truncated = raw.length >= BACKEND_LIMIT;
+    return { items: nodeId === null ? items : items.filter(row => row.targetId === nodeId),
+      truncated, total: items.length };
+  }
+
+  /**
+   * Apply one node management action.
+   *
+   * `rescan` refreshes an SSH machine's hardware profile from its saved
+   * credentials; `drain`/`undrain` move a schedulable node out of and back into
+   * placement; `revoke` withdraws an external node's credentials. The scheduler
+   * applies each asynchronously, so the state it returns is what gets reported
+   * rather than the request having been sent.
+   */
+  async function runNodeAction(action, id, token) {
+    const node = `${SCHEDULER_NODES}/${encodeURIComponent(id)}`;
+    if (action === 'node-drain' || action === 'node-undrain') {
+      const data = await scheduler(token, `${node}/drain`, { draining: action === 'node-drain' });
+      return { state: data?.draining === true ? 'draining' : 'ready' };
+    }
+    if (action === 'node-revoke') {
+      const data = await scheduler(token, `${node}/revoke`, {});
+      return { state: bounded(data?.state, 40) || 'revoked' };
+    }
+    const data = await scheduler(token,
+      `${SCHEDULER_MANAGED_NODES}/${encodeURIComponent(id)}/rescan`, {});
+    return { state: bounded(data?.status, 32) || null, profile: bounded(data?.profile, 64) || null };
+  }
+
+  /**
+   * One machine's state, as register facts plus explicit findings.
+   *
+   * Everything here is data the scheduler already holds: its own verdicts, the
+   * observation stamps that say how old they are, and the backend ledger rows
+   * scoped to this machine. No container internals and no log bodies are
+   * reachable through it, which is why the Agent tool may read it whole.
+   */
+  async function nodeDiagnose(id, token, base, subject) {
+    if (!NODE_ID.test(id ?? '')) throw new OpsError(400, 'invalid-node');
+    const list = await catalog(token, base, subject);
+    const node = list.nodes.find(row => row.id === id);
+    if (!node) throw new OpsError(404, 'not-found');
+    const ledger = await backends(token, node.id).catch(() => null);
+    const apps = node.apps;
+    const counts = rows => rows.reduce((result, row) => {
+      const state = row.state === '' ? 'unknown' : row.state;
+      result[state] = (result[state] ?? 0) + 1;
+      return result;
+    }, {});
+    const failingApps = (apps?.rows ?? []).filter(app => app.state === 'failed' || app.error !== null);
+    const failingBackends = (ledger?.items ?? [])
+      .filter(row => ['failed', 'cleanup_failed'].includes(row.state));
+    const findings = [];
+    if (node.status === 'offline') findings.push({ code: 'node-offline', level: 'error' });
+    if (node.status === 'unknown') findings.push({ code: 'node-heartbeat-missing', level: 'warning' });
+    if (!node.managed) findings.push({ code: 'node-observation-only', level: 'info' });
+    if (node.draining) findings.push({ code: 'node-draining', level: 'info' });
+    if (node.fresh === false) findings.push({ code: 'node-observation-stale', level: 'warning' });
+    if (list.error !== null) findings.push({ code: 'catalog-degraded', level: 'warning', detail: list.error });
+    if (!node.capabilities.includes('apps')) findings.push({ code: 'node-apps-unavailable', level: 'info' });
+    if (ledger === null) findings.push({ code: 'backend-ledger-unavailable', level: 'warning' });
+    for (const app of failingApps) {
+      findings.push({ code: app.state === 'failed' ? 'app-failed' : 'app-error', level: 'error',
+        subject: app.appId, detail: app.error ?? null });
+    }
+    for (const row of failingBackends) {
+      findings.push({ code: row.state === 'failed' ? 'backend-failed' : 'backend-cleanup-failed',
+        level: 'error', subject: row.id, detail: row.error ?? null });
+    }
+    return {
+      node: { id: node.id, name: node.name, kind: node.kind, local: node.local,
+        status: node.status, health: node.health, managed: node.managed,
+        draining: node.draining, fresh: node.fresh, observedAt: node.observedAt,
+        heartbeat: node.heartbeat, arch: node.arch, gpuModel: node.gpuModel,
+        profile: node.profile, capacity: node.capacity, capabilities: node.capabilities },
+      catalog: { source: list.source, error: list.error, stale: list.stale,
+        observedAt: list.observedAt },
+      apps: apps === null ? null : { total: apps.count, byState: counts(apps.rows),
+        fresh: apps.fresh, observedAt: apps.observedAt, error: apps.error,
+        failing: failingApps.map(app => ({ appId: app.appId, version: app.version,
+          state: app.state, error: app.error })) },
+      backends: ledger === null ? null : { total: ledger.total, scoped: ledger.items.length,
+        truncated: ledger.truncated, byState: counts(ledger.items), failing: failingBackends },
+      findings,
+    };
+  }
+
   async function target(action, id, token, base, snapshot) {
+    if (action === 'backend-start' || action === 'backend-stop') {
+      if (!BACKEND_ID.test(id)) throw new OpsError(400, 'invalid-target');
+      const { items } = await backends(token);
+      const row = items.find(item => item.id === id);
+      if (!row) throw stale();
+      // Start accepts a stopped or failed instance; stop also retries a cleanup
+      // that could not be confirmed, which is the state a remote repair starts
+      // from. Anything else means the confirmation is out of date.
+      const eligible = action === 'backend-start' ? BACKEND_STARTABLE : BACKEND_STOPPABLE;
+      if (!eligible.includes(row.state)) throw stale();
+      return row;
+    }
+    if (NODE_ACTIONS.has(action)) {
+      // This machine is not a managed node; its repairs go through the
+      // container actions instead.
+      if (!NODE_ID.test(id) || id === LOCAL_NODE) throw new OpsError(400, 'invalid-target');
+      if (action === 'node-rescan') {
+        const row = (await managedNodes(token)).find(item => item.id === id);
+        if (!row) throw stale();
+        return row;
+      }
+      const view = (await nodeViews(token)).find(item => item.id === id);
+      // An observation-only node carries no schedulable budget, so the
+      // scheduler has nothing to drain or revoke; refuse where it would.
+      if (!view || view.local || view.managed !== true) throw stale();
+      if (action === 'node-drain' && view.draining) throw stale();
+      if (action === 'node-undrain' && !view.draining) throw stale();
+      // One stable, readable snapshot for the confirmation dialog; the applied
+      // changes are checked against the eligibility fields, not this copy.
+      return { id: view.id, name: view.name, kind: view.kind, status: view.status,
+        health: view.health, managed: view.managed, draining: view.draining,
+        profile: view.profile, capacity: view.capacity };
+    }
     if (HOST_ACTIONS.has(action)) {
       if (!CONTAINER_ID.test(id)) throw new OpsError(400, 'invalid-target');
       const container = (snapshot?.containers ?? await daemon('/containers/json?all=1')).find(c => c.Id === id);
@@ -504,10 +963,19 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       return;
     }
     const current = await target(action, id, token, base);
-    if (JSON.stringify(current) !== JSON.stringify(item)) throw stale();
+    if (snapshotKey(action, current) !== snapshotKey(action, item)) throw stale();
     audit('VOS ops attempt', JSON.stringify({ subject: session.subject, action, id }));
     let taskId = null;
-    if (action === 'restart') {
+    let state = null;
+    if (action === 'backend-start' || action === 'backend-stop') {
+      // The scheduler reconciles asynchronously; the re-read below reports the
+      // state it reached, so a request in flight is never reported as done.
+      await scheduler(token, `${SCHEDULER_BACKENDS}/${encodeURIComponent(id)}/` +
+        (action === 'backend-start' ? 'start' : 'stop'), {});
+      state = (await backends(token)).items.find(row => row.id === id)?.state ?? null;
+    } else if (NODE_ACTIONS.has(action)) {
+      state = (await runNodeAction(action, id, token)).state;
+    } else if (action === 'restart') {
       const task = await platform(token, '/v1000/app/restart_async', { app_id: id }, base);
       taskId = task.task_id;
     } else if (action === 'host-start') {
@@ -519,8 +987,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     } else {
       await removeTarget(action, id);
     }
-    audit('VOS ops accepted', JSON.stringify({ subject: session.subject, action, id, taskId }));
-    respond(res, 200, { action, id, taskId });
+    audit('VOS ops accepted', JSON.stringify({ subject: session.subject, action, id, taskId, state }));
+    respond(res, 200, { action, id, taskId, ...(state === null ? {} : { state }) });
   }
 
   async function handle(req, res, url, agent) {
@@ -530,6 +998,7 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       if (!agent && (req.headers['x-vh-ops'] !== '1' ||
           (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin'))) throw denied();
       if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs', '/app-logs', '/diagnose',
+          '/nodes', '/nodes/apps', '/nodes/diagnose', '/backends',
           '/host-mode', '/host-containers', '/host-logs', '/host-diagnose'].includes(path)) ||
         (req.method === 'POST' && path === '/proposal'))) throw denied();
       const session = agent?.session ?? sessionFor(req);
@@ -676,6 +1145,56 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         if (!agent) throw denied();
       } else if (!grant || grant.expires <= now() || grant.sid !== sid) throw denied();
 
+      if (path === '/nodes' && req.method === 'GET') {
+        respond(res, 200, await catalog(token, base, session.subject));
+        return;
+      }
+      if (path === '/nodes/apps' && req.method === 'GET') {
+        const id = url.searchParams.get('node') ?? LOCAL_NODE;
+        if (!NODE_ID.test(id)) throw new OpsError(400, 'invalid-node');
+        if (id === LOCAL_NODE) {
+          const apps = await inventory(token, base);
+          respond(res, 200, { node: id, local: true, source: 'vos', fresh: true,
+            observedAt: new Date(now()).toISOString(),
+            apps: apps.map(app => ({ appId: app.appId, version: app.version, state: app.state,
+              error: app.lastError || null })) });
+          return;
+        }
+        const node = (await catalog(token, base, session.subject)).nodes.find(row => row.id === id);
+        if (!node) throw new OpsError(404, 'not-found');
+        respond(res, 200, {
+          node: id, local: false, source: 'scheduler',
+          observedAt: node.apps?.observedAt ?? node.observedAt ?? null,
+          fresh: node.apps?.fresh === true,
+          error: node.apps ? node.apps.error : 'source-unavailable',
+          apps: node.apps?.rows ?? [],
+        });
+        return;
+      }
+      if (path === '/nodes/diagnose' && req.method === 'GET') {
+        respond(res, 200, await nodeDiagnose(url.searchParams.get('node') ?? LOCAL_NODE,
+          token, base, session.subject));
+        return;
+      }
+      if (path === '/backends' && req.method === 'GET') {
+        const nodeId = url.searchParams.get('node');
+        if (nodeId !== null && !NODE_ID.test(nodeId)) throw new OpsError(400, 'invalid-node');
+        let ledger = null;
+        let failure = null;
+        try {
+          ledger = await backends(token, nodeId);
+        } catch (error) {
+          // A refused or unreachable scheduler is reported, not folded into an
+          // empty register: "no backends" and "cannot read backends" differ.
+          failure = error instanceof OpsError ? error.message : 'scheduler-unavailable';
+        }
+        respond(res, 200, {
+          source: 'scheduler', available: ledger !== null, error: failure,
+          node: nodeId, truncated: ledger?.truncated === true, total: ledger?.total ?? 0,
+          backends: ledger?.items ?? [],
+        });
+        return;
+      }
       if (path === '/inventory' && req.method === 'GET') {
         const [apps, containers, images] = await Promise.all([
           inventory(token, base), daemon('/containers/json?all=1'), daemon('/images/json?all=1'),
@@ -692,6 +1211,9 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       }
       if (path === '/close' && req.method === 'POST') {
         grants.delete(grantKey);
+        // Closing the session also drops the fallback list: the next open reads
+        // the scheduler again instead of replaying what this session saw.
+        nodeCache.delete(session.subject);
         respond(res, 200, { closed: true });
         return;
       }
@@ -764,7 +1286,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       respond(res, 404, { error: 'not-found' });
     } catch (error) {
       const status = error instanceof OpsError ? error.status : 502;
-      respond(res, status, { error: error instanceof OpsError ? error.message : 'upstream-unavailable' });
+      respond(res, status, { error: error instanceof OpsError ? error.message : 'upstream-unavailable',
+        ...(error instanceof OpsError && error.detail ? { detail: error.detail } : {}) });
     }
   }
   return handle;
