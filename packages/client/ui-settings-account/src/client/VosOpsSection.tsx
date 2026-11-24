@@ -46,6 +46,15 @@ const en = {
   schedulerForbidden: 'V-Scheduler does not accept this account as its administrator.',
   schedulerFailed: 'V-Scheduler refused the request.',
 
+  issues: 'Problems', issuesNone: 'Nothing needs attention right now.',
+  issueErrors: 'Errors', issueWarnings: 'Warnings',
+  issuesDegraded: 'Some registers could not be read; they are listed above.',
+  deployments: 'Inference deployments', deploymentHealth: 'Health', deploymentModel: 'Served model',
+  deploymentNode: 'Machine', deploymentRouter: 'Router',
+  deploymentNone: 'ModelInfer returned no inference deployments.',
+  deploymentUnavailable: 'Inference deployments cannot be read right now.',
+  deploymentStart: 'Start deployment', deploymentStop: 'Stop deployment',
+
   skip: 'Skip', close: 'End diagnostics', tagged: 'Tagged images with no container references',
 } satisfies Record<string, string>
 const zh: Record<keyof typeof en, string> = {
@@ -84,6 +93,8 @@ const zh: Record<keyof typeof en, string> = {
   backendError: '最近错误', backendNone: 'V-Scheduler 未登记任何应用后端。',
   backendUnavailable: 'V-Scheduler 不可达，后端状态未知。',
   backendStart: '启动后端', backendStop: '停止后端',
+  backendContainer: '容器', backendProbe: '探活', backendDiagnose: '诊断该后端',
+  closeFacts: '关闭详情',
   backendTruncated: '台账只返回最新的 200 条，更早的实例可能缺失。',
   nodeStaleData: 'V-Scheduler 暂不可达，显示上次成功返回的机器清单。',
   nodeObservationOnly: '仅观察',
@@ -92,6 +103,15 @@ const zh: Record<keyof typeof en, string> = {
   nodeRevoke: '撤销该机器',
   schedulerForbidden: 'V-Scheduler 不认可当前账号为管理员。',
   schedulerFailed: 'V-Scheduler 拒绝了该请求。',
+
+  issues: '问题', issuesNone: '当前没有需要处理的问题。',
+  issueErrors: '错误', issueWarnings: '警告',
+  issuesDegraded: '有部分台账读不到，已在上方列出。',
+  deployments: '推理部署', deploymentHealth: '健康', deploymentModel: '服务模型',
+  deploymentNode: '所在机器', deploymentRouter: '路由登记',
+  deploymentNone: 'ModelInfer 未返回任何推理部署。',
+  deploymentUnavailable: '推理部署当前读不到。',
+  deploymentStart: '启动部署', deploymentStop: '停止部署',
 
   skip: '跳过', close: '结束诊断', tagged: '没有容器引用的带标签镜像',
 }
@@ -104,6 +124,7 @@ const hostLabels = {
 } as const
 type Action = 'restart' | 'stop-container' | 'remove-container' | 'remove-image'
   | 'backend-start' | 'backend-stop'
+  | 'deployment-start' | 'deployment-stop'
   | 'node-rescan' | 'node-drain' | 'node-undrain' | 'node-revoke' | keyof typeof hostLabels
 type Inventory = {
   apps: { appId: string; version: string; state: string; lastError: string }[]
@@ -139,6 +160,9 @@ type NodeRow = {
   local: boolean
   kind: string
   managed: boolean
+  /** The SSH register's own id when the scheduler view was merged with its
+      managed record; deployments and backends name their machine by it. */
+  managedId?: string
   status: string
   health: string | null
   draining: boolean
@@ -169,6 +193,8 @@ type BackendRow = {
   state: string
   error: string | null
   updatedAt: string | null
+  container: { id: string; image: string; state: string; status: string } | null
+  probe: { ok: boolean; status: number | null; ms: number; error: string | null } | null
 }
 type Backends = {
   available: boolean
@@ -177,6 +203,51 @@ type Backends = {
   truncated: boolean
   total: number
   backends: BackendRow[]
+}
+type DeploymentNode = { id: string; name: string; host: string | null; status: string | null; role: string | null }
+type DeploymentRow = {
+  id: string
+  name: string
+  card: string | null
+  model: string | null
+  engine: string | null
+  state: string
+  desiredState: string | null
+  health: string | null
+  head: DeploymentNode | null
+  nodes: DeploymentNode[]
+  port: number | null
+  router: string | null
+  error: string | null
+  routerError: string | null
+  updatedAt: string | null
+}
+type Deployments = {
+  available: boolean
+  error: string | null
+  truncated: boolean
+  total: number
+  deployments: DeploymentRow[]
+}
+type Issue = {
+  level: 'error' | 'warning'
+  kind: string
+  code: string
+  detail: string | null
+  subject: string | null
+  node: { id: string; name: string } | null
+}
+type Issues = {
+  generatedAt: string
+  counts: { error: number; warning: number }
+  issues: Issue[]
+  machines: number
+  deploymentRows: DeploymentRow[]
+  sources: {
+    catalog: { available: boolean; error: string | null; stale: boolean }
+    backends: { available: boolean; truncated?: boolean; error?: string }
+    deployments: { available: boolean; total?: number; truncated?: boolean; error?: string }
+  }
 }
 type Finding = { code: string; level: string; subject?: string; detail?: string | null }
 type NodeDiagnosis = {
@@ -206,6 +277,7 @@ const actionLabels: Record<Action, VosOpsKey> = {
   restart: 'restart', 'stop-container': 'stopContainer',
   'remove-container': 'removeContainer', 'remove-image': 'removeImage',
   'backend-start': 'backendStart', 'backend-stop': 'backendStop',
+  'deployment-start': 'deploymentStart', 'deployment-stop': 'deploymentStop',
   'node-rescan': 'nodeRescan', 'node-drain': 'nodeDrain',
   'node-undrain': 'nodeUndrain', 'node-revoke': 'nodeRevoke',
 }
@@ -233,7 +305,8 @@ async function request<T>(path: string, grant?: string, body?: object): Promise<
     if (failure?.error === 'confirmation-unavailable') throw new Error('confirmationUnavailable')
     // The scheduler refusing this account is not an expired VOS session, and
     // clearing the grant would send the administrator after the wrong fix.
-    if (failure?.error === 'scheduler-forbidden' || failure?.error === 'scheduler-rejected') {
+    if (failure?.error === 'scheduler-forbidden' || failure?.error === 'scheduler-rejected'
+        || failure?.error === 'inference-rejected') {
       throw new Error(failure.error === 'scheduler-forbidden' ? 'schedulerForbidden' : 'schedulerFailed')
     }
     throw new Error(String(response.status))
@@ -256,6 +329,10 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
   const [nodeApps, setNodeApps] = useState<NodeApps>()
   const [nodeNote, setNodeNote] = useState<VosOpsKey>()
   const [backends, setBackends] = useState<Backends>()
+  const [deployments, setDeployments] = useState<Deployments>()
+  const [issues, setIssues] = useState<Issues>()
+  const [backendLog, setBackendLog] = useState<{ id: string; text: string }>()
+  const [backendFacts, setBackendFacts] = useState<unknown>()
   const [diagnosis, setDiagnosis] = useState<NodeDiagnosis>()
   const run = async (operation: () => Promise<void>) => {
     setBusy(true)
@@ -273,6 +350,8 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
         setPreview(undefined)
         setLog(undefined)
         setAppStatus(undefined)
+        setDeployments(undefined)
+        setIssues(undefined)
         setMessage('forbidden')
       } else {
         setMessage(status === 'targetChanged' || status === 'imageDeleteConflict' ? status : 'failed')
@@ -286,11 +365,26 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
     setBackends(await request<Backends>('backends' + query, value).catch(() => undefined))
   }
   const loadMachines = async (value: string, id: string) => {
-    const catalog = await request<Catalog>('nodes', value)
+    const query = id === 'local' ? '' : '?node=' + encodeURIComponent(id)
+    // One round trip each, in parallel: the panel renders these sections
+    // together, and the problem list already carries the deployment rows.
+    const [catalog, ledger, report] = await Promise.all([
+      request<Catalog>('nodes', value),
+      request<Backends>('backends' + query, value).catch(() => undefined),
+      request<Issues>('issues', value).catch(() => undefined),
+    ])
     setNodes(catalog.nodes)
     setNodeNote(catalog.stale ? 'nodeStaleData'
       : catalog.source === 'local-fallback' ? 'nodesNone' : undefined)
-    await loadBackends(value, id)
+    setBackends(ledger)
+    setIssues(report)
+    setDeployments(report && {
+      available: report.sources.deployments.available,
+      error: report.sources.deployments.error ?? null,
+      truncated: report.sources.deployments.truncated === true,
+      total: report.sources.deployments.total ?? 0,
+      deployments: report.deploymentRows ?? [],
+    })
   }
   const authorize = () => run(async () => {
     const result = await request<{ grant: string }>('authorize', undefined, {})
@@ -318,6 +412,17 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       return
     }
     setNodeApps(await request<NodeApps>('nodes/apps?node=' + encodeURIComponent(id), grant))
+  })
+  // A backend that runs on this machine has its own container, so its logs and
+  // exit facts are readable here; one on another machine answers not-on-this-machine.
+  const readBackendLogs = (id: string) => run(async () => {
+    setBackendLog(undefined)
+    setBackendLog(await request<{ id: string; text: string }>(
+      'backend-logs?id=' + encodeURIComponent(id), grant))
+  })
+  const diagnoseBackend = (id: string) => run(async () => {
+    setBackendFacts(undefined)
+    setBackendFacts(await request('backend-diagnose?id=' + encodeURIComponent(id), grant))
   })
   const diagnoseNode = () => run(async () => {
     setDiagnosis(undefined)
@@ -358,6 +463,12 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       setLog(undefined)
       setAppStatus(undefined)
       setPreview(undefined)
+      setDeployments(undefined)
+      setIssues(undefined)
+      setBackends(undefined)
+      setBackendLog(undefined)
+      setBackendFacts(undefined)
+      setNodes(undefined)
     }))}
     {busy && <p role="status">{t('busy')}</p>}
     {message && <p role="status">{t(message)} {task && <code>{task}</code>}</p>}
@@ -367,6 +478,43 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
       <pre style={pre}>{JSON.stringify(preview.target, null, 2)}</pre>
       {button('confirm', () => void execute(preview))}{' '}
       {button('skip', () => setPreview(undefined))}
+    </section>}
+    {issues && <section aria-label={t('issues')}>
+      <h3>{t('issues')} · {t('issueErrors')} {issues.counts.error} · {t('issueWarnings')} {issues.counts.warning}</h3>
+      {/* A register that could not be read is part of the answer, not a reason
+          to claim the deployment is clean. */}
+      {Object.values(issues.sources).some(source => !source.available) &&
+        <p role="status">{t('issuesDegraded')}</p>}
+      {!issues.issues.length && <p>{t('issuesNone')}</p>}
+      <ul>{issues.issues.map((issue, index) => <li key={index}>
+        <code>{issue.code}</code> · {issue.level}
+        {issue.node && <> · {issue.node.name}</>}
+        {issue.subject && <> · <code>{issue.subject}</code></>}
+        {issue.detail && <> · {issue.detail}</>}
+      </li>)}</ul>
+    </section>}
+    {deployments && <section aria-label={t('deployments')}>
+      <h3>{t('deployments')}</h3>
+      {!deployments.available && <p role="status">{t('deploymentUnavailable')}
+        {deployments.error && <> · <code>{deployments.error}</code></>}</p>}
+      {deployments.available && deployments.truncated && <p role="status">{t('backendTruncated')}</p>}
+      {deployments.available && deployments.deployments.length === 0 && <p>{t('deploymentNone')}</p>}
+      <ul>{deployments.deployments.map(row => <li key={row.id}>
+        <strong>{row.name}</strong> · {row.state}
+        {row.health && <>{' · '}{t('deploymentHealth')} {row.health}</>}
+        {row.model && <>{' · '}{t('deploymentModel')} {row.model}</>}
+        {row.head && <>{' · '}{t('deploymentNode')} {row.head.name}{row.head.host ? ` (${row.head.host})` : ''}</>}
+        {row.router && <>{' · '}{t('deploymentRouter')} {row.router}</>}
+        {row.error && <>{' · '}<code>{row.error}</code></>}
+        {row.updatedAt && <>{' · '}{t('nodeObserved')} <code>{row.updatedAt}</code></>}
+        {/* Repair eligibility mirrors the backend register: start a stopped or
+            failed deployment, stop one that is serving or degraded. The gateway
+            re-reads the state when the confirmation is applied. */}
+        {' '}{['stopped', 'failed'].includes(row.state) &&
+          button('deploymentStart', () => prepare('deployment-start', row.id))}
+        {['running', 'degraded'].includes(row.state) &&
+          button('deploymentStop', () => prepare('deployment-stop', row.id))}
+      </li>)}</ul>
     </section>}
     {nodes && <section aria-label={t('nodes')}>
       <h3>{t('nodes')}</h3>

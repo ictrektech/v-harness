@@ -22,7 +22,8 @@ const HOST_ACTIONS = new Map([
 const CLEANUP_ACTIONS = new Set(['remove-container', 'host-remove', 'remove-image']);
 const MAX_CLEANUP_TARGETS = 20;
 const ACTIONS = new Set(['restart', 'stop-container', 'remove-container', 'remove-image',
-  'backend-start', 'backend-stop', 'node-rescan', 'node-drain', 'node-undrain', 'node-revoke']);
+  'backend-start', 'backend-stop', 'deployment-start', 'deployment-stop',
+  'node-rescan', 'node-drain', 'node-undrain', 'node-revoke']);
 const LOG_QUERY = 'stdout=1&stderr=1&timestamps=1&tail=';
 const LOG_DEFAULT_TAIL = 150;
 const LOG_SCAN_TAIL = 1000;
@@ -48,6 +49,12 @@ const ERROR_LINE = /\b(?:error|fatal|panic|exception|traceback|failed|failure)\b
 const SCHEDULER_NODES = '/scheduler/api/v1/nodes';
 const SCHEDULER_MANAGED_NODES = '/scheduler/api/v1/managed-nodes';
 const SCHEDULER_BACKENDS = '/scheduler/api/v1/backend-deployments';
+// Inference deployments are owned by the ModelInfer application, not by the
+// scheduler. The scheduler already forwards that application's API to its
+// administrators under this prefix, so reading them needs no new endpoint.
+const SCHEDULER_INFERENCE = '/scheduler/api/v1/inference/runtime';
+const DEPLOYMENT_LIMIT = 100;
+const DEPLOYMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SCHEDULER_ORIGIN = process.env.V_SCHEDULER_URL ?? 'http://v-scheduler:8080';
 const NODE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const BACKEND_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -66,6 +73,15 @@ const BACKEND_LIMIT = 200;
 // remote failure this panel exists to repair.
 const BACKEND_STARTABLE = ['stopped', 'failed'];
 const BACKEND_STOPPABLE = ['running', 'pending', 'cleanup_failed'];
+// A reachability read: short, bounded, and only ever against a port the
+// scheduler's own register just named on this machine.
+const PROBE_TIMEOUT_MS = 2500;
+const PROBE_LIMIT = 40;
+// ModelInfer's own reconcile verdicts: start accepts a stopped or failed
+// deployment, stop takes one that is actually serving (or degraded and worth
+// taking down before it wedges the machine).
+const DEPLOYMENT_STARTABLE = ['stopped', 'failed'];
+const DEPLOYMENT_STOPPABLE = ['running', 'degraded'];
 // The last node list that succeeded, per VOS user; a failed read falls back to
 // it instead of claiming every other machine disappeared.
 const NODE_CACHE_LIMIT = 64;
@@ -420,6 +436,35 @@ async function schedulerCall(token, path, body) {
   return payload.data;
 }
 
+/** One call against the ModelInfer register, riding the scheduler's runtime
+ * proxy. The proxy passes the register's answer through unchanged, and
+ * ModelInfer answers a numeric envelope (`{ code: 0, ... }`, business codes
+ * like 20702 on a refusal) — unlike the scheduler's own string-code envelope —
+ * so this never reuses `schedulerCall`. Writes are POSTs: the register only
+ * accepts POST for start and stop. */
+async function inferenceCall(token, path, body) {
+  const response = await fetch(new URL(SCHEDULER_INFERENCE + path, SCHEDULER_ORIGIN), {
+    redirect: 'error',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json',
+      ...(body ? { 'content-type': 'application/json' } : {}) },
+    method: body ? 'POST' : 'GET',
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(body ? 20000 : 8000),
+  }).catch(error => {
+    throw new OpsError(502, 'scheduler-unavailable', bounded(error?.cause?.code ?? error?.message, 120) || null);
+  });
+  const payload = await response.json().catch(() => null);
+  if (response.status === 401) throw new OpsError(401, 'sign-in-required');
+  if (response.status === 403) throw new OpsError(403, 'scheduler-forbidden');
+  if (response.status === 404) throw new OpsError(404, 'not-found');
+  if (payload && (payload.code === 0 || payload.code === 'OK')) return payload.data;
+  // A refusal carries the register's own business code and message, so it
+  // stays actionable instead of reading as a generic upstream failure.
+  throw new OpsError(502, 'inference-rejected',
+    bounded(payload ? `${payload.code ?? ''} ${payload.msg ?? payload.error?.message ?? ''}`.trim()
+      : `HTTP ${response.status}`, 120) || null);
+}
+
 const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
 
 /** Millisecond age of an upstream stamp; null when the stamp is unparsable. */
@@ -541,6 +586,33 @@ function managedNodeRow(row) {
   };
 }
 
+/** One row per machine, out of the scheduler's node view and the SSH-managed
+ * register. Both registers can describe the same physical machine — the
+ * scheduler knows it by its cluster identity, the managed register by its SSH
+ * record — so rows sharing a name merge: the scheduler view keeps carrying
+ * status, health and applications while the managed record contributes the
+ * hardware profile and rescan. A machine only the managed register knows stays
+ * its own row. */
+function mergeMachines(views, managed) {
+  const byName = new Map(views.map(view => [view.name, view]));
+  const unmatched = managed.flatMap(machine => {
+    const twin = byName.get(machine.name);
+    if (!twin) return [machine];
+    twin.managed ||= machine.managed === true;
+    // The SSH register's own id stays beside the view id: deployments and
+    // backends name their machine by it, and rescan targets it.
+    twin.managedId = machine.id;
+    twin.profile ??= machine.profile;
+    twin.arch ??= machine.arch;
+    twin.gpuModel ??= machine.gpuModel;
+    twin.observedAt ??= machine.observedAt;
+    if (machine.compatibleProfiles?.length) twin.compatibleProfiles = machine.compatibleProfiles;
+    twin.capabilities = [...new Set([...twin.capabilities, ...machine.capabilities])];
+    return [];
+  });
+  return [...views, ...unmatched];
+}
+
 /** The machine this gateway runs on, used whenever the scheduler has no answer. */
 function localNodeRow() {
   return {
@@ -574,6 +646,42 @@ function backendRow(row) {
 }
 
 /**
+ * One inference deployment the ModelInfer application reconciles.
+ *
+ * `state` and `health_status` are that application's own verdicts and pass
+ * through unchanged. The head machine is named so a deployment can be joined to
+ * the machine list instead of showing a bare node ID; a deployment is never a
+ * scheduler node and is never offered drain or revoke actions.
+ */
+function deploymentRow(row) {
+  const id = typeof row?.id === 'string' ? row.id : '';
+  if (!DEPLOYMENT_ID.test(id)) return null;
+  const nodes = (Array.isArray(row.nodes) ? row.nodes : []).flatMap(node => {
+    const nodeId = typeof node?.id === 'string' ? node.id : '';
+    if (!NODE_ID.test(nodeId)) return [];
+    return [{ id: nodeId, name: bounded(node.name, 128) || nodeId,
+      host: bounded(node.host, 64) || null, status: bounded(node.status, 32) || null,
+      role: bounded(node.role, 16) || null }];
+  });
+  const head = nodes.find(node => node.role === 'head') ?? nodes[0] ?? null;
+  return {
+    id, name: bounded(row.name, 200) || id,
+    card: bounded(row.card_name, 200) || null,
+    model: bounded(row.serve_model_name, 200) || bounded(row.weight_id, 300) || null,
+    engine: bounded(row.inference_engine, 64) || null,
+    state: bounded(row.state, 40) || 'unknown',
+    desiredState: bounded(row.desired_state, 40) || null,
+    health: bounded(row.health_status, 40) || null,
+    head, nodes: nodes.slice(0, 16),
+    port: Number.isInteger(row.serve_port) ? row.serve_port : null,
+    router: bounded(row.vrouter_state, 40) || null,
+    error: bounded(row.last_error, 240) || null,
+    routerError: bounded(row.vrouter_last_error, 240) || null,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+  };
+}
+
+/**
  * The fields that must still match between confirmation and execution.
  *
  * Container and image targets are compared whole. Backend and node targets
@@ -584,13 +692,14 @@ function backendRow(row) {
 function snapshotKey(action, row) {
   if (NODE_ACTIONS.has(action)) return JSON.stringify([row?.id, row?.managed, row?.draining]);
   if (action === 'backend-start' || action === 'backend-stop') return JSON.stringify([row?.id, row?.state]);
+  if (action === 'deployment-start' || action === 'deployment-stop') return JSON.stringify([row?.id, row?.state]);
   return JSON.stringify(row);
 }
 
 export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, sessionExists = async () => false, browserSessionActive = () => false,
   userinfoUrl, readBody, respond, daemon = dockerJson,
   daemonCall = engine, platform = vos, now = Date.now, audit = console.info,
-  scheduler = schedulerCall }) {
+  scheduler = schedulerCall, inference = inferenceCall, probe = probePort }) {
   const grants = new Map();
   const hostModes = new Map();
   const proposals = new Map();
@@ -665,7 +774,7 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       // Both registers form one snapshot; reading them together keeps a slow
       // scheduler from doubling the wait and keeps the two lists in one epoch.
       const [views, managed] = await Promise.all([nodeViews(token), managedNodes(token)]);
-      rows = [...views, ...managed];
+      rows = mergeMachines(views, managed);
       rememberNodes(subject, rows, ms);
     } catch (failure) {
       error = failure instanceof OpsError ? failure.message : 'scheduler-unavailable';
@@ -712,6 +821,153 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     const truncated = raw.length >= BACKEND_LIMIT;
     return { items: nodeId === null ? items : items.filter(row => row.targetId === nodeId),
       truncated, total: items.length };
+  }
+
+  /** Every inference deployment, with its placement and reconcile verdicts. */
+  async function deployments(token) {
+    const data = await inference(token,
+      `/deployments?state=all&page_num=1&page_size=${DEPLOYMENT_LIMIT}`);
+    const raw = Array.isArray(data?.data) ? data.data : [];
+    const items = raw.slice(0, DEPLOYMENT_LIMIT).map(deploymentRow).filter(row => row !== null);
+    const total = Number.isInteger(data?.total) ? data.total : items.length;
+    return { items, total, truncated: total > items.length };
+  }
+
+  /**
+   * Everything currently worth looking at, as one list.
+   *
+   * Each section answers for one register; an administrator deciding where to
+   * start needs them merged. Only error and warning facts are listed: an
+   * intentional stop, a draining machine or a machine that never reports
+   * applications are states, not problems. A register that cannot be read is
+   * listed itself, so a blind spot never reads as "all clear".
+   */
+  async function issues(token, base, subject) {
+    const [machines, ledger, served] = await Promise.allSettled([
+      catalog(token, base, subject), backends(token), deployments(token),
+    ]);
+    const list = machines.status === 'fulfilled' ? machines.value : null;
+    const nodes = list?.nodes ?? [];
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    // A merged machine row carries the scheduler view's id; deployments and
+    // backends name their machine by the SSH register's id, so both resolve.
+    for (const node of nodes) {
+      if (node.managedId && !byId.has(node.managedId)) byId.set(node.managedId, node);
+    }
+    const found = [];
+    const add = (level, kind, code, detail = null, node = null, target = null) => {
+      found.push({ level, kind, code, detail, subject: target,
+        node: node ? { id: node.id, name: node.name } : null });
+    };
+    const reason = failure => failure instanceof OpsError ? failure.message : 'scheduler-unavailable';
+
+    if (list === null) add('warning', 'catalog', 'catalog-unavailable', reason(machines.reason));
+    else {
+      if (list.error !== null) add('warning', 'catalog', 'catalog-degraded', list.error);
+      if (list.stale) add('warning', 'catalog', 'catalog-stale', list.observedAt);
+      for (const node of nodes) {
+        if (node.status === 'offline') add('error', 'node', 'node-offline', null, node);
+        else if (node.status === 'unknown') add('warning', 'node', 'node-heartbeat-missing', null, node);
+        if (node.fresh === false) {
+          add('warning', 'node', 'node-observation-stale',
+            node.apps?.observedAt ?? node.observedAt, node);
+        }
+        if (node.apps?.error) {
+          add('warning', 'app', 'node-observation-error', node.apps.error, node);
+        }
+        for (const app of node.apps?.rows ?? []) {
+          if (app.state === 'failed') add('error', 'app', 'app-failed', app.error, node, app.appId);
+          // An application the platform still reports as installed can carry a
+          // last_error from an earlier failure. That is worth a warning, not an
+          // error that says the application is broken now.
+          else if (app.error) {
+            add(app.state === 'installed' ? 'warning' : 'error', 'app', 'app-error',
+              app.error, node, app.appId);
+          }
+        }
+      }
+    }
+
+    const listed = ledger.status === 'fulfilled' ? ledger.value : null;
+    // This machine's own container facts and a port probe, when the backend
+    // happens to run here. The register alone cannot see either.
+    const register = listed ? await enrichedBackends(token, listed).catch(() => listed) : null;
+    if (register === null) add('warning', 'backend', 'backends-unavailable', reason(ledger.reason));
+    else {
+      for (const backend of register.items) {
+        const node = byId.get(backend.targetId) ?? null;
+        if (backend.state === 'failed') {
+          add('error', 'backend', 'backend-failed', backend.error, node, backend.appId);
+        } else if (backend.state === 'cleanup_failed') {
+          add('error', 'backend', 'backend-cleanup-failed', backend.error, node, backend.appId);
+        } else if (backend.state === 'running' && backend.container
+            && backend.container.state !== 'running') {
+          // The register still calls it running while its own container here
+          // has stopped: a divergence only the machine can report.
+          add('error', 'backend', 'backend-container-stopped',
+            backend.container.status, node, backend.appId);
+        } else if (backend.state === 'running' && backend.probe) {
+          const probe = backend.probe;
+          if (probe.error === 'unauthorized') {
+            add('warning', 'backend', 'backend-unauthorized', null, node, backend.appId);
+          } else if (probe.status !== null && probe.status >= 500) {
+            add('error', 'backend', 'backend-error', `http-${probe.status}`, node, backend.appId);
+          } else if (!probe.ok) {
+            add('error', 'backend', 'backend-unreachable', probe.error, node, backend.appId);
+          }
+        }
+      }
+    }
+
+    const deployRegister = served.status === 'fulfilled' ? served.value : null;
+    if (deployRegister === null) {
+      add('warning', 'deployment', 'deployments-unavailable', reason(served.reason));
+    } else {
+      for (const deployment of deployRegister.items) {
+        const node = deployment.head ? byId.get(deployment.head.id) ?? null : null;
+        const detail = deployment.error ?? deployment.routerError
+          ?? (deployment.head ? `${deployment.head.name} · ${deployment.health ?? deployment.state}` : null);
+        if (deployment.state === 'failed') {
+          add('error', 'deployment', 'deployment-failed', detail, node, deployment.name);
+        } else if (deployment.state === 'stopped' && deployment.desiredState === 'running') {
+          // Only a deployment the register still wants serving is a problem; a
+          // stop an administrator asked for is a state, and an unknown desired
+          // state is not evidence of one.
+          add('warning', 'deployment', 'deployment-stopped', detail, node, deployment.name);
+        } else if (deployment.state === 'running' && deployment.health
+            && deployment.health !== 'healthy') {
+          add('warning', 'deployment', 'deployment-unhealthy', detail, node, deployment.name);
+        } else if (deployment.state === 'running' && deployment.router
+            && deployment.router !== 'registered') {
+          add('warning', 'deployment', 'deployment-router-unregistered', detail, node, deployment.name);
+        }
+      }
+    }
+
+    const order = { error: 0, warning: 1 };
+    return {
+      generatedAt: new Date(now()).toISOString(),
+      counts: {
+        error: found.filter(row => row.level === 'error').length,
+        warning: found.filter(row => row.level === 'warning').length,
+      },
+      issues: found.sort((a, b) => order[a.level] - order[b.level] || a.code.localeCompare(b.code)),
+      machines: nodes.length,
+      deployments: deployRegister === null ? null
+        : { total: deployRegister.total, truncated: deployRegister.truncated },
+      // The rows this answer already read: the panel renders the deployment
+      // list from here instead of asking for the same register a second time.
+      deploymentRows: deployRegister?.items ?? [],
+      sources: {
+        catalog: list ? { available: true, error: list.error, stale: list.stale }
+          : { available: false, error: reason(machines.reason) },
+        backends: register ? { available: true, truncated: register.truncated }
+          : { available: false, error: reason(ledger.reason) },
+        deployments: deployRegister
+          ? { available: true, total: deployRegister.total, truncated: deployRegister.truncated }
+          : { available: false, error: reason(served.reason) },
+      },
+    };
   }
 
   /**
@@ -809,12 +1065,35 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       if (!eligible.includes(row.state)) throw stale();
       return row;
     }
+    if (action === 'deployment-start' || action === 'deployment-stop') {
+      if (!DEPLOYMENT_ID.test(id)) throw new OpsError(400, 'invalid-target');
+      const { items } = await deployments(token);
+      const row = items.find(item => item.id === id);
+      if (!row) throw stale();
+      // Same eligibility contract as backends: the state is re-read when the
+      // confirmation is applied, so a stale dialog cannot start a running
+      // deployment or stop a stopped one.
+      const eligible = action === 'deployment-start' ? DEPLOYMENT_STARTABLE : DEPLOYMENT_STOPPABLE;
+      if (!eligible.includes(row.state)) throw stale();
+      // One readable snapshot for the confirmation dialog; never the serve
+      // settings, and no SSH field of the head machine.
+      return { id: row.id, name: row.name, model: row.model, state: row.state,
+        health: row.health, head: row.head?.name ?? null };
+    }
     if (NODE_ACTIONS.has(action)) {
       // This machine is not a managed node; its repairs go through the
       // container actions instead.
       if (!NODE_ID.test(id) || id === LOCAL_NODE) throw new OpsError(400, 'invalid-target');
       if (action === 'node-rescan') {
-        const row = (await managedNodes(token)).find(item => item.id === id);
+        const rows = await managedNodes(token);
+        let row = rows.find(item => item.id === id);
+        if (!row) {
+          // A merged machine row carries the scheduler view's id, so the view
+          // id may name it; the register is found by the same name the merge
+          // joined on.
+          const view = (await nodeViews(token)).find(item => item.id === id);
+          row = view ? rows.find(item => item.name === view.name) : undefined;
+        }
         if (!row) throw stale();
         return row;
       }
@@ -898,10 +1177,12 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
    * never appear in application logs (exit code, OOM, restart count, health
    * checks) plus a collapsed error-line summary. No raw log body is returned.
    */
-  async function diagnose(id) {
-    if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
-    const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
-    if (!container || !visible(container)) throw new OpsError(404, 'not-found');
+  /**
+   * State facts for one container: exit code, OOM, restarts, health checks and
+   * an error-line summary. The caller decides which containers may be read.
+   */
+  async function containerFacts(container) {
+    const id = container.Id;
     let inspect;
     try {
       inspect = JSON.parse(await daemonCall('GET', `/containers/${id}/json`));
@@ -941,6 +1222,101 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
     };
   }
 
+  async function diagnose(id) {
+    if (!CONTAINER_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
+    const container = (await daemon('/containers/json?all=1')).find(c => c.Id === id);
+    if (!container || !visible(container)) throw new OpsError(404, 'not-found');
+    return containerFacts(container);
+  }
+
+  /**
+   * The container one backend deployment runs in, when its machine is this one.
+   *
+   * The node manager names instances `vs-backend-<deployment id>`, so the
+   * scheduler's own record authorises the lookup: no caller-supplied container
+   * name ever reaches Docker, and a backend on another machine simply has no
+   * container here.
+   */
+  async function backendContainer(token, id) {
+    if (!BACKEND_ID.test(id ?? '')) throw new OpsError(400, 'invalid-target');
+    const row = (await backends(token)).items.find(item => item.id === id);
+    if (!row) throw new OpsError(404, 'not-found');
+    const name = `/vs-backend-${id}`;
+    const container = (await daemon('/containers/json?all=1'))
+      .find(c => (c.Names ?? []).some(value => value === name)) ?? null;
+    return { row, container };
+  }
+
+  /** One machine's own backend container: exit code, OOM, restarts, health. */
+  async function backendDiagnose(token, id) {
+    const { container } = await backendContainer(token, id);
+    if (!container) throw new OpsError(404, 'not-on-this-machine');
+    return { ...(await containerFacts(container)), local: true };
+  }
+
+  /** Recent output of one backend container that runs on this machine. */
+  async function backendLogs(token, id, url) {
+    const { container } = await backendContainer(token, id);
+    if (!container) throw new OpsError(404, 'not-on-this-machine');
+    const filter = logFilter(url, now());
+    const result = filterRecords(logRecords(
+      await daemonCall('GET', `/containers/${container.Id}/logs?${filter.query}`, LOG_BYTES)), filter);
+    return logsPayload(container.Id, result, filter);
+  }
+
+  /**
+   * One short read against a backend's own published port on this machine.
+   *
+   * Only reachability is established: any HTTP answer below 500 proves the
+   * service is listening, and 401/403 is reported as such instead of as a
+   * fault. Redirects are refused and the body is discarded.
+   */
+  async function probePort(port) {
+    const started = now();
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`, {
+        redirect: 'error', headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+      void response.body?.cancel?.();
+      const status = response.status;
+      return { ok: status < 500, status, ms: now() - started,
+        error: status === 401 || status === 403 ? 'unauthorized'
+          : status >= 500 ? `http-${status}` : null };
+    } catch (error) {
+      return { ok: false, status: null, ms: now() - started,
+        error: bounded(error?.cause?.code ?? error?.name, 60) || 'unreachable' };
+    }
+  }
+
+  /**
+   * Backend rows with the container facts and port probe only this machine can
+   * answer.
+   *
+   * A remote port may simply be unroutable from here, which is not evidence of
+   * a fault, so nothing outside this machine is probed.
+   */
+  async function enrichedBackends(token, ledger) {
+    const containers = await daemon('/containers/json?all=1').catch(() => []);
+    const byName = new Map();
+    for (const container of containers) {
+      for (const name of container.Names ?? []) byName.set(name.replace(/^\//, ''), container);
+    }
+    const items = ledger.items.map(row => {
+      const container = byName.get(`vs-backend-${row.id}`) ?? null;
+      return { ...row, container: container ? {
+        id: container.Id, image: bounded(container.Image, 300),
+        state: bounded(container.State, 40), status: bounded(container.Status, 300),
+      } : null };
+    });
+    let budget = PROBE_LIMIT;
+    await Promise.all(items.map(async item => {
+      if (!item.container || !Number.isInteger(item.port) || budget-- <= 0) return;
+      item.probe = await probe(item.port);
+    }));
+    return { ...ledger, items };
+  }
+
   async function execute(pending, token, base, session, stillAllowed, res) {
     const { action, id, item, ids, items } = pending;
     const latestPermissions = await platform(token, '/v1000/rbac/permission/my', undefined, base);
@@ -973,6 +1349,14 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       await scheduler(token, `${SCHEDULER_BACKENDS}/${encodeURIComponent(id)}/` +
         (action === 'backend-start' ? 'start' : 'stop'), {});
       state = (await backends(token)).items.find(row => row.id === id)?.state ?? null;
+    } else if (action === 'deployment-start' || action === 'deployment-stop') {
+      // ModelInfer reconciles through the scheduler's runtime proxy; the
+      // re-read below reports the state it reached, so a request in flight is
+      // never reported as done. The body makes it a POST, which the register
+      // requires for start and stop.
+      await inference(token, `/deployments/${encodeURIComponent(id)}/` +
+        (action === 'deployment-start' ? 'start' : 'stop'), {});
+      state = (await deployments(token)).items.find(row => row.id === id)?.state ?? null;
     } else if (NODE_ACTIONS.has(action)) {
       state = (await runNodeAction(action, id, token)).state;
     } else if (action === 'restart') {
@@ -998,7 +1382,8 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
       if (!agent && (req.headers['x-vh-ops'] !== '1' ||
           (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin'))) throw denied();
       if (agent && !((req.method === 'GET' && ['/inventory', '/status', '/logs', '/app-logs', '/diagnose',
-          '/nodes', '/nodes/apps', '/nodes/diagnose', '/backends',
+          '/nodes', '/nodes/apps', '/nodes/diagnose', '/backends', '/deployments', '/issues',
+          '/backend-diagnose', '/backend-logs',
           '/host-mode', '/host-containers', '/host-logs', '/host-diagnose'].includes(path)) ||
         (req.method === 'POST' && path === '/proposal'))) throw denied();
       const session = agent?.session ?? sessionFor(req);
@@ -1182,7 +1567,7 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
         let ledger = null;
         let failure = null;
         try {
-          ledger = await backends(token, nodeId);
+          ledger = await enrichedBackends(token, await backends(token, nodeId));
         } catch (error) {
           // A refused or unreachable scheduler is reported, not folded into an
           // empty register: "no backends" and "cannot read backends" differ.
@@ -1193,6 +1578,35 @@ export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async
           node: nodeId, truncated: ledger?.truncated === true, total: ledger?.total ?? 0,
           backends: ledger?.items ?? [],
         });
+        return;
+      }
+      if (path === '/backend-diagnose' && req.method === 'GET') {
+        respond(res, 200, await backendDiagnose(token, url.searchParams.get('id')));
+        return;
+      }
+      if (path === '/backend-logs' && req.method === 'GET') {
+        respond(res, 200, await backendLogs(token, url.searchParams.get('id'), url));
+        return;
+      }
+      if (path === '/deployments' && req.method === 'GET') {
+        let served = null;
+        let failure = null;
+        try {
+          served = await deployments(token);
+        } catch (error) {
+          // A refused or unreachable inference register is reported beside the
+          // machine and backend lists, not thrown in place of them.
+          failure = error instanceof OpsError ? error.message : 'scheduler-unavailable';
+        }
+        respond(res, 200, {
+          source: 'modelinfer', available: served !== null, error: failure,
+          truncated: served?.truncated === true, total: served?.total ?? 0,
+          deployments: served?.items ?? [],
+        });
+        return;
+      }
+      if (path === '/issues' && req.method === 'GET') {
+        respond(res, 200, await issues(token, base, session.subject));
         return;
       }
       if (path === '/inventory' && req.method === 'GET') {

@@ -21,7 +21,9 @@ function fixture() {
   ], calls: [], logData: Buffer.from('sample log'),
     inspect: { State: { Status: 'exited' }, RestartCount: 0 },
     nodeViews: [], managed: { can_manage: true, items: [] }, backends: [],
-    schedulerDown: false, schedulerForbidden: false, schedulerCalls: [] };
+    deployments: [], schedulerDown: false, schedulerForbidden: false, schedulerCalls: [],
+    inferenceDown: false, inferenceForbidden: false, inferenceCalls: [],
+    inferenceBodies: [], probes: [], probeResult: null };
   const handle = createVosOps({
     sessionFor: () => ({ sid: state.sid, subject: 'test' }), tokenFor: () => 'test',
     agentSessionAllowed: async (_subject, id) => id === 'session-1' && state.sessionAllowed,
@@ -70,6 +72,29 @@ function fixture() {
         return { ...row, status: 'online' };
       }
       throw new Error(`unexpected scheduler path ${path}`);
+    },
+    async inference(_token, path, body) {
+      state.inferenceCalls.push(path);
+      state.inferenceBodies.push([path, body]);
+      if (state.inferenceForbidden) throw new OpsError(403, 'scheduler-forbidden');
+      if (state.inferenceDown) throw new OpsError(502, 'scheduler-unavailable');
+      if (path.startsWith('/deployments?')) {
+        return { data: state.deployments, total: state.deployments.length,
+          page_num: 1, page_size: 100, pages: 1 };
+      }
+      const change = /^\/deployments\/([^/]+)\/(start|stop)$/.exec(path);
+      if (change) {
+        const row = state.deployments.find(item => item.id === change[1]);
+        if (!row) throw new Error('missing deployment');
+        row.state = change[2] === 'start' ? 'running' : 'stopped';
+        row.last_error = '';
+        return row;
+      }
+      throw new Error(`unexpected inference path ${path}`);
+    },
+    async probe(port) {
+      state.probes.push(port);
+      return state.probeResult ?? { ok: true, status: 200, ms: 2, error: null };
     },
     daemon: async path => path.startsWith('/containers/') ? state.containers : state.images,
     async daemonCall(method, path) {
@@ -810,4 +835,303 @@ test('drains, resumes, revokes and rescans machines through confirmed proposals'
     path === '/scheduler/api/v1/nodes/vos%3Amember-3/revoke'));
   // A revoked machine is no longer schedulable, so a second proposal is stale.
   assert.equal((await preview('node-undrain', 'vos:member-3')).status, 409);
+});
+
+test('reads inference deployments with their machine and reconcile state', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.managed = { can_manage: true, items: [{ id: 'node-1', name: 'Thor', status: 'online',
+    arch: 'aarch64', gpu_model: 'NVIDIA Thor', profile: 'jetson-thor',
+    last_checked_at: at(state.now - 5000), host: '192.168.1.35', ssh_user: 'root', has_password: true }] };
+  state.deployments = [
+    { id: '01M7W0W2X4564JJSE5MZ4XSYQZ', name: 'qwen3.6 35b', card_name: 'Qwen3.6-35B-A3B NVFP4 Thor',
+      serve_model_name: 'Qwen3.6-35B-A3B-NVFP4', serve_port: 8000, state: 'running',
+      desired_state: 'running', health_status: 'healthy', vrouter_state: 'registered',
+      last_error: '', vrouter_last_error: '', inference_engine: 'vllm', updated_at: at(state.now),
+      configs: { SECRET: 'private' }, nodes: [{ id: 'node-1', name: 'Thor', host: '192.168.1.35',
+        status: 'online', role: 'head' }] },
+    { id: '01M7W05Y8DTF775K22ZM4HJ3YP', name: 'qwen3.8 27b', state: 'stopped',
+      desired_state: 'running', health_status: 'unknown', last_error: 'VLLM_EXIT',
+      nodes: [{ id: 'node-1', name: 'Thor', role: 'head' }] },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/deployments', null, grant);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.available, true);
+  assert.equal(listed.body.total, 2);
+  assert.ok(state.inferenceCalls.some(path => path.startsWith('/deployments?')));
+  const [running, stopped] = listed.body.deployments;
+  assert.equal(running.head.name, 'Thor');
+  assert.deepEqual([running.state, running.health, running.model],
+    ['running', 'healthy', 'Qwen3.6-35B-A3B-NVFP4']);
+  assert.equal(stopped.error, 'VLLM_EXIT');
+  // Deployment settings never leave the gateway, and no SSH field does either.
+  assert.equal(JSON.stringify(listed.body).includes('SECRET'), false);
+  assert.equal(JSON.stringify(listed.body).includes('root'), false);
+});
+
+test('starts and stops an inference deployment through the confirm flow', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.deployments = [
+    { id: 'dep-1', name: 'qwen3.8 27b', state: 'stopped', desired_state: 'running',
+      health_status: 'unknown', last_error: 'VLLM_EXIT',
+      configs: { SECRET: 'private' },
+      nodes: [{ id: 'node-1', name: 'Thor', role: 'head' }] },
+    { id: 'dep-2', name: 'qwen3.6 35b', state: 'running', health_status: 'healthy',
+      nodes: [{ id: 'node-1', name: 'Thor', role: 'head' }] },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const preview = await send('/preview', { action: 'deployment-start', id: 'dep-1' }, grant);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.target.state, 'stopped');
+  // The serve settings never reach the confirmation dialog.
+  assert.equal(JSON.stringify(preview.body).includes('SECRET'), false);
+  const done = await send('/execute', { confirmation: preview.body.confirmation, targetId: 'dep-1' }, grant);
+  assert.equal(done.status, 200);
+  assert.equal(done.body.state, 'running');
+  assert.ok(state.inferenceCalls.some(path => path === '/deployments/dep-1/start'));
+  // The write is a POST (the register refuses GET) and carries a JSON body.
+  assert.ok(state.inferenceBodies.some(([path, body]) =>
+    path === '/deployments/dep-1/start' && JSON.stringify(body) === '{}'));
+  // The re-read after the change reports the state the register reached, and a
+  // started deployment cannot be started again.
+  assert.equal((await send('/preview', { action: 'deployment-start', id: 'dep-1' }, grant)).status, 409);
+  // A running deployment may be stopped; a stopped one cannot be stopped again.
+  const stop = await send('/preview', { action: 'deployment-stop', id: 'dep-2' }, grant);
+  assert.equal(stop.status, 200);
+  const doneStop = await send('/execute', { confirmation: stop.body.confirmation, targetId: 'dep-2' }, grant);
+  assert.equal(doneStop.status, 200);
+  assert.equal(doneStop.body.state, 'stopped');
+  assert.ok(state.inferenceCalls.some(path => path === '/deployments/dep-2/stop'));
+  assert.equal((await send('/preview', { action: 'deployment-stop', id: 'dep-2' }, grant)).status, 409);
+});
+
+test('resolves a merged machine by either id and names its deployments', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.nodeViews = [
+    { id: 'vos:member-2', display_name: 'Thor', heartbeat: at(state.now - 1000),
+      health_state: 'ready', managed: true },
+  ];
+  state.managed = { can_manage: true, items: [
+    { id: '01M7SCCM5X7EVMFK7PTXPXXABC', name: 'Thor', status: 'online', arch: 'aarch64',
+      gpu_model: 'NVIDIA Thor', profile: 'jetson-thor', last_checked_at: at(state.now - 5000) },
+  ] };
+  state.deployments = [
+    { id: 'dep-9', name: 'qwen3.8 27b', state: 'stopped', desired_state: 'running',
+      health_status: 'unknown', last_error: 'VLLM_EXIT',
+      nodes: [{ id: '01M7SCCM5X7EVMFK7PTXPXXABC', name: 'Thor', role: 'head' }] },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const catalog = await send('/nodes', null, grant);
+  const merged = catalog.body.nodes.find(node => node.name === 'Thor');
+  // The merged row keeps the SSH register's own id beside the view id.
+  assert.equal(merged.id, 'vos:member-2');
+  assert.equal(merged.managedId, '01M7SCCM5X7EVMFK7PTXPXXABC');
+  // Refreshing the hardware profile works with the view id: the register is
+  // found through the merged row's managedId, so no 409 target-changed.
+  const rescan = await send('/preview', { action: 'node-rescan', id: 'vos:member-2' }, grant);
+  assert.equal(rescan.status, 200);
+  assert.equal(rescan.body.target.id, '01M7SCCM5X7EVMFK7PTXPXXABC');
+  // A deployment names its head machine by the SSH register's id; the problem
+  // list still attaches the machine name through the merged row.
+  const listed = await send('/issues', null, grant);
+  const finding = listed.body.issues.find(row => row.code === 'deployment-stopped');
+  assert.equal(finding.node?.name, 'Thor');
+});
+
+test('merges the scheduler view and the SSH-managed record into one machine', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.nodeViews = [
+    { id: 'local', display_name: 'here', heartbeat: at(state.now - 1000),
+      health_state: 'ready', managed: true },
+    { id: 'vos:member-2', display_name: 'Thor', heartbeat: at(state.now - 1000),
+      health_state: 'ready', managed: true },
+  ];
+  state.managed = { can_manage: true, items: [
+    { id: 'node-1', name: 'Thor', status: 'online', arch: 'aarch64', gpu_model: 'NVIDIA Thor',
+      profile: 'jetson-thor', last_checked_at: at(state.now - 5000), host: '192.168.1.35' },
+    { id: 'node-2', name: 'Orin NX', status: 'unknown', arch: 'aarch64', gpu_model: 'Orin',
+      last_checked_at: at(state.now - 5000) },
+  ] };
+  const { body: { grant } } = await send('/authorize', {});
+  const catalog = await send('/nodes', null, grant);
+  assert.equal(catalog.status, 200);
+  // One row per machine: the scheduler's Thor and the managed Thor are the
+  // same box, so the managed duplicate disappears from the list.
+  assert.deepEqual(catalog.body.nodes.map(node => node.name), ['here', 'Thor', 'Orin NX']);
+  const merged = catalog.body.nodes.find(node => node.name === 'Thor');
+  // The scheduler view carries status and health; the managed record fills the
+  // hardware profile and contributes the rescan capability.
+  assert.equal(merged.status, 'online');
+  assert.equal(merged.health, 'ready');
+  assert.equal(merged.profile, 'jetson-thor');
+  assert.equal(merged.gpuModel, 'NVIDIA Thor');
+  assert.ok(merged.capabilities.includes('rescan'));
+  // A machine only the managed register knows stays its own row.
+  const sshOnly = catalog.body.nodes.find(node => node.name === 'Orin NX');
+  assert.equal(sshOnly.kind, 'managed');
+  assert.equal(sshOnly.status, 'unknown');
+  assert.ok(sshOnly.capabilities.includes('rescan'));
+});
+
+test('merges machines, applications, backends and deployments into one problem list', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.nodeViews = [
+    { id: 'local', display_name: 'here', heartbeat: at(state.now - 1000),
+      health_state: 'ready', managed: true },
+    { id: 'vos:member-2', display_name: 'gpu-2', heartbeat: at(state.now - 60000),
+      health_state: 'unavailable', managed: false,
+      vos_applications: { data: [{ app_id: appId, installed_app_id: 'i2', version: '1.0',
+        state: 'failed', last_error: 'CONTAINER_EXIT' }], observed_at: at(state.now - 60000), fresh: false } },
+  ];
+  state.backends = [{ id: 'bk-1', app_id: 'image-studio', image: 'demo:1.0', target_kind: 'ssh',
+    target_id: 'vos:member-2', host: '10.0.0.9', host_port: 42811, state: 'failed',
+    last_error: 'BACKEND_START_FAILED', updated_at: at(state.now) }];
+  state.deployments = [
+    { id: 'dep-1', name: 'qwen3.8 27b', state: 'stopped', desired_state: 'running',
+      health_status: 'unknown', last_error: 'VLLM_EXIT',
+      nodes: [{ id: 'vos:member-2', name: 'gpu-2', role: 'head' }] },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/issues', null, grant);
+  assert.equal(listed.status, 200);
+  const codes = listed.body.issues.map(row => row.code);
+  for (const code of ['node-offline', 'node-observation-stale', 'app-failed',
+    'backend-failed', 'deployment-stopped']) {
+    assert.ok(codes.includes(code), code);
+  }
+  // A stopped deployment the application still wants running is a problem, and
+  // the row names the machine it is placed on.
+  const stopped = listed.body.issues.find(row => row.code === 'deployment-stopped');
+  assert.equal(stopped.node.name, 'gpu-2');
+  assert.equal(stopped.subject, 'qwen3.8 27b');
+  // Errors first, warnings after, and the counts agree with the rows.
+  const levels = listed.body.issues.map(row => row.level);
+  const firstWarning = levels.indexOf('warning');
+  assert.ok(levels.slice(firstWarning).every(level => level === 'warning'));
+  assert.equal(listed.body.counts.error, levels.filter(level => level === 'error').length);
+  assert.equal(listed.body.counts.warning, levels.filter(level => level === 'warning').length);
+  // The rows are part of the same answer, so the panel does not read the
+  // deployment register a second time to render its list.
+  assert.deepEqual(listed.body.deploymentRows.map(row => row.name), ['qwen3.8 27b']);
+});
+
+test('does not call an intentional stop or a stale application error a problem', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.nodeViews = [
+    { id: 'local', display_name: 'here', heartbeat: at(state.now - 1000),
+      health_state: 'ready', managed: true },
+    { id: 'vos:member-2', display_name: 'gpu-2', heartbeat: at(state.now - 1000),
+      health_state: 'ready', managed: true,
+      vos_applications: { data: [{ app_id: appId, installed_app_id: 'i2', version: '1.0',
+        state: 'installed', last_error: 'OLD_FAILURE' }], observed_at: at(state.now - 1000), fresh: true } },
+  ];
+  state.deployments = [
+    { id: 'dep-1', name: 'qwen3.8 27b', state: 'stopped', desired_state: 'stopped',
+      health_status: 'unknown', last_error: 'VLLM_EXIT',
+      nodes: [{ id: 'vos:member-2', name: 'gpu-2', role: 'head' }] },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/issues', null, grant);
+  const codes = listed.body.issues.map(row => row.code);
+  // An administrator asked this one to stop, so it is not a problem.
+  assert.equal(codes.includes('deployment-stopped'), false);
+  // A lingering last_error on an installed application is worth a warning.
+  const appError = listed.body.issues.find(row => row.code === 'app-error');
+  assert.equal(appError.level, 'warning');
+  assert.equal(listed.body.counts.error, 0);
+});
+
+test('reports an unreadable deployment register instead of claiming nothing is wrong', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.nodeViews = [nodeViews(state)[0]];
+  state.inferenceForbidden = true;
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/issues', null, grant);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.sources.deployments.available, false);
+  assert.equal(listed.body.sources.deployments.error, 'scheduler-forbidden');
+  assert.equal(listed.body.sources.catalog.available, true);
+  assert.ok(listed.body.issues.some(row => row.code === 'deployments-unavailable'));
+  // The deployment list itself degrades rather than failing the whole panel.
+  const deployments = await send('/deployments', null, grant);
+  assert.equal(deployments.status, 200);
+  assert.equal(deployments.body.available, false);
+  assert.deepEqual(deployments.body.deployments, []);
+});
+
+test('reads a local backend container and probes only local ports', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  const localId = 'd'.repeat(64);
+  state.containers.push({ Id: localId, Names: ['/vs-backend-bk-local'], Image: 'demo:1.0',
+    ImageID: 'sha256:' + 'e'.repeat(64), State: 'running', Status: 'Up 3 minutes',
+    Ports: [], Labels: {} });
+  state.backends = [
+    { id: 'bk-local', app_id: 'image-studio', image: 'demo:1.0', target_kind: 'ssh',
+      target_id: 'local', host: '127.0.0.1', host_port: 42811, state: 'running',
+      last_error: null, updated_at: at(state.now) },
+    { id: 'bk-remote', app_id: 'v-voice', image: 'voice:1', target_kind: 'ssh',
+      target_id: 'edge-1', host: '10.0.0.9', host_port: 42812, state: 'running',
+      last_error: null, updated_at: at(state.now) },
+  ];
+  const { body: { grant } } = await send('/authorize', {});
+  const listed = await send('/backends', null, grant);
+  const [local, remote] = listed.body.backends;
+  assert.equal(local.container.id, localId);
+  assert.deepEqual(local.probe, { ok: true, status: 200, ms: 2, error: null });
+  assert.equal(remote.container, null);
+  assert.equal(remote.probe, undefined);
+  // Only the port of a container that runs on this machine is dialled.
+  assert.deepEqual(state.probes, [42811]);
+
+  const logs = await send('/backend-logs?id=bk-local', null, grant);
+  assert.equal(logs.status, 200);
+  assert.equal(logs.body.text, 'sample log');
+  const facts = await send('/backend-diagnose?id=bk-local', null, grant);
+  assert.equal(facts.status, 200);
+  assert.equal(facts.body.local, true);
+  assert.equal(facts.body.state.status, 'exited');
+  // A backend on another machine, or an unknown one, is refused distinctly.
+  assert.equal((await send('/backend-logs?id=bk-remote', null, grant)).status, 404);
+  assert.equal((await send('/backend-diagnose?id=missing', null, grant)).status, 404);
+});
+
+test('reports a backend whose container stopped or whose port refuses', async () => {
+  const { send, state } = fixture();
+  state.now = Date.parse('2026-11-24T04:30:00Z');
+  state.nodeViews = [{ id: 'local', display_name: 'here', heartbeat: at(state.now - 1000),
+    health_state: 'ready', managed: true }];
+  const container = { Id: 'f'.repeat(64), Names: ['/vs-backend-bk-stopped'], Image: 'demo:1.0',
+    ImageID: 'sha256:' + 'a'.repeat(64), State: 'exited', Status: 'Exited (137) 2 minutes ago',
+    Ports: [], Labels: {} };
+  state.containers.push(container);
+  state.backends = [{ id: 'bk-stopped', app_id: 'image-studio', image: 'demo:1.0',
+    target_kind: 'ssh', target_id: 'local', host: '127.0.0.1', host_port: 42811,
+    state: 'running', last_error: null, updated_at: at(state.now) }];
+  const { body: { grant } } = await send('/authorize', {});
+
+  const stopped = await send('/issues', null, grant);
+  const stoppedCodes = stopped.body.issues.map(row => row.code);
+  assert.ok(stoppedCodes.includes('backend-container-stopped'), stoppedCodes.join(','));
+
+  // A running container whose port answers 401 is reachable, not broken.
+  container.State = 'running';
+  container.Status = 'Up 1 minute';
+  state.probeResult = { ok: false, status: 401, ms: 5, error: 'unauthorized' };
+  const unauthorized = await send('/issues', null, grant);
+  const unauthorizedRow = unauthorized.body.issues.find(row => row.code === 'backend-unauthorized');
+  assert.equal(unauthorizedRow.level, 'warning');
+  assert.equal(unauthorized.body.issues.some(row => row.code === 'backend-unreachable'), false);
+
+  state.probeResult = { ok: false, status: null, ms: 4, error: 'ECONNREFUSED' };
+  const refused = await send('/issues', null, grant);
+  assert.ok(refused.body.issues.some(row => row.code === 'backend-unreachable'
+    && row.detail === 'ECONNREFUSED'));
 });
