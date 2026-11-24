@@ -37,6 +37,8 @@ const en = {
   backendError: 'Last error', backendNone: 'V-Scheduler reports no application backends.',
   backendUnavailable: 'V-Scheduler is not reachable; backend states are unknown.',
   backendStart: 'Start backend', backendStop: 'Stop backend',
+  backendContainer: 'Container', backendProbe: 'Probe', backendDiagnose: 'Diagnose this backend',
+  closeFacts: 'Close details',
   backendTruncated: 'The register answered its newest 200 records; older instances may be missing.',
   nodeStaleData: 'V-Scheduler is unreachable. Showing the last machine list it answered.',
   nodeObservationOnly: 'Observation only',
@@ -601,7 +603,17 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
           button('backendStart', () => prepare('backend-start', backend.id))}
         {['running', 'pending', 'cleanup_failed'].includes(backend.state) &&
           button('backendStop', () => prepare('backend-stop', backend.id))}
+        {' '}{button('logs', () => readBackendLogs(backend.id))}
+        {button('backendDiagnose', () => diagnoseBackend(backend.id))}
       </li>)}</ul>
+      {backendLog && <section aria-label={t('logs')}>
+        <code>{backendLog.id}</code> {button('closeFacts', () => setBackendLog(undefined))}
+        <pre style={pre}>{backendLog.text || t('none')}</pre>
+      </section>}
+      {backendFacts !== undefined && <section aria-label={t('backendDiagnose')}>
+        {button('closeFacts', () => setBackendFacts(undefined))}
+        <pre style={pre}>{JSON.stringify(backendFacts, null, 2)}</pre>
+      </section>}
     </section>}
     {inventory && <>
       <h3>{t('applications')}</h3>
