@@ -61,10 +61,20 @@ def resolve_dependencies(manifest, repositories, api_url="https://api.github.com
     resolved = []
     for dependency in dependencies:
         app_id = dependency['id']
-        repository = repositories.get(app_id)
-        if not repository:
+        entry = repositories.get(app_id)
+        if not entry:
             raise ValueError(f'{app_id}: dependency release repository is not configured')
-        if catalog_url:
+        # A dependency this repository does not own may live in a private
+        # repository CI cannot read. Pinning its published version here keeps
+        # the declaration (the app store still links the two apps) without
+        # requiring a cross-repository token or a live release lookup.
+        pinned = entry.get('version') if isinstance(entry, dict) else None
+        repository = entry.get('repository') if isinstance(entry, dict) else entry
+        if pinned is not None:
+            if not isinstance(pinned, str) or not re.fullmatch(r'\d+\.\d+\.\d+', pinned):
+                raise ValueError(f'{app_id}: pinned dependency version must look like 1.2.3')
+            actual = pinned
+        elif catalog_url:
             actual = appstore_version(app_id, catalog_url)
         else:
             request = urllib.request.Request(api_url.rstrip('/') + '/repos/' + repository + '/releases/latest', headers=headers)
