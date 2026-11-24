@@ -699,7 +699,10 @@ function snapshotKey(action, row) {
 export function createVosOps({ sessionFor, tokenFor, agentSessionAllowed = async () => false, sessionExists = async () => false, browserSessionActive = () => false,
   userinfoUrl, readBody, respond, daemon = dockerJson,
   daemonCall = engine, platform = vos, now = Date.now, audit = console.info,
-  scheduler = schedulerCall, inference = inferenceCall, probe = probePort }) {
+  scheduler = schedulerCall, inference = inferenceCall, probe }) {
+  // A default parameter is evaluated in the parameter scope, which cannot see
+  // the probePort declared in this body, so the injected probe is bound here.
+  probe ??= probePort;
   const grants = new Map();
   const hostModes = new Map();
   const proposals = new Map();
