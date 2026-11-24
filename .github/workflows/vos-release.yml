@@ -59,6 +59,15 @@ jobs:
           }
           EOF
 
+      # The VOS dependency lives in a private repository the runner cannot
+      # read, so its published version is resolved through the same App Store
+      # tunnel this workflow already uses to publish.
+      - name: Connect dependency catalog tunnel
+        env:
+          APPSTORE_IP: ${{ secrets.APPSTORE_IP }}
+          APPSTORE_TOKEN: ${{ secrets.APPSTORE_TOKEN }}
+        run: bash ictrek.app/scripts/appstore_tunnel.sh open
+
       - name: Build pull-mode package
         env:
           FEISHU_SPREADSHEET_TOKEN: ${{ secrets.FEISHU_SPREADSHEET_TOKEN }}
@@ -66,6 +75,12 @@ jobs:
           set -euo pipefail
           PACKAGE_VERSION="$VERSION" ./ictrek.app/scripts/package.sh
           test -f "ictrek.app/dist/v-harness_${VERSION}_pull.tar"
+
+      - name: Close dependency catalog tunnel
+        if: always()
+        env:
+          APPSTORE_IP: ${{ secrets.APPSTORE_IP }}
+        run: bash ictrek.app/scripts/appstore_tunnel.sh close
 
       - name: Create release notes
         env:

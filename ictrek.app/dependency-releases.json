@@ -1,6 +1,1 @@
-{
-  "com.ictrek.v-scheduler": {
-    "repository": "ictrektech/V-Scheduler",
-    "version": "0.0.123"
-  }
-}
+{"com.ictrek.v-scheduler": "ictrektech/V-Scheduler"}
