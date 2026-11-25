@@ -881,7 +881,7 @@ describe('provider profile lifecycle', () => {
     }]))
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {})
-    const descriptor = await ctx.llm.resolveModel('v-scheduler', model)
+    const descriptor = await ctx.llm.resolveModelInfo('v-scheduler', model)
     expect(descriptor.reasoning?.efforts.map(effort => effort.id)).toEqual(['off', 'high'])
     expect(descriptor.reasoning?.defaultEffort).toBe('high')
     for (const effort of ['high', 'off', undefined] as const) {
