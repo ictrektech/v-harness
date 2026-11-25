@@ -96,3 +96,5 @@ VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开�
 - **PGV** 可直连同一台 VOS 上的 PostgreSQL / pgvector（`pgv:5432`）、共享 Redis（`pgv-redis:6379`）和数据库连接器网关（`http://pgv-viewer:8081/app/com.ictrek.pgv`）。安装并启动 PGV，配置获准的服务凭据后，在会话中输入 `/pgv`，例如“检查我的 PostgreSQL 数据库安装了哪些扩展”。在 **设置 → 产品技能 → VOS 服务** 管理该技能。PostgreSQL 和 Redis 使用各自的凭据。连接器 HTTP 要求名为 `admin` 的 VOS 账号建立 PGV 会话，接口细节见 **PGV → 接入指南 → API 与协议参考**。如果 Agent 启动后才安装或重建 PGV，请重启租户运行实例以刷新内部地址。
 
 Agent API 的鉴权和会话用法见「设置 → API 文档」。新技能沿用现有会话接口。
+
+在「设置 → 模型」选择 V-Scheduler 提供的 ModelInfer DeepSeek V4 对话模型，再从新会话输入区的模型选择器选择思考级别。支持「关闭」和「高」，默认「高」。Chat Completions 的请求体分别发送 `reasoning_effort: "none"` 和 `reasoning_effort: "high"`。可选级别随原有 Agent 会话模型目录返回。

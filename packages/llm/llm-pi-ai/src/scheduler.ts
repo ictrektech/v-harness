@@ -47,7 +47,14 @@ export function applyScheduler(ctx: Context): readonly string[] {
           throw new LlmError('Invalid V-Scheduler model descriptor', 'DISCOVERY_FAILED')
         }
         const group = models.get(row.api) ?? []
-        group.push({ id: row.id, name: typeof row.name === 'string' ? row.name : row.id, input: row.input })
+        const efforts = row.reasoningEfforts
+        const model: PiAiModelProfile = { id: row.id, name: typeof row.name === 'string' ? row.name : row.id, input: row.input }
+        if (row.api === 'openai-completions' && efforts && typeof efforts === 'object'
+          && efforts.off === 'none' && efforts.high === 'high') {
+          model.reasoningEfforts = { off: 'none', high: 'high' }
+          model.compat = { supportsDeveloperRole: false, supportsReasoningEffort: true, thinkingFormat: 'openai' }
+        }
+        group.push(model)
         models.set(row.api, group)
       }
       profiles = resolveProfiles(Object.fromEntries(ROUTES.flatMap(([provider, api, suffix]) => models.get(api)?.length ? [[provider, {
@@ -76,6 +83,7 @@ export function applyScheduler(ctx: Context): readonly string[] {
   const adapter = new SchedulerAdapter({
     profiles: () => profiles,
     resolveApiKey: async () => key,
+    defaultReasoning: model => model.thinkingLevelMap?.high === 'high' ? 'high' : undefined,
     auth: { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx) },
     resolveAttachments: () => ctx.get('attachments'),
     resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(

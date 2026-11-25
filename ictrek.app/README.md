@@ -94,3 +94,5 @@ VOS 系统管理员在会话里选择「完全访问（VOS 运维）」即可直
 在同一台 VOS 启动 PGV 后，在会话中输入 `/pgv`。使用工作区已获授权的服务凭据。自定义 `VH_NET_ALLOW_HOSTS` 时，在允许 PGV 的部署中保留 `pgv,pgv-redis,pgv-viewer`。PGV 容器地址变动后需重新启动租户运行实例。接入说明见 [技能文档](../skills/pgv/SKILL.md)。
 
 Start PGV on the same VOS device, then use `/pgv` with the workspace's approved service credentials. If you override `VH_NET_ALLOW_HOSTS`, include `pgv,pgv-redis,pgv-viewer` where PGV access is intended. Restart the tenant runtime after a PGV container address changes. See the [skill instructions](../skills/pgv/SKILL.md).
+
+V-Scheduler 自动发现的 ModelInfer DeepSeek V4 对话模型支持在会话模型选择器设置「关闭」或「高」。默认「高」。沿用现有会话模型目录和 Chat Completions 端点，分别发送 `reasoning_effort: "none"` 或 `reasoning_effort: "high"`。

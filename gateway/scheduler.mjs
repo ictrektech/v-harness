@@ -59,7 +59,15 @@ export function schedulerModels(payload) {
     else if (!endpoints.length && !capabilities.length && normalized(row.kind) === 'unknown' && row.upstream_id) api = 'openai-completions';
     const id = row.qualified ?? row.id;
     if (!api || typeof id !== 'string' || !id) return [];
-    return [{ id, name: row.name ?? id, api, input: capabilities.includes('vision') ? ['text', 'image'] : ['text'] }];
+    // ModelInfer's DeepSeek V4 chat route accepts the OpenAI effort field.
+    // A generic thinking flag alone does not identify a provider's wire format.
+    const hasEffort = api === 'openai-completions' && capabilities.includes('thinking')
+      && typeof row.upstream_id === 'string' && row.upstream_id.startsWith('registered-modelinfer-')
+      && /^deepseek-v4(?:\.\d+)?-(?:flash|pro)(?:-|$)/i.test(String(row.id).split('/').at(-1));
+    return [{
+      id, name: row.name ?? id, api, input: capabilities.includes('vision') ? ['text', 'image'] : ['text'],
+      ...(hasEffort ? { reasoningEfforts: { off: 'none', high: 'high' } } : {}),
+    }];
   });
 }
 

@@ -68,6 +68,18 @@ test('declared endpoints are authoritative; chat, responses, messages and comple
   assert.throws(() => schedulerModels({ data: [] }), /Invalid/);
 });
 
+test('ModelInfer DeepSeek V4 Chat Completions advertises verified reasoning levels', () => {
+  const row = {
+    id: 'DeepSeek-V4.1-Flash-1017', qualified: 'registered/DeepSeek-V4.1-Flash-1017',
+    upstream_id: 'registered-modelinfer-fixture', capabilities: ['chat', 'thinking', 'vision'],
+    endpoints: ['responses', 'chat_completions'],
+  };
+  assert.deepEqual(schedulerModels({ models: [row] })[0].reasoningEfforts, { off: 'none', high: 'high' });
+  for (const variant of [
+    { upstream_id: 'manual' }, { capabilities: ['chat'] }, { endpoints: ['responses'] }, { id: 'another-model' },
+  ]) assert.equal(schedulerModels({ models: [{ ...row, ...variant }] })[0].reasoningEfforts, undefined);
+});
+
 test('each capability uses its own VOS identity and qualified model IDs', async () => {
   assert.notEqual(alice, bob);
   const a = await (await request('/v1/models', alice)).json();

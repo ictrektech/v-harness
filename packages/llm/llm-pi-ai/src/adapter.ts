@@ -86,6 +86,8 @@ interface PiAiSnapshot {
 
 /** Constructor options for {@link PiAiAdapter}: the two resolution hooks the plugin owns. */
 export interface PiAiAdapterOptions {
+  /** Default effort for one resolved model when the route declares none. */
+  defaultReasoning?: (model: Model<Api>) => ModelThinkingLevel | undefined
   /** Current validated profiles by provider route; called once per operation. */
   profiles: () => ReadonlyMap<string, ResolvedPiAiProviderProfile>
   /**
@@ -376,7 +378,7 @@ export class PiAiAdapter extends LlmAdapter {
   private modelInfo(snapshot: PiAiSnapshot, provider: string, model: string): LlmResolvedModelInfo {
     const profile = this.profileOf(snapshot, provider)
     const resolvedModel = this.modelOf(snapshot, provider, model)
-    const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
+    const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning ?? this.config.defaultReasoning?.(resolvedModel))
     // Only a cap the deployment configured is a request default; the
     // catalog's `maxTokens` sizes the model and stops there.
     const configuredMaxTokens = profile.configuredMaxTokens.get(model)
@@ -430,7 +432,7 @@ export class PiAiAdapter extends LlmAdapter {
       : options
     const reasoning = resolveReasoningLevel(
       model,
-      options.reasoningEffort ?? profile.reasoning,
+      options.reasoningEffort ?? profile.reasoning ?? this.config.defaultReasoning?.(model),
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
 

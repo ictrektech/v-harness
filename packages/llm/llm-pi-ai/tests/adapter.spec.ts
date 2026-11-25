@@ -10,6 +10,7 @@ import type {
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import LlmRuntime, { createToolResultMessage, createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
+import { createLaunchEnvironmentSnapshot, DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -863,6 +864,34 @@ describe('provider profile lifecycle', () => {
       messages: [],
     })
     expect(server.requests[0]).toMatchObject({ reasoning_effort: 'none' })
+  })
+
+  it('discovers managed Scheduler effort and sends High, Off, and the default over Chat Completions', async () => {
+    const model = 'registered/DeepSeek-V4.1-Flash-1017'
+    const catalog = { body: JSON.stringify({ data: [{
+      id: model, api: 'openai-completions', input: ['text', 'image'],
+      reasoningEfforts: { off: 'none', high: 'high' },
+    }] }) }
+    const stream = { events: textEvents }
+    const server = await mockServer([catalog, catalog, stream, catalog, stream, catalog, stream])
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    ctx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([{
+      source: 'process', values: { VH_SCHEDULER_URL: server.url, VH_SCHEDULER_KEY: 'test-key' },
+    }]))
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {})
+    const descriptor = await ctx.llm.resolveModel('v-scheduler', model)
+    expect(descriptor.reasoning?.efforts.map(effort => effort.id)).toEqual(['off', 'high'])
+    expect(descriptor.reasoning?.defaultEffort).toBe('high')
+    for (const effort of ['high', 'off', undefined] as const) {
+      await assemble(ctx, {
+        provider: 'v-scheduler', model, messages: [], system: 'test',
+        ...effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) },
+      })
+    }
+    const requests = server.requests.filter((_, index) => server.paths[index] === '/v1/chat/completions')
+    expect(requests.map(request => (request as { reasoning_effort?: string }).reasoning_effort)).toEqual(['high', 'none', 'high'])
   })
 
   it('holds back reasoning_effort when the endpoint cannot take it', async () => {
