@@ -7,6 +7,9 @@ kind: "package-reference"
 
 English | [中文](README.zh.md)
 
+
+The confirmation form lists registered compute backends by node and model. Run `placements` to discover IDs for scripts. `generate --node-id <name-or-id>` resolves a unique matching deployment, and `--compute-deployment-id <id>` selects one directly. Supply the model when a node hosts several choices. On the completed job, `scheduler_task_id` identifies the V-Scheduler record with the actual node.
+
 ## Summary
 
 The catalog lists an Image Studio router plus generation and model-preparation skills. Generation and model work run through a zero-dependency Node CLI that submits jobs, polls them, downloads outputs, and manages weights over the Image Studio HTTP API. Credentials stay in an auth file consumed by the CLI, so the bearer token never enters the model context. When the tools, question, and shell services are mounted, the package also registers `image_studio_generate`, which asks the user to confirm the model and prompts in one dialog before running that same CLI.

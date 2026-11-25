@@ -7,6 +7,9 @@ kind: "package-reference"
 
 [English](README.md) | 中文
 
+
+生图确认表单按节点和模型显示已注册后端。脚本用 `placements` 查询，用 `generate --node-id <节点名或ID>` 选择唯一匹配的部署，或用 `--compute-deployment-id <ID>` 直接指定。节点有多个模型时带上模型名。通过结果的 `scheduler_task_id` 核对 V-Scheduler 记录的实际执行节点。
+
 ## 概述
 
 目录包含一个 Image Studio 路由，以及生成与模型准备两类 skill。生成和模型操作通过零依赖 Node CLI 完成：提交任务、轮询、下载产物、管理权重，全部走 Image Studio 的 HTTP API。凭据只存在于 CLI 读取的 auth 文件中，bearer 令牌不会进入模型上下文。当 tools、question 与 shell 服务都已挂载时，本包还会注册 `image_studio_generate`：先在同一个对话框里让用户确认模型与提示词，再调用同一个 CLI。

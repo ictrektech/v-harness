@@ -35,7 +35,7 @@ const GENERATE_FIELDS = new Set([
   'vae_tiling', 'vae_tile_size', 'vae_tile_overlap', 'temporal_tiling',
   'temporal_tile_frames', 'temporal_tile_overlap', 'max_vram',
   'stream_layers', 'auto_fit', 'clip_on_cpu', 'offload_to_cpu', 'vae_cpu_fallback',
-  'backend', 'params_backend',
+  'backend', 'params_backend', 'compute_deployment_id',
 ])
 
 const NUMBER_FIELDS = new Set([
@@ -68,12 +68,13 @@ Global options:
 Commands:
   health | about | me
   models [--capability txt2img,img2img,edit,video] [--ready] [--all]
+  placements
   model <key> [--variant <id>]
   pull <key> [--variant <id>] [--force]
   stop <key> [--variant <id>]
   sync <key>
   upload-input <file>
-  generate --prompt <text> [options] [--wait] [--out <dir>]
+  generate --prompt <text> [--node-id <id> | --compute-deployment-id <id>] [options] [--wait]
   wait <job_id> [--interval <s>] [--timeout <s>] [--download] [--out <dir>]
   status <job_id>
   jobs [--limit <n>] [--all]
@@ -323,6 +324,9 @@ function summarizeJob(job, detailed) {
     seed: job.seed,
     outputs: job.outputs,
     error: job.error,
+    compute_deployment_id: job.metadata?.compute_deployment_id,
+    compute_node_id: job.metadata?.compute_node_id,
+    scheduler_task_id: job.metadata?.scheduler_task_id,
     created_at: job.created_at,
     updated_at: job.updated_at,
   }
@@ -475,6 +479,14 @@ async function main() {
       return print(await request(connection, '/api/v1/about'))
     case 'me':
       return print(await request(connection, '/api/v1/me'))
+    case 'placements': {
+      try {
+        return print({ placements: await request(connection, '/api/v1/compute/placements') })
+      } catch (error) {
+        if (!(error instanceof CliError) || error.status !== 404) throw error
+        return print({ placements: [] })
+      }
+    }
     case 'models': {
       const models = await request(connection, '/api/v1/models')
       const capabilities = flagList(flags, 'capability')
@@ -518,6 +530,25 @@ async function main() {
     }
     case 'generate': {
       const payload = buildGeneratePayload(flags)
+      const node = stringFlag(flags, 'node-id')
+      if (node !== undefined) {
+        if (payload.compute_deployment_id) throw new CliError('choose either --node-id or --compute-deployment-id')
+        const placements = await request(connection, '/api/v1/compute/placements')
+        const matching = placements.filter((placement) => {
+          const [model, variant = ''] = placement.model_id.split('@')
+          return (placement.node_id === node || placement.node_name === node)
+            && (payload.model_key === undefined || payload.model_key === model)
+            && (payload.model_variant === undefined || payload.model_variant === variant)
+        })
+        if (matching.length !== 1) throw new CliError('select a registered node and model with exactly one deployment, or use --compute-deployment-id')
+        const [model, variant = ''] = matching[0].model_id.split('@')
+        payload.model_key = model
+        payload.model_variant = variant
+        payload.compute_deployment_id = matching[0].deployment_id
+      }
+      if (payload.compute_deployment_id && !/^[a-f0-9]{32}$/u.test(payload.compute_deployment_id)) {
+        throw new CliError('compute_deployment_id must have 32 lowercase hexadecimal characters')
+      }
       const input = stringFlag(flags, 'input')
       if (input !== undefined) {
         const uploaded = await uploadInput(connection, input)

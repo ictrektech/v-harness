@@ -21,11 +21,38 @@ export interface RequestedParameters {
   prompt: string
   model_key?: string
   negative_prompt?: string
+  node_id?: string
+  compute_deployment_id?: string
+}
+
+export interface ComputePlacement {
+  deployment_id: string
+  model_id: string
+  profile: string
+  node_id?: string
+  node_name?: string | null
+  has_reference: boolean
+}
+
+const MAIN_NODE = '主节点'
+
+function placementMenu(placements: readonly ComputePlacement[]): Map<string, ComputePlacement> {
+  const choices = new Map<string, ComputePlacement>()
+  for (const placement of placements) {
+    const label = `${placement.node_name || placement.profile} · ${displayName(placement.model_id)}`
+    let option = label
+    for (let index = 2; choices.has(option); index += 1) option = `${label} #${index}`
+    choices.set(option, placement)
+  }
+  return choices
 }
 
 /** Values the human accepted, in the units the CLI takes. */
 export interface ConfirmedParameters {
   modelKey: string
+  modelVariant?: string
+  computeDeploymentId?: string
+  nodeName?: string
   prompt: string
   negativePrompt?: string
   width?: number
@@ -124,11 +151,21 @@ function modelMenu(models: readonly CatalogEntry[]): Map<string, string> {
 export function buildFormFields(
   args: RequestedParameters,
   models: readonly CatalogEntry[],
+  placements: readonly ComputePlacement[] = [],
 ): AskUserQuestionItem[] {
+  if (args.node_id && args.compute_deployment_id) throw new Error('请选择节点或部署，两者只填一项。')
   const requested = args.model_key
-  const defaultModel = requested !== undefined && models.some(model => model.key === requested)
+  const choices = placementMenu(placements)
+  const preferred = [...choices].filter(([, row]) => (requested === undefined || row.model_id.split('@')[0] === requested)
+    && (args.compute_deployment_id ? row.deployment_id === args.compute_deployment_id
+      : args.node_id !== undefined && (row.node_id === args.node_id || row.node_name === args.node_id)))
+  if ((args.node_id || args.compute_deployment_id) && preferred.length !== 1) {
+    throw new Error('所选节点与模型没有唯一的已注册部署。请明确模型或部署。')
+  }
+  const preferredModel = preferred[0]?.[1].model_id.split('@')[0]
+  const defaultModel = preferredModel ?? (requested !== undefined && models.some(model => model.key === requested)
     ? requested
-    : models[0]?.key ?? ''
+    : models[0]?.key ?? '')
   const labels = modelMenu(models)
   const intent = { kind: 'form' } as const
   // What generation will use when the user changes nothing. The service owns
@@ -147,6 +184,13 @@ export function buildFormFields(
       input: { default: labels.get(defaultModel) ?? '' },
       intent,
     },
+    ...(choices.size ? [{
+      id: 'compute_deployment_id',
+      question: '计算节点',
+      options: [MAIN_NODE, ...choices.keys()].map(label => ({ label })),
+      input: { default: preferred[0]?.[0] ?? MAIN_NODE },
+      intent,
+    }] : []),
     {
       id: 'prompt',
       question: '提示词',
@@ -232,10 +276,17 @@ export function withoutFormIntent(items: readonly AskUserQuestionItem[]): AskUse
 export function readConfirmed(
   answers: AskUserQuestionAnswer,
   models: readonly CatalogEntry[],
+  placements: readonly ComputePlacement[] = [],
 ): ConfirmedParameters {
   const chosen = answerText(answers, 'model_key').trim()
   const modelKey = [...modelMenu(models)].find(([, label]) => label === chosen)?.[0] ?? chosen
   if (modelKey === '') throw new Error('the confirmed form has no model')
+  const target = answerText(answers, 'compute_deployment_id').trim()
+  const placement = placementMenu(placements).get(target)
+  const [remoteModel, modelVariant] = placement?.model_id.split('@') ?? []
+  if (target && target !== MAIN_NODE && (!placement || remoteModel !== modelKey)) {
+    throw new Error('所选计算节点没有注册当前模型，请选择匹配的节点与模型。')
+  }
   const prompt = answerText(answers, 'prompt').trim()
   if (prompt === '') throw new Error('the confirmed form has no prompt')
   const negativePrompt = answerText(answers, 'negative_prompt').trim()
@@ -247,6 +298,8 @@ export function readConfirmed(
   const seed = answerNumber(answers, 'seed')
   return {
     modelKey,
+    ...(placement ? { computeDeploymentId: placement.deployment_id, nodeName: placement.node_name || placement.profile } : {}),
+    ...(modelVariant ? { modelVariant } : {}),
     prompt,
     ...(negativePrompt === '' ? {} : { negativePrompt }),
     ...(width === undefined ? {} : { width }),
@@ -268,6 +321,8 @@ export function generateArguments(confirmed: ConfirmedParameters): string[] {
   return [
     '--prompt', confirmed.prompt,
     '--model-key', confirmed.modelKey,
+    ...confirmed.modelVariant === undefined ? [] : ['--model-variant', confirmed.modelVariant],
+    ...confirmed.computeDeploymentId === undefined ? [] : ['--compute-deployment-id', confirmed.computeDeploymentId],
     ...confirmed.negativePrompt === undefined ? [] : ['--negative-prompt', confirmed.negativePrompt],
     ...confirmed.width === undefined ? [] : ['--width', String(confirmed.width)],
     ...confirmed.height === undefined ? [] : ['--height', String(confirmed.height)],

@@ -34,6 +34,7 @@ export const ROUTES = [
   { method: 'GET', path: /^\/api\/v1\/about$/ },
   { method: 'GET', path: /^\/api\/v1\/me$/ },
   { method: 'GET', path: /^\/api\/v1\/models$/ },
+  { method: 'GET', path: /^\/api\/v1\/compute\/placements$/ },
   { method: 'GET', path: /^\/api\/v1\/models\/[^/]+$/ },
   { method: 'POST', path: /^\/api\/v1\/models\/[^/]+\/(pull|stop|sync)$/ },
   { method: 'POST', path: /^\/api\/v1\/inputs$/ },

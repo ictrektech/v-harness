@@ -40,6 +40,10 @@ Authentication lives in the auth file; never print or pass its token to the mode
    - **走了 `image_studio_generate` 工具**：结果里有一个 `markdown` 字段（形如 `![output.png](image-studio-output/.../output.png)`，路径已按会话工作目录算好）——把这一行**原样**写进回复正文，再加一两句话收尾。不要改写路径、不要自己算、不要运行任何命令。
    - **走 CLI（没有工具）**：先用 `--out <目录>` 把图下载到**当前工作目录**下，再在正文写 `![文件名](相对当前目录的路径)`。不要写到工作区根目录去。
 
+## Select a compute node
+
+Run `placements` to list registered model placements. In the confirmation tool, pass `node_id` (display name or Scheduler node ID) and the model key when the user names a node. With the CLI, pass `--node-id` or `--compute-deployment-id` to `generate`. Preserve the requested placement when retrying. Read `scheduler_task_id` from the job to verify the actual node in V-Scheduler.
+
 ## Generate images and videos
 
 A job is created immediately (`queued`) and runs in the background. `--wait` polls until it finishes and downloads the outputs:

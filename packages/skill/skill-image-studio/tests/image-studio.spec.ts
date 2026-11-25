@@ -47,6 +47,13 @@ async function startApi(): Promise<{ server: Server; baseUrl: string; recorded: 
       json({ key: 'sd35', status: 'downloading', progress: 0 })
       return
     }
+    if (url.pathname === '/api/v1/compute/placements') {
+      json([
+        { deployment_id: 'a'.repeat(32), model_id: 'sdxl@q8_0', node_id: 'spark-a-id', node_name: 'Spark A' },
+        { deployment_id: 'b'.repeat(32), model_id: 'sdxl@q8_0', node_id: 'spark-b-id', node_name: 'Spark B' },
+      ])
+      return
+    }
     if (url.pathname === '/api/v1/inputs' && req.method === 'POST') {
       json({ input_id: 'in_1', url: '/api/v1/inputs/in_1' })
       return
@@ -123,6 +130,23 @@ describe('bundled Image Studio skill', () => {
 })
 
 describe('Image Studio CLI', () => {
+  it('pins a named compute node and rejects an unavailable node before submitting', async () => {
+    const { server, baseUrl, recorded } = await startApi()
+    const { node, cli } = runtimePaths()
+    try {
+      const args = [cli, '--base-url', baseUrl, 'generate', '--prompt', 'tea house', '--model-key', 'sdxl']
+      await execFileAsync(node, [...args, '--node-id', 'Spark B'])
+      await expect(execFileAsync(node, [...args, '--node-id', 'Unknown Spark'])).rejects.toThrow()
+      const requests = recorded.filter(entry => entry.method === 'POST' && entry.path === '/api/v1/generate')
+      expect(requests).toHaveLength(1)
+      expect(JSON.parse(requests[0]!.body)).toMatchObject({
+        compute_deployment_id: 'b'.repeat(32), model_key: 'sdxl', model_variant: 'q8_0',
+      })
+    } finally {
+      server.close()
+    }
+  })
+
   it('generates, waits, downloads, and forwards the bearer token', async () => {
     const { server, baseUrl, recorded } = await startApi()
     const root = await mkdtemp(join(tmpdir(), 'image-studio-cli- '))

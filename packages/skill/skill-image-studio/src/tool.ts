@@ -13,7 +13,7 @@ import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import {
-  buildFormFields, generateArguments, readConfirmed, withoutFormIntent, type CatalogEntry,
+  buildFormFields, generateArguments, readConfirmed, withoutFormIntent, type CatalogEntry, type ComputePlacement,
 } from './params.ts'
 
 /** Resolved Image Studio endpoints and executables the CLI needs on every call. */
@@ -105,6 +105,8 @@ async function runJson(
 interface GenerateOutput {
   job_id: string
   status: string
+  node_name?: string
+  scheduler_task_id?: string
   seed: number
   directory: string
   files: { path: string; filename: string; bytes: number }[]
@@ -182,6 +184,8 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
       prompt: { type: 'string', required: true, description: 'Starting positive prompt; the user may edit it in the form.' },
       model_key: { type: 'string', description: 'Starting model; the user picks from the ready text-to-image models in the form.' },
       negative_prompt: { type: 'string', description: 'Starting negative prompt.' },
+      node_id: { type: 'string', description: 'Prefer an Image Studio compute node by display name or V-Scheduler ID. The user confirms the target.' },
+      compute_deployment_id: { type: 'string', description: 'Prefer a registered Image Studio deployment. The user confirms the target.' },
     },
     output: {
       schema: {
@@ -190,6 +194,8 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
         properties: {
           job_id: { type: 'string', required: true },
           status: { type: 'string', required: true },
+          node_name: { type: 'string' },
+          scheduler_task_id: { type: 'string' },
           seed: { type: 'number', required: true },
           directory: { type: 'string', required: true },
           files: {
@@ -251,7 +257,10 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
       if (models.length === 0) {
         throw new Error('no ready text-to-image model: run `models --ready`, then `pull <key>` for a text-to-image one')
       }
-      const fields = buildFormFields(args, models)
+      const placementCatalog = await runJson(ctx, runtime, ['placements'], CATALOG_TIMEOUT_MS, exec.signal) as { placements?: ComputePlacement[] }
+      const placements = (placementCatalog.placements ?? []).filter(row => !row.has_reference
+        && models.some(model => model.key === row.model_id.split('@')[0]))
+      const fields = buildFormFields(args, models, placements)
       let answers: AskUserQuestionAnswer
       try {
         answers = await ctx.userQuestions.ask({ questions: fields, agent: exec.agent, signal: exec.signal })
@@ -265,7 +274,8 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
           signal: exec.signal,
         })
       }
-      const flags = ['generate', ...generateArguments(readConfirmed(answers, models))]
+      const confirmed = readConfirmed(answers, models, placements)
+      const flags = ['generate', ...generateArguments(confirmed)]
       // A model whose calibrated ceiling sits below the service's own defaults
       // rejects a parameterless job; step down to the smallest legal size once
       // instead of handing the user a 422 on the confirmation they just made.
@@ -280,6 +290,7 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
       const jobValue = job as {
         job_id?: string
         status?: string
+        scheduler_task_id?: string
         seed?: number
         directory?: string
         files?: { path: string; filename: string; bytes: number }[]
@@ -290,6 +301,8 @@ export function registerImageStudioTool(ctx: Context, runtime: ImageStudioToolRu
       const output = {
         job_id: jobValue.job_id ?? '',
         status: jobValue.status ?? 'unknown',
+        ...(confirmed.nodeName ? { node_name: confirmed.nodeName } : {}),
+        ...(jobValue.scheduler_task_id ? { scheduler_task_id: jobValue.scheduler_task_id } : {}),
         seed: jobValue.seed ?? -1,
         directory: jobValue.directory ?? '',
         files,
