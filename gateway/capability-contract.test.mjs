@@ -45,6 +45,7 @@ import {
   writeCapabilityContract,
 } from './capability-registry.mjs';
 import { EGRESS_PREFIX, egressRefusal, handleEgress, parseEgressPath } from './egress.mjs';
+import { forgetTokens, rememberTokens } from './vos-token-store.mjs';
 
 const MODULES = [
   { name: 'voffice', module: office },
@@ -131,6 +132,39 @@ function listen(server, port = 0) {
 function delegate({ stateRoot, home, subject, capabilities }) {
   return writeCapabilityContract({ stateRoot, home, subject, account: ACCOUNT, uid: UID, capabilities });
 }
+
+it('signs Image Studio placement and generation requests with the selected tenant credential', async () => {
+  const seen = [];
+  const upstream = createServer((req, res) => {
+    seen.push([req.url, req.headers.authorization]);
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  });
+  await listen(upstream);
+  const previous = process.env.VH_IMAGE_STUDIO_URL;
+  process.env.VH_IMAGE_STUDIO_URL = `http://127.0.0.1:${upstream.address().port}`;
+  rememberTokens('studio-a', { access: 'fixture-a', expiresAt: Date.now() + 120_000 });
+  rememberTokens('studio-b', { access: 'fixture-b', expiresAt: Date.now() + 120_000 });
+  const capability = await import('./image-studio.mjs?tenant-placement-auth');
+  const gateway = createServer((req, res) => {
+    void capability.handleImageStudioEgress(req.headers['x-test-tenant'], req, res);
+  });
+  await listen(gateway);
+  try {
+    const port = gateway.address().port;
+    const placements = '/api/v1/compute/placements';
+    assert.equal((await ask({ port, path: placements, headers: { 'x-test-tenant': 'studio-a', authorization: 'Bearer untrusted' } })).status, 200);
+    assert.equal((await ask({ port, path: '/api/v1/generate', method: 'POST', headers: { 'x-test-tenant': 'studio-b' } })).status, 200);
+    assert.equal((await ask({ port, path: placements, headers: { 'x-test-tenant': 'signed-out' } })).status, 401);
+    assert.deepEqual(seen, [[placements, 'Bearer fixture-a'], ['/api/v1/generate', 'Bearer fixture-b']]);
+  } finally {
+    forgetTokens('studio-a');
+    forgetTokens('studio-b');
+    if (previous === undefined) delete process.env.VH_IMAGE_STUDIO_URL;
+    else process.env.VH_IMAGE_STUDIO_URL = previous;
+    await Promise.all([gateway, upstream].map(server => new Promise(resolve => server.close(resolve))));
+  }
+});
 
 describe('capability registry', () => {
   it('names every capability socket exactly once', () => {

@@ -1,13 +1,9 @@
 /**
  * Per-tenant Image Studio capability endpoint.
  *
- * The service has no authentication of its own (`/api/v1/me` answers
- * `authenticated: false` and issues a fixed anonymous `user_key`), so unlike
- * `album.mjs` there is nothing to exchange here: the endpoint is a route-scoped
- * reverse proxy and nothing more. What it buys is the network: the skill used to
- * dial `http://image-studio-backend:5000` from inside the tenant namespace,
- * which forced the egress policy to keep one platform address open. Over a unix
- * socket the tenant needs no route to the platform network at all.
+ * The gateway signs Image Studio requests with the calling tenant's stored
+ * VOS credential. Remote placements and jobs use the same identity as the
+ * Image Studio UI, and the credential stays outside the tenant process.
  *
  * The route table is the skill's own command surface; every other path is
  * refused locally so the socket cannot be used to reach the rest of the API.
@@ -21,6 +17,7 @@ import { join } from 'node:path';
 
 import { runUserHelper } from './instances.mjs';
 import { listenOnSocket } from './socket-path.mjs';
+import { accessTokenFor } from './vos-token-store.mjs';
 
 const DEFAULT_IMAGE_STUDIO_URL = 'http://image-studio-backend:5000';
 const IMAGE_STUDIO_URL = (process.env.VH_IMAGE_STUDIO_URL ?? DEFAULT_IMAGE_STUDIO_URL).replace(/\/+$/, '');
@@ -80,16 +77,25 @@ function json(res, status, payload) {
 
 /**
  * Proxy one capability request to the Image Studio backend.
+ * @param {string} namespace
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
  * @returns {Promise<void>}
  */
-async function forward(req, res) {
+async function forward(namespace, req, res) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const method = req.method ?? 'GET';
   const path = url.pathname;
   if (!isAllowed(method, path)) {
     json(res, 403, { error: 'route-not-allowed', message: '该路径不在 Image Studio 能力范围内' });
+    return;
+  }
+  const token = path === '/health' ? undefined : await accessTokenFor(namespace);
+  if (!token && path === '/api/v1/compute/placements') {
+    json(res, 401, {
+      error: 'vos-token-unavailable',
+      message: 'VOS 登录令牌缺失或已过期，请在 v-harness 页面刷新后重试',
+    });
     return;
   }
 
@@ -106,6 +112,7 @@ async function forward(req, res) {
     path: `${basePath}${path}${url.search}`,
     headers: {
       accept: req.headers.accept ?? 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       // Referer and Origin stay behind: the backend does not use them, and
       // forwarding a tenant-supplied origin is the one header office.mjs had to
       // sanitise.
@@ -147,13 +154,13 @@ async function forward(req, res) {
  *
  * The route table and upstream are the same as the gateway socket's: the
  * plugin owns the socket, not the semantics.
- * @param {string} _namespace unused; Image Studio is per-deployment, not per-tenant.
+ * @param {string} namespace
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
  * @returns {Promise<void>}
  */
-export async function handleImageStudioEgress(_namespace, req, res) {
-  await forward(req, res);
+export async function handleImageStudioEgress(namespace, req, res) {
+  await forward(namespace, req, res);
 }
 
 /**
@@ -166,7 +173,7 @@ async function start(options) {
   const socketPath = join(home, '.dsh', SOCKET_NAME);
 
   const server = createServer((req, res) => {
-    void forward(req, res).catch((error) => {
+    void forward(options.namespace, req, res).catch((error) => {
       console.error(`image-studio capability failed (${options.namespace}):`, error);
       if (!res.headersSent) json(res, 500, { error: 'capability-failed' });
       else res.destroy();
