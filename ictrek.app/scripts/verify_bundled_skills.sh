@@ -4,9 +4,13 @@ skill_root=/opt/v-harness/skills
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
-for name in archify mnemon ppt-design-skill vox-director; do
+for name in archify mnemon ppt-design-skill vox-director pgv; do
     grep -qx "name: $name" "$skill_root/$name/SKILL.md"
 done
+test -s "$skill_root/pgv/references/native.md"
+test -s "$skill_root/pgv/references/connector.md"
+psql --version
+redis-cli --version
 test ! -e "$skill_root/browser-skill"
 ! command -v bsk >/dev/null 2>&1
 
@@ -52,4 +56,4 @@ Path("beats.json").write_text(json.dumps({
 PY
 python3 "$skill_root/vox-director/scripts/assemble.py" "$scratch"
 ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 final.mp4 | grep -qx h264
-printf '%s\n' 'Four bundled skill smoke tests passed.'
+printf '%s\n' 'Bundled skill smoke tests passed.'

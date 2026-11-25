@@ -129,4 +129,6 @@ VOS 系统管理员打开会话，点击「应用容器管理」，再点击「�
 
 Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。生成文件写入用户工作区，Mnemon 将记忆存放在当前用户的持久目录里，Atlas Cloud 视频生成需要用户配置密钥。使用 `POST /sessions/{sessionId}/prompts` 提交任务，通过 `GET /sessions/{sessionId}/events` 查看进度。会话 API 约定保持现状。
 
+调用 PGV 时，向同一个提示词端点提交 `{"requestId":"<唯一ID>","text":"用 /pgv 检查已配置的 PostgreSQL 数据库安装了哪些扩展。"}`。Agent 使用已为工作区配置的服务凭据连接 PGV，通过现有提示词和事件端点返回结果。加入 `vos_default` 的 VOS 应用也可直连 `pgv:5432`（PostgreSQL）或 `pgv-redis:6379`（Redis）。数据库连接器 HTTP 基址为可信内网的 `http://pgv-viewer:8081/app/com.ictrek.pgv`，或使用 VOS CA 的 `https://<vos-host>:1180/app/com.ictrek.pgv`。使用同源 `Origin` 和 JSON `{"access_token":"<VOS admin 令牌>"}` 调用 `POST /api/vos/login` 获取 `pgv_vos_session` Cookie。携带该 Cookie 调用 `GET /api/auth/check` 和 `GET /api/connection/list`，最后携带 Cookie 与同源 `Origin` 调用 `POST /api/auth/logout` 注销。PGV 服务凭据和 v-harness Bearer 令牌各用于对应的接口。PGV 完整请求字段、响应和错误见 **PGV → 接入指南 → API 与协议参考**。
+
 在「插件 → 已安装」中，可以启用 ModSearch 处理网页搜索，或启用 Billion Context 管理符合条件的模型请求上下文。两个插件均默认关闭。通过 API 创建的会话使用当前租户在 Web 界面配置的插件及设置。VOS API v1 的会话、提示词和事件协议保持一致。安装使用步骤见 [VAI 应用使用文档](https://twp99wyutbs.feishu.cn/docx/DTWGdRXGhoblP5xue4Gcf8Bpnsc)。

@@ -300,7 +300,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
  && apt-get install -y --no-install-recommends \
       sudo util-linux ca-certificates curl wget \
       build-essential python3 python3-pip python3-venv linux-libc-dev xz-utils \
-      postgresql-client sqlite3 \
+      postgresql-client redis-tools sqlite3 \
       git openssh-client \
       procps iproute2 net-tools iputils-ping netcat-openbsd bind9-dnsutils \
       iptables nftables bubblewrap tini \

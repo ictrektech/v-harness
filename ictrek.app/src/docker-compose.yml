@@ -22,7 +22,7 @@ x-v-harness-env: &v-harness-env
   # 只有这里列出的名字会被解析成当前地址并放行（见 gateway/instances.mjs 的
   # allowedDestinations）。用服务名而不是 IP：容器重建后地址会变，写死的 /32
   # 会变成一条看起来正确、实际永不匹配的规则。
-  VH_NET_ALLOW_HOSTS: ${VH_NET_ALLOW_HOSTS:-v-voice-backend}
+  VH_NET_ALLOW_HOSTS: ${VH_NET_ALLOW_HOSTS:-v-voice-backend,pgv,pgv-redis,pgv-viewer}
   SESSION_TTL_MS: ${SESSION_TTL_MS:-43200000}
   DSH_PERMISSION_MODE: workspace-write
   # Docker Hub is not reachable from these hosts: `registry-1.docker.io` and

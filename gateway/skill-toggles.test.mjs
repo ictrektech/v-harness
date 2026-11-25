@@ -78,12 +78,14 @@ test('lists the shipped skills, grouped by kind', async () => {
   await mkdir(join(root, 'voffice'), { recursive: true });
   await mkdir(join(root, 'album'), { recursive: true });
   await mkdir(join(root, 'archify'), { recursive: true });
+  await mkdir(join(root, 'pgv'), { recursive: true });
   await writeFile(join(root, 'THIRD_PARTY.md'), '# notices', 'utf8');
   process.env.BUNDLED_SKILL_DIR = root;
   const listed = await listShippedSkills();
   assert.deepEqual(listed, [
     { name: 'album', service: true },
     { name: 'archify', service: false },
+    { name: 'pgv', service: true },
     { name: 'voffice', service: true },
   ]);
 });

@@ -88,3 +88,9 @@ Node 24 基镜像按架构上传到 ictrek SWR，标签为 `node:24-bookworm-sli
 - 重启应用或清理对象时，核对预览中的应用 ID、容器 ID 或镜像 ID，输入完整 ID 后确认。预览 60 秒内单次有效，目标发生变化时必须重新预览。重启由 VOS 执行，受理后会显示任务 ID。
 
 VOS 系统管理员在会话里选择「完全访问（VOS 运维）」即可直接诊断。Agent 提出重启或清理时，会话里会显示具体目标并请管理员确认。会话继续使用工作区沙箱。支持的操作见「设置 → API 文档」。
+
+## PGV 内置技能 / Built-in PGV skill
+
+在同一台 VOS 启动 PGV 后，在会话中输入 `/pgv`。使用工作区已获授权的服务凭据。自定义 `VH_NET_ALLOW_HOSTS` 时，在允许 PGV 的部署中保留 `pgv,pgv-redis,pgv-viewer`。PGV 容器地址变动后需重新启动租户运行实例。接入说明见 [技能文档](../skills/pgv/SKILL.md)。
+
+Start PGV on the same VOS device, then use `/pgv` with the workspace's approved service credentials. If you override `VH_NET_ALLOW_HOSTS`, include `pgv,pgv-redis,pgv-viewer` where PGV access is intended. Restart the tenant runtime after a PGV container address changes. See the [skill instructions](../skills/pgv/SKILL.md).

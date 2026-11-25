@@ -17,7 +17,7 @@ import { randomBytes } from 'node:crypto'
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 /** Skills that front a VOS application, grouped apart from authoring tools. */
-const SERVICE_SKILLS = new Set(['voffice', 'weknora', 'album', 'image-studio', 'photocraft'])
+const SERVICE_SKILLS = new Set(['voffice', 'weknora', 'album', 'image-studio', 'photocraft', 'pgv'])
 
 /** The bundled skill root the image ships, overridable for a relocated deployment. */
 function bundledSkillDir() {
