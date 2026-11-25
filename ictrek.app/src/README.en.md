@@ -97,4 +97,4 @@ Type a skill name such as `/archify` in a conversation, or describe the task. Th
 
 Find agent API authentication and session operations under **Settings → API documentation**. The new skills use the existing session interface.
 
-Select a V-Scheduler ModelInfer DeepSeek V4 chat model in Settings → Models, then choose its reasoning level in the conversation model picker. Off and High send `reasoning_effort: "none"` and `reasoning_effort: "high"` on Chat Completions. High is the default. The existing Agent session model catalog reports the available levels.
+Select a V-Scheduler ModelInfer DeepSeek V4 chat model in Settings → Models, then choose its reasoning level in the conversation model picker. Off, Low, High and Max send `reasoning_effort` values `none`, `low`, `high` and `max` on Chat Completions. High is the default. The existing Agent session model catalog reports the available levels.

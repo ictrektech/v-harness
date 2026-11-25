@@ -866,14 +866,15 @@ describe('provider profile lifecycle', () => {
     expect(server.requests[0]).toMatchObject({ reasoning_effort: 'none' })
   })
 
-  it('discovers managed Scheduler effort and sends High, Off, and the default over Chat Completions', async () => {
+  it('discovers managed Scheduler effort and sends all efforts and the default over Chat Completions', async () => {
     const model = 'registered/DeepSeek-V4.1-Flash-1017'
     const catalog = { body: JSON.stringify({ data: [{
       id: model, api: 'openai-completions', input: ['text', 'image'],
-      reasoningEfforts: { off: 'none', high: 'high' },
+      reasoningEfforts: { off: 'none', low: 'low', high: 'high', max: 'max' },
     }] }) }
     const stream = { events: textEvents }
-    const server = await mockServer([catalog, catalog, stream, catalog, stream, catalog, stream])
+    const efforts = ['off', 'low', 'high', 'max', undefined] as const
+    const server = await mockServer([catalog, ...efforts.flatMap(() => [catalog, stream])])
     const ctx = new Context()
     onTestFinished(() => ctx.fiber.dispose())
     ctx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([{
@@ -882,16 +883,16 @@ describe('provider profile lifecycle', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {})
     const descriptor = await ctx.llm.resolveModelInfo('v-scheduler', model)
-    expect(descriptor.reasoning?.efforts.map(effort => effort.id)).toEqual(['off', 'high'])
+    expect(descriptor.reasoning?.efforts.map(effort => effort.id)).toEqual(['off', 'low', 'high', 'max'])
     expect(descriptor.reasoning?.defaultEffort).toBe('high')
-    for (const effort of ['high', 'off', undefined] as const) {
+    for (const effort of efforts) {
       await assemble(ctx, {
         provider: 'v-scheduler', model, messages: [], system: 'test',
         ...effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) },
       })
     }
     const requests = server.requests.filter((_, index) => server.paths[index] === '/v1/chat/completions')
-    expect(requests.map(request => (request as { reasoning_effort?: string }).reasoning_effort)).toEqual(['high', 'none', 'high'])
+    expect(requests.map(request => (request as { reasoning_effort?: string }).reasoning_effort)).toEqual(['none', 'low', 'high', 'max', 'high'])
   })
 
   it('holds back reasoning_effort when the endpoint cannot take it', async () => {

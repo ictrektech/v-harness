@@ -97,4 +97,4 @@ VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开�
 
 Agent API 的鉴权和会话用法见「设置 → API 文档」。新技能沿用现有会话接口。
 
-在「设置 → 模型」选择 V-Scheduler 提供的 ModelInfer DeepSeek V4 对话模型，再从新会话输入区的模型选择器选择思考级别。支持「关闭」和「高」，默认「高」。Chat Completions 的请求体分别发送 `reasoning_effort: "none"` 和 `reasoning_effort: "high"`。可选级别随原有 Agent 会话模型目录返回。
+在「设置 → 模型」选择 V-Scheduler 提供的 ModelInfer DeepSeek V4 对话模型，再从新会话输入区的模型选择器选择思考级别。支持「关闭」「低」「高」「最高」，默认「高」。Chat Completions 的请求体分别通过 `reasoning_effort` 发送 `none`、`low`、`high`、`max`。可选级别随原有 Agent 会话模型目录返回。

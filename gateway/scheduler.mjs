@@ -66,7 +66,7 @@ export function schedulerModels(payload) {
       && /^deepseek-v4(?:\.\d+)?-(?:flash|pro)(?:-|$)/i.test(String(row.id).split('/').at(-1));
     return [{
       id, name: row.name ?? id, api, input: capabilities.includes('vision') ? ['text', 'image'] : ['text'],
-      ...(hasEffort ? { reasoningEfforts: { off: 'none', high: 'high' } } : {}),
+      ...(hasEffort ? { reasoningEfforts: { off: 'none', low: 'low', high: 'high', max: 'max' } } : {}),
     }];
   });
 }

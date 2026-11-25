@@ -50,8 +50,8 @@ export function applyScheduler(ctx: Context): readonly string[] {
         const efforts = row.reasoningEfforts
         const model: PiAiModelProfile = { id: row.id, name: typeof row.name === 'string' ? row.name : row.id, input: row.input }
         if (row.api === 'openai-completions' && efforts && typeof efforts === 'object'
-          && efforts.off === 'none' && efforts.high === 'high') {
-          model.reasoningEfforts = { off: 'none', high: 'high' }
+          && efforts.off === 'none' && efforts.low === 'low' && efforts.high === 'high' && efforts.max === 'max') {
+          model.reasoningEfforts = { off: 'none', low: 'low', high: 'high', max: 'max' }
           model.compat = { supportsDeveloperRole: false, supportsReasoningEffort: true, thinkingFormat: 'openai' }
         }
         group.push(model)
