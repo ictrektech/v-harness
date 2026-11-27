@@ -76,10 +76,7 @@
 # would replace the whole config and drift from the plugin's versioned bundle
 # defaults.
 
-# VOS dictation reuses V-Voice through the tenant's V-Scheduler capability.
-- id: speech-to-text
-  config:
-    defaultProvider: v-scheduler-voice
+# The VOS bundle supplies the initial selection; saved user choices take precedence.
 - insert:
     - id: speech-to-text-v-scheduler
       name: /usr/local/share/vh-voice/index.mjs

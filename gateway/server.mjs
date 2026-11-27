@@ -22,6 +22,7 @@
 import { createHash } from 'node:crypto';
 import { open, readFile, unlink } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
+import { openMotionHeaders } from './openmotion-service.mjs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'node:zlib';
@@ -1206,13 +1207,21 @@ async function proxyServiceRequest(req, res, url) {
     return;
   }
   const path = `${match[2] ?? '/'}${url.search}`;
+  const headers = serviceHeaders(req, target.port);
+  if (resolveService(session.subject, port)?.name === 'OpenMotion') {
+    headers.host = `${target.host}:${String(target.port)}`;
+    if (!openMotionHeaders(req, headers)) {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
+  }
   await new Promise((resolve) => {
     const upstream = httpRequest({
       host: target.host,
       port: target.port,
       method: req.method,
       path,
-      headers: serviceHeaders(req, target.port),
+      headers,
     }, (upstreamRes) => {
       /** @type {Record<string, string | string[]>} */
       const responseHeaders = {};
@@ -1262,6 +1271,14 @@ async function proxyServiceUpgrade(req, socket, head) {
     return;
   }
   const headers = serviceHeaders(req, target.port);
+  if (resolveService(session.subject, port)?.name === 'OpenMotion') {
+    headers.host = `${target.host}:${String(target.port)}`;
+    if (!openMotionHeaders(req, headers)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
   headers.connection = 'Upgrade';
   headers.upgrade = String(req.headers.upgrade ?? 'websocket');
 

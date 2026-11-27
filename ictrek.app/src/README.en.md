@@ -112,7 +112,7 @@ You can also ask the agent to manage these resources. For example, “List compu
 Workflow:
 
 1. Select a workspace in v-harness. Under **Plugins → Installed → openmotion-dsh**, check that the switch is on. Restart the workspace if prompted.
-2. Ask “Use OpenMotion to open the template library,” or describe the subject, duration, aspect ratio and style. Once the agent calls the plugin, open its returned preview/Studio link. Opening plugin details alone does not open the editor.
+2. Ask “Use OpenMotion to open the template library,” or describe the subject, duration, aspect ratio and style. Once the agent calls the plugin, open its returned preview/Studio link. Opening plugin details alone does not open the editor. Preview links require your VOS account. Preserve the complete path, query and hash; refresh the workspace if sign-in expires.
 3. Review the visuals and timeline in the preview, and request edits in chat. Preview before approving export. Follow OpenMotion’s setup instructions to configure providers when generating image, video, music or narration assets.
 4. After approval, ask the agent to export MP4 and save the project, assets and final video in the workspace. Projects use `$HOME/workspace/OpenMotion`. Download the returned files or back them up separately.
 
@@ -126,6 +126,8 @@ Workspaces, designs, exported files, sessions and plugin settings under your ten
 OpenMotion, Billion Context, Voice input, Custom plugin indexes, Auto authorization review, and Change requests & worktrees are enabled by default. Find the experimental features under **Plugins → Installed → Experimental plugins**. ModSearch remains disabled by default.
 
 Voice input selects **V-Voice · V-Scheduler**, reusing ASR models enabled in V-Voice with V-Scheduler user authorization and resource admission. The v-harness release image excludes the local SenseVoice plugin and its sherpa-onnx native dependencies; it does not download or load local recognition models. Install and start V-Voice and V-Scheduler, and prepare an ASR model in V-Voice. In Voice input settings, allow microphone access, select the input device and language, then record in the conversation composer. Check the transcription before sending the message. If unavailable, check the V-Voice model and scheduling resources and retry; refresh v-harness when sign-in expires. Upgrades migrate the former local SenseVoice selection to this service while retaining old model files.
+
+Under **Plugins → Installed → Voice input**, open **Recognition service / compute node**. `V-Voice · V-Scheduler` uses automatic routing; each `V-Voice · <model> · <node>` option selects that node’s registered deployment and executor. Ask an administrator to prepare the backend and model in V-Voice, then click **Refresh compute nodes** and select an available option. Selection is saved for your account and captured when recording starts. An unavailable node or a mismatched execution placement fails the transcription without switching nodes. Refresh, select an available option and record again. Node selection requires V-Voice `/api/v1/compute/placements` and `/api/v1/compute/transcriptions`; older releases expose only automatic recognition.
 
 Git, GitHub CLI (`gh`), and GitLab CLI (`glab`) are installed in the image for change requests and worktrees. Private repositories still require signing in inside the tenant. Enabling custom plugin indexes does not add index sources. Enabling Auto authorization review makes that access mode available without changing existing conversations' access modes.
 

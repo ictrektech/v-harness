@@ -224,3 +224,29 @@ it('gives each speech recognition language a distinct localized name', () => {
   }
   expect(zh.fr).toBe('法语')
 })
+
+it('selects a VOS compute node and refreshes placements without offering local installation', async () => {
+  const automatic = 'v-scheduler-voice' as SpeechProviderId, remote = 'v-scheduler-voice/deployment/executor' as SpeechProviderId
+  const provider = { id: automatic, name: 'V-Voice · V-Scheduler', location: 'cloud' as const, languages: ['auto', 'en'], preparation: { phase: 'ready' as const } }
+  const store = createSnapshotStore<SpeechReadiness>({ connected: true, error: null, catalog: {
+    selection: { providerId: automatic, language: 'auto' }, maxAudioBytes: 4194304, maxDurationSeconds: 120,
+    providers: [provider, { ...provider, id: remote, name: 'V-Voice · sensevoice-int8 · node-a' }],
+  } })
+  const configure = vi.fn<VoiceInputProps['configure']>(async () => {}), prepare = vi.fn(async () => {})
+  const props = { useSpeechReadiness: bindSnapshotSelector(store), configure, prepare, t,
+    useMicrophoneDevice: bindSnapshotSelector(createSnapshotStore({ id: '', label: '' })),
+    selectMicrophone: vi.fn(), createRecording: () => new Recording(() => {}), cancelPreparation: vi.fn(async () => {}) }
+  const view = render(<VoicePreparation {...props} />)
+  fireEvent.change(screen.getByLabelText(zh.vosProvider), { target: { value: remote } })
+  await waitFor(() => { expect(configure).toHaveBeenCalledWith({ providerId: remote }) })
+  const current = store.getSnapshot()
+  act(() => { store.set({ ...current, catalog: { ...current.catalog!, selection: { providerId: remote, language: 'auto' } } }) })
+  expect(view.container.querySelectorAll('[data-speech-provider]')).toHaveLength(1)
+  expect(screen.getByText(zh.vos)).toBeTruthy()
+  expect(screen.queryByText(zh.prepare)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: zh.refreshNodes }))
+  expect(prepare).toHaveBeenCalledWith(remote)
+  act(() => { store.set({ ...current, catalog: { ...current.catalog!, providers: [provider], selection: { providerId: remote, language: 'auto' } } }) })
+  expect(screen.getByRole<HTMLOptionElement>('option', { name: zh.nodeUnavailable }).disabled).toBe(true)
+  expect(screen.getByRole('button', { name: zh.refreshNodes })).toBeTruthy()
+})

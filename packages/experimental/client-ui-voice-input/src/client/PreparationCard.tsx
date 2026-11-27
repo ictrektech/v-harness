@@ -49,7 +49,8 @@ export function PreparationCard({ provider, connected, prepare, cancelPreparatio
   const sources = provider.downloadSources ?? []
   const [firstSource = ''] = sources
   const selectedSource = sources.includes(source) ? source : sources.length === 1 ? firstSource : ''
-  const canPrepare = ['unprepared', 'cancelled', 'failed'].includes(state.phase)
+  const vos = provider.id.startsWith('v-scheduler-voice')
+  const canPrepare = ['unprepared', 'cancelled', 'failed'].includes(state.phase) || vos && state.phase === 'ready'
   const current = state.steps?.find(step => step.status === 'running' || step.status === 'failed' || step.status === 'cancelled')
   const preparing = preparationTone(state) === 'ongoing'
   const startedAt = current?.startedAt ?? ('startedAt' in state ? state.startedAt : undefined)
@@ -68,7 +69,7 @@ export function PreparationCard({ provider, connected, prepare, cancelPreparatio
   const summary = !connected ? t('reconnecting') : preparing && current ? t(`step.${current.kind}`, { name: provider.name })
     : state.phase === 'downloading' ? t('short.downloading')
       : state.phase === 'failed' ? t('short.failed')
-        : state.phase === 'ready' && provider.location === 'cloud' ? t(provider.id === 'v-scheduler-voice' ? 'vosReady' : 'cloudReady')
+        : state.phase === 'ready' && provider.location === 'cloud' ? t(provider.id.startsWith('v-scheduler-voice') ? 'vosReady' : 'cloudReady')
           : t(`preparation.${state.phase}`, { name: provider.name })
   return <section className={css.preparation} data-speech-provider={provider.id}>
     <strong>{provider.name}</strong>
@@ -120,7 +121,7 @@ export function PreparationCard({ provider, connected, prepare, cancelPreparatio
     </div>}
     <div className={css.preparationActions}>
       {canPrepare && <Button variant="outline" size="sm" disabled={!connected || submitting}
-        onClick={() => { void run(() => selectedSource === '' ? prepare(provider.id) : prepare(provider.id, { downloadSource: selectedSource })) }}>{t(state.phase === 'unprepared' ? 'prepare' : 'retryPrepare')}</Button>}
+        onClick={() => { void run(() => selectedSource === '' ? prepare(provider.id) : prepare(provider.id, { downloadSource: selectedSource })) }}>{t(vos ? 'refreshNodes' : state.phase === 'unprepared' ? 'prepare' : 'retryPrepare')}</Button>}
       {preparing && state.phase !== 'waking' && <Button variant="ghost" size="sm" disabled={!connected || submitting || state.phase === 'cancelling'}
         onClick={() => { void run(() => cancelPreparation(provider.id)) }}>{t('cancelPrepare')}</Button>}
     </div>
@@ -145,8 +146,9 @@ export function VoicePreparation({ useSpeechReadiness, ...props }: Pick<InjectFa
   return <div>
     {catalog && <div className={css.preferences}>
       <MicrophonePicker {...props} />
-      <label>{props.t('provider')}<select value={catalog.selection.providerId} disabled={!readiness.connected || saving}
+      <label>{props.t(selected?.id.startsWith('v-scheduler-voice') ? 'vosProvider' : 'provider')}<select value={catalog.selection.providerId} disabled={!readiness.connected || saving}
         onChange={(event) => { void configure({ providerId: event.target.value as SpeechProviderId }) }}>
+        {!selected && <option value={catalog.selection.providerId} disabled>{props.t('nodeUnavailable')}</option>}
         {catalog.providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
       </select></label>
       <label>{props.t('language')}<select value={catalog.selection.language} disabled={!readiness.connected || saving}
@@ -154,10 +156,10 @@ export function VoicePreparation({ useSpeechReadiness, ...props }: Pick<InjectFa
         {selected?.languages.map(language =>
           <option key={language} value={language}>{languageNames[language] ?? language}</option>)}
       </select></label>
-      <p>{props.t(selected?.id === 'v-scheduler-voice' ? 'vos' : selected?.location === 'cloud' ? 'cloud' : 'local')}</p>
+      <p>{props.t(selected?.id.startsWith('v-scheduler-voice') ? 'vos' : selected?.location === 'cloud' ? 'cloud' : 'local')}</p>
       {error && <p role="alert">{props.t('failed', { message: error })}</p>}
     </div>}
-    {catalog?.providers.map(provider =>
+    {catalog?.providers.filter(provider => !provider.id.startsWith('v-scheduler-voice') || provider.id === catalog.selection.providerId || !selected && provider.id === 'v-scheduler-voice').map(provider =>
       <PreparationCard key={provider.id} provider={provider} connected={readiness.connected} {...props} />)}
     {!catalog && <p role="status">{props.t('loading')}</p>}
     {readiness.error && <p role="alert">{props.t('failed', { message: readiness.error })}</p>}

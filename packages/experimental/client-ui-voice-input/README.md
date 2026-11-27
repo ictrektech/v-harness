@@ -57,7 +57,7 @@ Native MediaRecorder captures audio and Web Audio converts it to the Host PCM fo
 -----
 
 <a id="model-experience"></a>
-The VOS profile enables voice input and selects **V-Voice · V-Scheduler**. It reuses V-Voice ASR through the tenant inference capability and disables the local SenseVoice provider, so this profile does not download local speech models. In its settings, the VOS provider shows service readiness and identifies the V-Scheduler route. Install and start V-Voice and V-Scheduler and enable an ASR model there. The browser still requires microphone permission. Other profiles retain their local SenseVoice setup.
+The VOS profile enables voice input and selects **V-Voice · V-Scheduler**. Its release image excludes the local SenseVoice plugin and sherpa-onnx native dependencies. Install and start V-Voice and V-Scheduler and prepare an ASR model in V-Voice; the browser still needs microphone permission. The default service uses automatic scheduling. **Recognition service / compute node** selects a registered V-Voice model and node; **Refresh compute nodes** updates the catalog. Selection is saved per account and captured when recording starts. Unavailable nodes or mismatched execution placements fail without falling back to another node. Older V-Voice releases offer only automatic recognition. Other profiles retain local SenseVoice setup.
 
 ## Model Experience
 

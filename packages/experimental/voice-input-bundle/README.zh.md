@@ -49,7 +49,7 @@ kind: "package-bundle"
 -----
 
 <a id="model-experience"></a>
-VOS 配置默认开启语音输入并选择 **V-Voice · V-Scheduler**，通过租户推理能力复用 V-Voice ASR，同时停用本地 SenseVoice 服务，因此不会下载本地识别模型。设置页显示服务就绪状态和 V-Scheduler 调用路径。需先安装并启动 V-Voice、V-Scheduler，并在 V-Voice 启用 ASR 模型；浏览器仍需麦克风权限。其他配置保留本地 SenseVoice 的安装流程。
+VOS 配置默认开启语音输入并选择 **V-Voice · V-Scheduler**，发布镜像不包含本地 SenseVoice 插件及 sherpa-onnx 原生依赖。先安装并启动 V-Voice、V-Scheduler，在 V-Voice 准备 ASR 模型；浏览器仍需麦克风权限。默认服务使用自动调度。在「识别服务 / 运算节点」可选择 V-Voice 已登记的模型和节点；「刷新运算节点」更新目录。选择按账号保存，录音开始时固定；节点不可用或返回的执行位置不匹配时失败，不回落到其他节点。旧版 V-Voice 仅提供自动服务。其他配置保留本地 SenseVoice 的安装流程。
 
 ## 模型体验
 

@@ -10,7 +10,8 @@ for (const name of await readdir(root)) {
   const source = await readFile(file, 'utf8');
   const after = source
     .replace(/(['"])127\.0\.0\.1\1/g, "(process.env.VH_TENANT_IP ?? '127.0.0.1')")
-    .replaceAll('http://127.0.0.1:${', "http://${process.env.VH_TENANT_IP ?? '127.0.0.1'}:${");
+    .replaceAll('http://127.0.0.1:${', "http://${process.env.VH_TENANT_IP ?? '127.0.0.1'}:${")
+    .replaceAll('http://localhost:${', "http://${process.env.VH_TENANT_IP ?? '127.0.0.1'}:${");
   if (after !== source) {
     await writeFile(file, after);
     changed++;
@@ -24,4 +25,12 @@ const line = "if (response) process.stdout.write(JSON.stringify(response) + '\\n
 if (!mcp.includes(line)) throw new Error('Recheck OpenMotion MCP response handling');
 await writeFile(mcpPath, "import { exposePreview } from './vos-preview.mjs';\n" + mcp.replace(
   line, "if (response) process.stdout.write(JSON.stringify(await exposePreview(response)) + '\\n');",
+));
+
+const editorPath = join(root, 'editor-server.ts');
+const editor = await readFile(editorPath, 'utf8');
+const readEditor = 'const data = await readFile(path.join(pluginRoot, relative));';
+if (!editor.includes(readEditor)) throw new Error('Recheck OpenMotion editor assets before updating');
+await writeFile(editorPath, "import { editorBytes } from './vos-editor.mjs';\n" + editor.replace(
+  readEditor, 'const data = editorBytes(await readFile(path.join(pluginRoot, relative)), type, res.socket?.localPort);',
 ));

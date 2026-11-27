@@ -15,9 +15,10 @@ const upstream = createServer(async (req, res) => {
       ...(owner === 'alice' ? [{id:'sensevoice-int8',qualified:'v-voice/sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] : []),
     ] })); return;
   }
+  if(req.url==='/api/v1/compute/placements'){res.end(JSON.stringify({items:req.headers.authorization==='Bearer alice-token'?[{deployment_id:'a'.repeat(32),executor_id:'remote-voice',node_id:'remote-node',model_id:'sensevoice-int8',task_type:'voice.transcribe',private_token:'must-not-leak'}]:[]}));return;}
   let body = '';
   for await (const chunk of req) body += chunk;
-  if(req.url === '/v1/audio/transcriptions'){seen.at(-1).body=body;res.end(JSON.stringify({text:'voice fixture'}));return;}
+  if(['/v1/audio/transcriptions','/api/v1/compute/transcriptions'].includes(req.url)){seen.at(-1).body=body;res.end(JSON.stringify({text:'voice fixture'}));return;}
   seen.at(-1).body = JSON.parse(body);
   if (req.url === '/v1/completions') {
     if (seen.at(-1).body.stream) {
@@ -32,6 +33,7 @@ const upstream = createServer(async (req, res) => {
 upstream.listen(0, '127.0.0.1');
 await once(upstream, 'listening');
 process.env.V_SCHEDULER_URL = `http://127.0.0.1:${upstream.address().port}`;
+process.env.V_VOICE_URL=process.env.V_SCHEDULER_URL;
 const { rememberTokens } = await import('./vos-token-store.mjs');
 const { schedulerModels, schedulerEnvironment, handleScheduler } = await import('./scheduler.mjs');
 const gateway = createServer((req, res) => {
@@ -123,4 +125,13 @@ test('voice discovery and multipart inference retain tenant identity', async () 
  assert.deepEqual(await result.json(),{text:'voice fixture'});
  assert.equal(seen.at(-1).authorization,'Bearer alice-token');
  assert.ok(seen.at(-1).body.includes('v-voice/sensevoice-int8'));
+});
+
+test('voice placements expose only user-visible node identities and forward compute multipart',async()=>{
+ const placements=await request('/v1/audio/placements',alice).then(r=>r.json());
+ assert.deepEqual(placements.items,[{deployment_id:'a'.repeat(32),executor_id:'remote-voice',node_id:'remote-node',model_id:'sensevoice-int8'}]);
+ assert.deepEqual(await request('/v1/audio/placements',bob).then(r=>r.json()),{items:[]});
+ const body=new FormData();body.set('deployment_id','a'.repeat(32));body.set('executor_id','remote-voice');body.set('file',new Blob(['wave']),'recording.wav');
+ const r=await fetch(base+'/v1/audio/compute/transcriptions',{method:'POST',headers:{authorization:'Bearer '+alice},body});
+ assert.equal(r.status,200);assert.equal(seen.at(-1).authorization,'Bearer alice-token');assert.ok(seen.at(-1).body.includes('remote-voice'));
 });

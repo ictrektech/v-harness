@@ -44,6 +44,7 @@ const personalReply = 'Personal model fixture completed';
 const personalKey = 'isolated-personal-model-test';
 let personalRequests = 0;
 let schedulerAvailable = true;
+let openMotionPreview;
 const upstream = createServer(async (req, res) => {
  const key = req.headers.authorization?.replace(/^Bearer /, '');
  const subject = tokens.get(key);
@@ -62,13 +63,38 @@ const upstream = createServer(async (req, res) => {
      return;
    }
    res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }, {id:'sensevoice-int8',qualified:'v-voice/sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] }));
+ } else if(req.url === '/api/v1/compute/placements') {
+   res.end(JSON.stringify({items:[{deployment_id:'a'.repeat(32),executor_id:'fixture-voice-worker',node_id:'fixture-remote-node',model_id:'sensevoice-int8',task_type:'voice.transcribe'}]}));
+ } else if(req.url === '/api/v1/compute/transcriptions') {
+   const chunks=[];for await(const chunk of req)chunks.push(chunk);
+   assert.ok(Buffer.concat(chunks).includes(Buffer.from('fixture-voice-worker')));
+   res.end(JSON.stringify({deployment_id:'a'.repeat(32),executor_id:'fixture-voice-worker',node_id:'fixture-remote-node',transcription:{text:'remote voice fixture completed'}}));
  } else if (req.url === '/v1/audio/transcriptions') {
    assert.match(req.headers['content-type'],/multipart\/form-data; boundary=/);
    const chunks=[];for await(const chunk of req)chunks.push(chunk);
    assert.ok(Buffer.concat(chunks).includes(Buffer.from('v-voice/sensevoice-int8')));
    res.end(JSON.stringify({text:'voice fixture completed'}));
  } else if (req.url === '/v1/chat/completions') {
-   req.resume();
+   const pieces=[];for await(const piece of req)pieces.push(piece);
+   const requestBody=JSON.parse(Buffer.concat(pieces).toString());
+   if(JSON.stringify(requestBody.messages).includes('OpenMotionSmoke')) {
+     const result=requestBody.messages.find(message=>message.role==='tool' && message.tool_call_id==='motion-smoke');
+     let delta,finish;
+     if(result) {
+       const content=typeof result.content==='string'?result.content:JSON.stringify(result.content);
+       openMotionPreview=content.match(/\/__vh\/svc\/\d+[^"'\\\s]*/)?.[0];
+       assert.ok(openMotionPreview,content.slice(0,1500));
+       delta={role:'assistant',content:'OpenMotion preview ready'};finish='stop';
+     } else {
+       const tool=requestBody.tools.find(tool=>tool.function?.name.endsWith('openmotion_open_preview'));
+       assert.ok(tool,'OpenMotion preview must be model-visible');
+       delta={role:'assistant',tool_calls:[{index:0,id:'motion-smoke',type:'function',function:{name:tool.function.name,arguments:JSON.stringify({action:'open',target:'templates'})}}]};finish='tool_calls';
+     }
+     const chunk={id:'motion-fixture',object:'chat.completion.chunk',created:1,model};
+     res.setHeader('content-type','text/event-stream');
+     res.end([{...chunk,choices:[{index:0,delta,finish_reason:null}]},{...chunk,choices:[{index:0,delta:{},finish_reason:finish}]}].map(item=>'data: '+JSON.stringify(item)+'\n\n').join('')+'data: [DONE]\n\n');
+     return;
+   }
    const personal = key === personalKey;
    if (personal) personalRequests++;
    const chunk = { id: 'fixture', object: 'chat.completion.chunk', created: 1, model: personal ? personalModel : model };
@@ -83,7 +109,7 @@ const upstream = createServer(async (req, res) => {
  }
 });
 upstream.listen(18090,'127.0.0.1'); await once(upstream,'listening');
-const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090',VH_NET_ALLOW_CIDRS:'127.0.0.1/32'},stdio:['ignore','inherit','inherit']});
+const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090',V_VOICE_URL:'http://127.0.0.1:18090',VH_NET_ALLOW_CIDRS:'127.0.0.1/32'},stdio:['ignore','inherit','inherit']});
 try {
  const base='http://127.0.0.1:8080';
  for(let i=0;i<100;i++){try{const r=await fetch(base+'/__vh/health');if(r.ok)break;}catch{} await new Promise(r=>setTimeout(r,300));}
@@ -169,6 +195,14 @@ try {
  const transcript=await rpc('speech/transcribe',{request:{audioBase64:wave.toString('base64'),language:'auto'}});
  assert.equal(transcript.text,'voice fixture completed');assert.equal(transcript.audioSeconds,1);
  console.log('DEFAULT V-VOICE PROVIDER WITHOUT LOCAL MODEL INSTALLATION: PASS');
+ const roster = await rpc('speech/catalog',{});
+ const remoteVoice=roster.providers.find(provider=>provider.name.includes('fixture-remote-node'));
+ assert.ok(remoteVoice,'registered compute placement must be selectable');
+ await rpc('speech/configure',{patch:{providerId:remoteVoice.id}});
+ const remoteTranscript=await rpc('speech/transcribe',{request:{audioBase64:wave.toString('base64'),language:'en'}});
+ assert.equal(remoteTranscript.text,'remote voice fixture completed');
+ await rpc('speech/configure',{patch:{providerId:'v-scheduler-voice'}});
+ console.log('SELECTED V-VOICE COMPUTE NODE THROUGH LOADER AND SPEECH REMOTE: PASS');
  const workspace = await rpc('workspace/create', { request: { path: '/home/startup-smoke/workspace' } });
  assert.ok(workspace.workspace.workspaceId);
  console.log('WORKSPACE CONTROLLER CREATE: PASS');
@@ -225,6 +259,24 @@ try {
  assert.equal(events.filter(event => event.type === 'prompt-recorded' && event.requestId === requestId).length, 1);
  assert.ok(events.some(event => event.type === 'assistant-text' && event.text === replyText));
  assert.ok(events.some(event => event.type === 'turn-ended' && event.outcome === 'completed'), JSON.stringify(events));
+ const motionSession=await api('/sessions',{body:{workspaceId:workspace.workspace.workspaceId}}).then(r=>r.json());
+ await api('/sessions/'+motionSession.sessionId+'/prompts',{body:{requestId:randomUUID(),text:'OpenMotionSmoke: Open the OpenMotion template library. Do not generate media or export files.'}});
+ for(let i=0;i<100 && !openMotionPreview;i++)await new Promise(resolve=>setTimeout(resolve,1000));
+ assert.ok(openMotionPreview,'OpenMotion tool did not return an authenticated preview');
+ const motionUrl=new URL(openMotionPreview,base);
+ const preview=await fetch(motionUrl,{headers:{cookie}});
+ assert.equal(preview.status,200);const previewHtml=await preview.text();assert.match(previewHtml,/<html/i);
+ const motionRoot=motionUrl.pathname.match(/^\/__vh\/svc\/\d+/)[0];
+ const asset=previewHtml.match(/(?:src|href)=["']([^"']*\/editor-assets\/[^"']+\.js)["']/)?.[1];
+ assert.ok(asset,previewHtml.slice(0,2000));assert.ok(asset.startsWith(motionRoot+'/'));
+ assert.equal((await fetch(new URL(asset,base),{headers:{cookie}})).status,200);
+ const templates=await fetch(base+motionRoot+'/motion-api/templates',{headers:{cookie}});
+ assert.equal(templates.status,200);assert.ok(Array.isArray((await templates.json()).templates));
+ const mutation=await fetch(base+motionRoot+'/motion-api/nonexistent',{method:'POST',headers:{cookie,origin:base,'content-type':'application/json','sec-fetch-site':'same-origin'},body:'{}'});
+ assert.notEqual(mutation.status,403,'same-origin editing must reach OpenMotion');
+ const crossOrigin=await fetch(base+motionRoot+'/motion-api/nonexistent',{method:'POST',headers:{cookie,origin:'https://other.example','sec-fetch-site':'cross-site'},body:'{}'});
+ assert.equal(crossOrigin.status,403);
+ console.log('OPENMOTION AGENT TOOL, AUTHENTICATED PREVIEW, STUDIO ASSETS AND ORIGIN CHECKS: PASS');
  const isolated = await api(sessionPath + '/events', { token: 'isolated-other-token' });
  assert.equal(isolated.status, 404, await isolated.text());
  for (const language of ['zh', 'en']) {
