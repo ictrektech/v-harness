@@ -211,6 +211,13 @@ test('the paths the ingress already routes stay at the root', () => {
   assert.deepEqual(bridge.fetch, ['/__vh/restart', '/__vh/health', '/api/remote.mux', '/plugins/x.js', '/assets/a.css', '/favicon.ico']);
 });
 
+test('VOS application navigation keeps its portal route', () => {
+  const bridge = loadBridge('/app/com.ictrek.v-harness');
+  const target = '/#/app/app-drawer/com.ictrek.v-scheduler/nodes';
+  bridge.context.fetch(target);
+  assert.deepEqual(bridge.fetch, [target]);
+});
+
 test('a same-origin absolute URL keeps its origin and moves its path', () => {
   const bridge = loadBridge('/app/com.ictrek.v-harness');
   bridge.context.fetch('https://vos.example/dsh-gitea/config?a=1');

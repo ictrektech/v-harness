@@ -1,13 +1,14 @@
 {
-  "dshmarket": "1.73.20",
+  "dshmarket": "1.84.2",
   "@xmanrui/dsh-im": "5.10.0",
-  "dsh-mcp-connector": "0.2.109",
+  "dsh-mcp-connector": "0.2.122",
   "dsh-media-desk": "2.7.2",
-  "dsh-context": "0.85.1",
-  "dsh-image-gen": "0.11.3",
-  "dsh-mnemon": "0.5.47",
-  "@michengai/dsh-skills-manager": "1.4.11",
-  "@nanmicoder/dsh-agent-teams": "0.1.30",
-  "@liustack/modsearch": "5.10.14",
-  "billion-context": "0.1.215"
+  "dsh-context": "0.87.2",
+  "dsh-image-gen": "0.12.3",
+  "dsh-mnemon": "0.5.56",
+  "@michengai/dsh-skills-manager": "1.5.5",
+  "@nanmicoder/dsh-agent-teams": "0.1.31",
+  "@liustack/modsearch": "5.10.17",
+  "billion-context": "0.1.216",
+  "openmotion-dsh": "0.2.1"
 }

@@ -15,7 +15,7 @@
 
 ## 插件安装
 
-预装的 11 个插件及其版本由 [镜像配置](../gateway/agent-plugins/registry-plugins.json) 固定。用户在侧栏「插件」查看预装插件，在「设置 → 内置插件」检查运行状态。插件市场默认使用「全球」下载区域，标准 npm 安装使用官方源；可在插件市场设置中调整。ModSearch 与 Billion Context 默认关闭，可在「插件 → 已安装」中按需启用。旧用户首次启动时移除 DS Bot 及其设置入口，保留插件数据。
+预装的 12 个插件及其版本由 [镜像配置](../gateway/agent-plugins/registry-plugins.json) 固定。用户在侧栏「插件」查看预装插件，在「设置 → 内置插件」检查运行状态。插件市场默认使用「全球」下载区域，标准 npm 安装使用官方源；可在插件市场设置中调整。ModSearch 与 Billion Context 默认关闭，可在「插件 → 已安装」中按需启用。旧用户首次启动时移除 DS Bot 及其设置入口，保留插件数据。
 
 ## VOS 认证
 
@@ -96,3 +96,5 @@ VOS 系统管理员在会话里选择「完全访问（VOS 运维）」即可直
 Start PGV on the same VOS device, then use `/pgv` with the workspace's approved service credentials. If you override `VH_NET_ALLOW_HOSTS`, include `pgv,pgv-redis,pgv-viewer` where PGV access is intended. Restart the tenant runtime after a PGV container address changes. See the [skill instructions](../skills/pgv/SKILL.md).
 
 V-Scheduler 自动发现的 ModelInfer DeepSeek V4 对话模型支持在会话模型选择器设置「关闭」「低」「高」「最高」。默认「高」。沿用现有会话模型目录和 Chat Completions 端点，分别发送 `reasoning_effort: "none"` 或 `reasoning_effort: "high"`。
+
+本版基于 DSH 0.2.3-alpha.2。预装 OpenMotion 本地应用 0.2.1 的 MCP/Skills 插件，默认关闭。在「设置 → VOS 运维」查看节点与应用后端，并进入 V-Scheduler 节点管理或 Image Studio 部署界面。会话可使用内置 Image Studio 技能执行节点管理、后端部署和模型传输注册。文件持久化路径及完整流程见包内中英文 README。

@@ -86,6 +86,12 @@ import {
   handleAlbumEgress,
 } from './album.mjs';
 import {
+  closeSchedulerAdminCapabilities,
+  ensureSchedulerAdminCapability,
+  forgetSchedulerAdminCapability,
+  handleSchedulerAdminEgress,
+} from './scheduler-admin.mjs';
+import {
   closeImageStudioCapabilities,
   ensureImageStudioCapability,
   forgetImageStudioCapability,
@@ -276,6 +282,7 @@ const EGRESS_HANDLERS = {
   album: handleAlbumEgress,
   photocraft: handlePhotocraft,
   'image-studio': handleImageStudioEgress,
+  'v-scheduler': handleSchedulerAdminEgress,
   weknora: handleWeknoraEgress,
   'vh-services': (_namespace, req, res, contract) => handleServicesEgress(egressTenant(contract), req, res),
 };
@@ -2130,6 +2137,7 @@ async function startCapabilities(record, control = {}) {
       weknora: ensureWeknoraCapability,
       album: ensureAlbumCapability,
       'image-studio': ensureImageStudioCapability,
+      'v-scheduler': ensureSchedulerAdminCapability,
       photocraft: ensurePhotocraftCapability,
       // Kept here for symmetry; `vh-services` is not delegable, so this entry
       // always binds and its egress path never honours a delegated key.
@@ -2141,6 +2149,7 @@ async function startCapabilities(record, control = {}) {
       weknora: forgetWeknoraCapability,
       album: forgetAlbumCapability,
       'image-studio': forgetImageStudioCapability,
+      'v-scheduler': forgetSchedulerAdminCapability,
       photocraft: forgetPhotocraftCapability,
       'vh-services': forgetServicesCapability,
     },
@@ -2162,6 +2171,7 @@ const forgetByCapability = {
   weknora: forgetWeknoraCapability,
   album: forgetAlbumCapability,
   'image-studio': forgetImageStudioCapability,
+  'v-scheduler': forgetSchedulerAdminCapability,
   photocraft: forgetPhotocraftCapability,
   'vh-services': forgetServicesCapability,
   docker: forgetDockerCapability,
@@ -3027,7 +3037,7 @@ function shutdown(signal) {
   server.close();
   void gatewayLockHandle.close().catch(() => {});
   const deadline = setTimeout(() => process.exit(1), 8_000);
-  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closeImageStudioCapabilities(), closePhotocraftCapabilities(), closeServicesCapabilities(), closeDockerCapabilities()]).finally(() => {
+  void Promise.allSettled([stopAll(), closeOfficeCapabilities(), closeWeknoraCapabilities(), closeAlbumCapabilities(), closeImageStudioCapabilities(), closeSchedulerAdminCapabilities(), closePhotocraftCapabilities(), closeServicesCapabilities(), closeDockerCapabilities()]).finally(() => {
     clearTimeout(deadline);
     process.exit(0);
   });

@@ -16,7 +16,7 @@ IMAGE="${APP_REGISTRY_PREFIX}/v-harness"
 SERVICE_NAME="v-harness"
 # Mirrored into SWR once so repeat builds, and the other architecture's host,
 # never depend on Docker Hub being reachable.
-BASE_IMAGE="node:24-bookworm-slim"
+BASE_IMAGE="node:24.22.3-bookworm-slim"
 
 FEISHU_CONFIG_FILE="${FEISHU_CONFIG_FILE:-${HOME}/.feishu.json}"
 # A spreadsheet token identifies a document; reading it still requires a

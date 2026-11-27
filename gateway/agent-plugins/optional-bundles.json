@@ -1,4 +1,5 @@
 [
   "@liustack/modsearch",
-  "billion-context"
+  "billion-context",
+  "openmotion-dsh"
 ]

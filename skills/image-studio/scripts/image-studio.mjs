@@ -69,6 +69,11 @@ Commands:
   health | about | me
   models [--capability txt2img,img2img,edit,video] [--ready] [--all]
   placements
+  compute
+  deploy-backend --kind ssh|cluster --node-id <id> --request-key <stable-id>
+  backend-start|backend-stop|backend-remove <deployment_id>
+  prepare-model <deployment_id> --model-key <key> [--model-variant <variant>]
+  remove-remote-model <deployment_id> --model-id <key[@variant]>
   model <key> [--variant <id>]
   pull <key> [--variant <id>] [--force]
   stop <key> [--variant <id>]
@@ -232,7 +237,10 @@ function encodeBody(body, headers) {
     if (headers['content-length'] === undefined) headers['content-length'] = String(buffer.byteLength)
     return buffer
   }
-  return body
+  headers['content-type'] ??= 'application/json'
+  const encoded = Buffer.from(JSON.stringify(body))
+  headers['content-length'] = String(encoded.byteLength)
+  return encoded
 }
 
 function request(connection, path, options = {}) {
@@ -479,6 +487,40 @@ async function main() {
       return print(await request(connection, '/api/v1/about'))
     case 'me':
       return print(await request(connection, '/api/v1/me'))
+    case 'compute':
+      return print(await request(connection, '/api/v1/compute'))
+    case 'deploy-backend': {
+      const kind = stringFlag(flags, 'kind')
+      if (kind !== 'ssh' && kind !== 'cluster') throw new CliError('--kind must be ssh or cluster')
+      const node = requireArgument(stringFlag(flags, 'node-id'), '--node-id')
+      const key = requireArgument(stringFlag(flags, 'request-key'), '--request-key')
+      return print(await request(connection, '/api/v1/compute/deployments', {
+        method: 'POST', body: { kind, node_id: node, request_key: key },
+      }))
+    }
+    case 'backend-start':
+    case 'backend-stop':
+    case 'backend-remove':
+    case 'prepare-model':
+    case 'remove-remote-model': {
+      const deployment = requireArgument(rest[0], 'deployment ID')
+      if (!/^[a-f0-9]{32}$/.test(deployment)) throw new CliError('invalid deployment ID')
+      const base = '/api/v1/compute/deployments/' + deployment
+      if (command === 'prepare-model') {
+        const key = requireArgument(stringFlag(flags, 'model-key'), '--model-key')
+        return print(await request(connection, base + '/models', {
+          method: 'POST', body: { model_key: key, model_variant: stringFlag(flags, 'model-variant') ?? '' },
+        }))
+      }
+      if (command === 'remove-remote-model') {
+        const model = requireArgument(stringFlag(flags, 'model-id'), '--model-id')
+        return print(await request(connection, base + '/models/' + encodeURIComponent(model), { method: 'DELETE' }))
+      }
+      const action = command.slice('backend-'.length)
+      return print(await request(connection, base + (action === 'remove' ? '' : '/' + action), {
+        method: action === 'remove' ? 'DELETE' : 'POST',
+      }))
+    }
     case 'placements': {
       try {
         return print({ placements: await request(connection, '/api/v1/compute/placements') })

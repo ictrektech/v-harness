@@ -889,7 +889,7 @@ describe('provider profile lifecycle', () => {
     for (const effort of efforts) {
       await assemble(ctx, {
         provider: 'v-scheduler', model, messages: [], system: 'test',
-        ...effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) },
+        ...effort === undefined ? {} : { reasoningEffort: brandString<ReasoningEffortId>(effort) },
       })
     }
     const requests = server.requests.filter((_, index) => server.paths[index] === '/v1/chat/completions')

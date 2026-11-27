@@ -27,6 +27,8 @@ const en = {
   targetList: 'Targets', removed: 'Removed', removalFailed: 'Removal failed',
   targetIdLabel: 'ID', targetName: 'Container', targetImage: 'Image', targetVersion: 'Version',
 
+  schedulerManage: 'Manage compute nodes in V-Scheduler',
+  imageStudioManage: 'Deploy backends and prepare models in Image Studio',
   nodes: 'Machines', targetNode: 'Target machine', nodeLocal: 'This machine',
   nodeStatus: 'Status', nodeHealth: 'Health', nodeObserved: 'Observed', nodeFresh: 'Fresh',
   nodeStale: 'Stale', nodeDraining: 'Draining', nodeApps: 'Applications on this machine',
@@ -85,6 +87,8 @@ const zh: Record<keyof typeof en, string> = {
   targetList: '操作目标', removed: '已删除', removalFailed: '删除失败',
   targetIdLabel: '标识符', targetName: '容器', targetImage: '镜像', targetVersion: '版本',
 
+  schedulerManage: '在 V-Scheduler 管理算力节点',
+  imageStudioManage: '在 Image Studio 部署后端与准备模型',
   nodes: '机器', targetNode: '目标机器', nodeLocal: '本机',
   nodeStatus: '状态', nodeHealth: '健康', nodeObserved: '采集于', nodeFresh: '新鲜',
   nodeStale: '已过期', nodeDraining: '排空中', nodeApps: '该机器上的应用',
@@ -520,6 +524,8 @@ export function VosOpsSection({ t }: PropsLocale<'settings.vh-ops'>) {
     </section>}
     {nodes && <section aria-label={t('nodes')}>
       <h3>{t('nodes')}</h3>
+      <p><a href="/#/app/app-drawer/com.ictrek.v-scheduler/nodes" target="_top">{t('schedulerManage')}</a></p>
+      <p><a href="/#/app/app-drawer/com.ictrek.image-studio/image-studio" target="_top">{t('imageStudioManage')}</a></p>
       {nodeNote && <p role="status">{t(nodeNote)}</p>}
       {nodes.length > 1
         ? <label>{t('targetNode')}{' '}

@@ -10,7 +10,7 @@
 # from a user home are the dsh launch URL on that process's stdout.
 # Base image is overridable so the build host can pull it from SWR instead of
 # Docker Hub; build_image.sh mirrors it once and reuses it afterwards.
-ARG BASE_IMAGE=node:24-bookworm-slim
+ARG BASE_IMAGE=node:24.22.3-bookworm-slim
 # ============================================================
 # Stage: browser plugins built from this repository
 # ============================================================
@@ -232,13 +232,14 @@ RUN pnpm exec tsc -b $(sed 's|$|/tsconfig.json|' gateway/agent-plugins/plugins.t
 # fail the build rather than silently bring the row back.
 RUN set -eu; \
     mkdir -p /tmp/registry-plugins; \
-    specs=$(node -e "const plugins = require('./gateway/agent-plugins/registry-plugins.json'); console.log(Object.entries(plugins).map(([name, version]) => name + '@' + version).join(' '))"); \
+    specs=$(node -e "const plugins = require('./gateway/agent-plugins/registry-plugins.json'); console.log(Object.entries(plugins).filter(([name]) => name !== 'openmotion-dsh').map(([name, version]) => name + '@' + version).join(' '))"); \
     set -- --no-save --ignore-scripts --legacy-peer-deps $specs; \
     (npm install --prefix /tmp/registry-plugins "$@" || \
       npm install --prefix /tmp/registry-plugins --registry=https://registry.npmjs.org "$@") \
  && cp -R /tmp/registry-plugins/node_modules/. /build/agent-plugins/node_modules/ \
  && rm -rf /tmp/registry-plugins \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/manifest.json'; const manifest = JSON.parse(fs.readFileSync(path, 'utf8')); manifest.plugins.push(...Object.keys(require('./gateway/agent-plugins/registry-plugins.json'))); fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')" \
+ && cp -R gateway/agent-plugins/openmotion /build/agent-plugins/node_modules/openmotion-dsh \
  && node gateway/agent-plugins/set-billion-context-bind.mjs /build/agent-plugins/node_modules/billion-context/dist/agent/dsh-native.js \
  && node gateway/agent-plugins/set-market-default.mjs /build/agent-plugins/node_modules/dshmarket/lib/routes.js \
  && node -e "const fs = require('node:fs'); const path = '/build/agent-plugins/node_modules/dsh-mcp-connector/cordis.patch.yml'; const before = fs.readFileSync(path, 'utf8'); const after = before.replace('showSidebarEntry: true', 'showSidebarEntry: false'); if (after === before) throw new Error('dsh-mcp-connector: showSidebarEntry: true not found; re-check the sidebar patch'); fs.writeFileSync(path, after)"
@@ -246,6 +247,21 @@ RUN set -eu; \
 # ============================================================
 # Stage: runtime image
 # ============================================================
+# The official local OpenMotion application includes source and its built UI.
+FROM ${BASE_IMAGE} AS openmotion
+ARG NPM_REGISTRY=https://registry.npmjs.org
+WORKDIR /build/openmotion
+RUN npm pack --ignore-scripts --registry="${NPM_REGISTRY}" @openmotion/app@0.2.1 \
+ && tar -xzf openmotion-app-0.2.1.tgz \
+ && echo "cb890dd00f9de235ce55f264b7af287215fdef656be766adc57b1c2b7c82d894  package/payload/openmotion-application-0.2.1.tar.gz" | sha256sum -c - \
+ && mkdir app \
+ && tar -xzf package/payload/openmotion-application-0.2.1.tar.gz -C app \
+ && cd app \
+ && npm ci --omit=dev --ignore-scripts --registry="${NPM_REGISTRY}"
+COPY gateway/agent-plugins/prepare-openmotion.mjs /build/prepare-openmotion.mjs
+COPY gateway/agent-plugins/openmotion/vos-*.mjs /build/openmotion/app/
+RUN node /build/prepare-openmotion.mjs /build/openmotion/app
+
 FROM ${BASE_IMAGE}
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
@@ -372,6 +388,7 @@ COPY --from=plugins /build/apps/web/dist/ /usr/local/lib/node_modules/@deepseek-
 # plugins); gateway/plugins.mjs copies them into each tenant profile and
 # mounts the carrier before dsh starts.
 COPY --from=agent-plugins /build/agent-plugins/ /opt/v-harness/agent-plugins/
+COPY --from=openmotion /build/openmotion/app/ /usr/local/share/vh-openmotion/
 
 RUN chmod 0755 /opt/v-harness/bin/vh-userctl /opt/v-harness/bin/vh-file /opt/v-harness/bin/vh-jail \
       /opt/v-harness/bin/vh-file-impl.mjs /opt/v-harness/bin/vh-service.mjs /opt/v-harness/bin/entrypoint /opt/v-harness/bin/sandbox-probe.mjs /opt/v-harness/bin/vh-supervisor.sh \

@@ -1,1 +1,4 @@
-{"com.ictrek.v-scheduler": "ictrektech/V-Scheduler"}
+{
+  "com.ictrek.v-scheduler": "ictrektech/V-Scheduler",
+  "com.ictrek.image-studio": "ictrektech/image-studio"
+}

@@ -33,20 +33,20 @@ VOS 版本以前缀跟随官方 DSH 版本，后缀 `.vos.xx` 记录本项目的
 
 打开侧栏「插件」查看预装插件，前往「设置 → 内置插件」查看运行状态。
 
-- **Context**（`dsh-context@0.85.1`）。从会话右栏打开 Context，查看上下文用量、组成和压缩历史。 [使用说明](https://github.com/bowenliang123/dsh-context)
-- **Image Gen**（`dsh-image-gen@0.11.3`）。从插件设置配置可用的生图供应商和凭据，保存后在会话中请求生成或编辑图片。 [供应商配置](https://github.com/shanliuling/dsh-image-gen)
-- **ModSearch**（`@liustack/modsearch@5.10.14`）。在「插件 → 已安装」中启用插件。在插件设置中选择搜索引擎，按引擎要求填写 API 密钥，再在对话里让智能体搜索网页。启用后，当前用户的 Web 搜索由 ModSearch 接管。[搜索引擎配置](https://github.com/liustack/modsearch)
-- **Billion Context**（`billion-context@0.1.215`）。在「插件 → 已安装」中启用插件，再开始对话。它通过租户内部的代理管理会话上下文。要恢复 DSH 默认压缩方式，请在同一页面停用整个插件。[上游使用指南](https://github.com/ranxianglei/billion-context)
+- **Context**（`dsh-context@0.87.2`）。从会话右栏打开 Context，查看上下文用量、组成和压缩历史。 [使用说明](https://github.com/bowenliang123/dsh-context)
+- **Image Gen**（`dsh-image-gen@0.12.3`）。从插件设置配置可用的生图供应商和凭据，保存后在会话中请求生成或编辑图片。 [供应商配置](https://github.com/shanliuling/dsh-image-gen)
+- **ModSearch**（`@liustack/modsearch@5.10.17`）。在「插件 → 已安装」中启用插件。在插件设置中选择搜索引擎，按引擎要求填写 API 密钥，再在对话里让智能体搜索网页。启用后，当前用户的 Web 搜索由 ModSearch 接管。[搜索引擎配置](https://github.com/liustack/modsearch)
+- **Billion Context**（`billion-context@0.1.216`）。在「插件 → 已安装」中启用插件，再开始对话。它通过租户内部的代理管理会话上下文。要恢复 DSH 默认压缩方式，请在同一页面停用整个插件。[上游使用指南](https://github.com/ranxianglei/billion-context)
 - 这两个插件默认关闭。启用或停用后若提示重启，请点击「重启」并等待 v-harness 重新打开。
-- **Mnemon**（`dsh-mnemon@0.5.47`）。从插件面板查看 Memory System，检查当前工作区的记忆视图和存储设置。首次连接外部记忆空间时，按供应商说明配置凭据。 [使用说明](https://github.com/omdsh-dev/dsh-mnemon)
-- **Skills Manager**（`@michengai/dsh-skills-manager@1.4.11`）。打开「插件 → Skills Manager」，查看和管理租户的技能。 [使用说明](https://github.com/MichengAI/dsh-skills-manager)
+- **Mnemon**（`dsh-mnemon@0.5.56`）。从插件面板查看 Memory System，检查当前工作区的记忆视图和存储设置。首次连接外部记忆空间时，按供应商说明配置凭据。 [使用说明](https://github.com/omdsh-dev/dsh-mnemon)
+- **Skills Manager**（`@michengai/dsh-skills-manager@1.5.5`）。打开「插件 → Skills Manager」，查看和管理租户的技能。 [使用说明](https://github.com/MichengAI/dsh-skills-manager)
 - **智能体团队协作**。在 v-harness 选择工作区并打开根会话，点击输入框右下角显示「模型名 + 推理等级」的按钮，在弹出的菜单中打开「启用智能体团队协作」。新会话默认关闭，开关只影响当前根会话。启用后描述分工，点击会话顶部的「任务板」可查看子智能体和共享任务。有模型请求记录的会话停用时需要确认。
-- **Agent Teams**（`@nanmicoder/dsh-agent-teams@0.1.30`）。在工作区会话中输入 `/agent-teams` 并描述任务，或明确要求使用 Agent Teams。检查分工计划并批准，再从团队面板查看成员进度。需要支持工具调用的模型。 [使用说明](https://github.com/NanmiCoder/dsh-agent-teams)
+- **Agent Teams**（`@nanmicoder/dsh-agent-teams@0.1.31`）。在工作区会话中输入 `/agent-teams` 并描述任务，或明确要求使用 Agent Teams。检查分工计划并批准，再从团队面板查看成员进度。需要支持工具调用的模型。 [使用说明](https://github.com/NanmiCoder/dsh-agent-teams)
 - **自媒体工作台**（`dsh-media-desk@2.7.2`）。登录 VOS 并打开 v-harness，从侧栏进入「自媒体工作台」。先在「灵感」记一条素材，再点开卡片生成脚本、标题、封面、配图和分镜。可在「排期」安排发布，并在「复盘」手动录入或导入数据。写稿沿用 v-harness 的默认模型，也可在工作台中另选模型。需要生成图片时，在工作台设置中配置图片服务或选择已接入的订阅生图工具，并先试画一张。首次打开时可使用示例数据，也可点「示例数据 · 清空」后开始记录。[上游使用说明](https://github.com/woniuniuniu/dsh-media-desk)
 - **IM 机器人**（`@xmanrui/dsh-im@5.10.0`）。进入「设置 → IM机器人」，选择渠道，按页面提示扫码或填写机器人凭据，再绑定工作区、选择模型并设置允许访问的会话。确认连接后，从相应聊天应用给机器人发一条测试消息。连接失败时检查平台权限、凭据和网络。各渠道接入方式见[上游使用说明](https://github.com/xmanrui/dsh-im)。
 - 插件在当前 VOS 用户的独立环境中运行。自媒体工作台的 `/media-desk/*` 是该插件网页使用的会话接口，随插件版本发布。IM 平台接入由各渠道适配器管理。
-- **MCP Connector**（`dsh-mcp-connector@0.2.109`）。在「插件」中打开 MCP Connector，添加服务并检查连接和工具列表。
-- **插件市场**（`dshmarket@1.73.20`）。插件市场默认使用「全球」下载区域，标准 npm 安装使用官方源。可在插件市场设置中手动调整下载区域。
+- **MCP Connector**（`dsh-mcp-connector@0.2.122`）。在「插件」中打开 MCP Connector，添加服务并检查连接和工具列表。
+- **插件市场**（`dshmarket@1.84.2`）。插件市场默认使用「全球」下载区域，标准 npm 安装使用官方源。可在插件市场设置中手动调整下载区域。
 
 ### 自定义 Agent Teams 的分工
 
@@ -98,3 +98,15 @@ VOS 系统管理员打开会话，点击「宿主机管理」，再点击「开�
 Agent API 的鉴权和会话用法见「设置 → API 文档」。新技能沿用现有会话接口。
 
 在「设置 → 模型」选择 V-Scheduler 提供的 ModelInfer DeepSeek V4 对话模型，再从新会话输入区的模型选择器选择思考级别。支持「关闭」「低」「高」「最高」，默认「高」。Chat Completions 的请求体分别通过 `reasoning_effort` 发送 `none`、`low`、`high`、`max`。可选级别随原有 Agent 会话模型目录返回。
+
+## 算力节点与模型部署
+
+打开「设置 → VOS 运维」，授权诊断后查看「机器」和「应用后端」。点击「在 V-Scheduler 管理算力节点」或「在 Image Studio 部署后端与准备模型」，可使用当前 VOS 身份进入对应应用。节点登记、硬件复验、容器验证、后端部署和模型准备需要对应服务的管理员权限。
+
+也可以在会话中让智能体操作。例如「列出算力节点，在我选定的节点部署 Image Studio 后端，准备模型并报告传输和注册进度」。SSH 凭据通过私有 JSON 文件提供。智能体通过租户 socket 使用当前 VOS 身份。收到部署回执后继续查询状态。模型准备依次显示源文件检查、复制或共享存储、目标校验与注册，达到「registered」后再使用该部署生成。中断的准备流程可重试。删除远端模型前，由对应服务检查在途任务，随后注销该模型并删除它在目标节点上的文件。
+
+## OpenMotion 与文件持久化
+
+预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。在「插件 → 已安装」启用，按提示重启，即可在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
+
+租户主目录中的工作区、设计文件、导出文件、会话和插件设置通过 `${VOS_APP_STORAGE_PATH}/data:/data` 保存在主 VOS 机器上。交付文件请保存在 `$HOME/workspace`。普通容器重建和应用升级会沿用该存储。删除应用数据或修改存储设置前，请先备份应用存储。

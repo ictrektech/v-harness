@@ -132,3 +132,17 @@ Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。
 调用 PGV 时，向同一个提示词端点提交 `{"requestId":"<唯一ID>","text":"用 /pgv 检查已配置的 PostgreSQL 数据库安装了哪些扩展。"}`。Agent 使用已为工作区配置的服务凭据连接 PGV，通过现有提示词和事件端点返回结果。加入 `vos_default` 的 VOS 应用也可直连 `pgv:5432`（PostgreSQL）或 `pgv-redis:6379`（Redis）。数据库连接器 HTTP 基址为可信内网的 `http://pgv-viewer:8081/app/com.ictrek.pgv`，或使用 VOS CA 的 `https://<vos-host>:1180/app/com.ictrek.pgv`。使用同源 `Origin` 和 JSON `{"access_token":"<VOS admin 令牌>"}` 调用 `POST /api/vos/login` 获取 `pgv_vos_session` Cookie。携带该 Cookie 调用 `GET /api/auth/check` 和 `GET /api/connection/list`，最后携带 Cookie 与同源 `Origin` 调用 `POST /api/auth/logout` 注销。PGV 服务凭据和 v-harness Bearer 令牌各用于对应的接口。PGV 完整请求字段、响应和错误见 **PGV → 接入指南 → API 与协议参考**。
 
 在「插件 → 已安装」中，可以启用 ModSearch 处理网页搜索，或启用 Billion Context 管理符合条件的模型请求上下文。两个插件均默认关闭。通过 API 创建的会话使用当前租户在 Web 界面配置的插件及设置。VOS API v1 的会话、提示词和事件协议保持一致。安装使用步骤见 [VAI 应用使用文档](https://twp99wyutbs.feishu.cn/docx/DTWGdRXGhoblP5xue4Gcf8Bpnsc)。
+
+## 算力节点与模型部署
+
+打开「设置 → VOS 运维」，授权诊断后查看「机器」和「应用后端」。点击「在 V-Scheduler 管理算力节点」或「在 Image Studio 部署后端与准备模型」，可使用当前 VOS 身份进入对应应用。节点登记、硬件复验、容器验证、后端部署和模型准备需要对应服务的管理员权限。
+
+也可以在会话中让智能体操作。例如「列出算力节点，在我选定的节点部署 Image Studio 后端，准备模型并报告传输和注册进度」。SSH 凭据通过私有 JSON 文件提供。智能体通过租户 socket 使用当前 VOS 身份。收到部署回执后继续查询状态。模型准备依次显示源文件检查、复制或共享存储、目标校验与注册，达到「registered」后再使用该部署生成。中断的准备流程可重试。删除远端模型前，由对应服务检查在途任务，随后注销该模型并删除它在目标节点上的文件。
+
+## OpenMotion 与文件持久化
+
+预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。在「插件 → 已安装」启用，按提示重启，即可在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
+
+租户主目录中的工作区、设计文件、导出文件、会话和插件设置通过 `${VOS_APP_STORAGE_PATH}/data:/data` 保存在主 VOS 机器上。交付文件请保存在 `$HOME/workspace`。普通容器重建和应用升级会沿用该存储。删除应用数据或修改存储设置前，请先备份应用存储。
+
+这些集成通过租户私有 Unix socket 调用，由网关提供当前 VOS 令牌。公共 VOS API v1 的会话、提示词和事件协议保持原有契约。原生算力 API 由 [Image Studio](https://github.com/ictrektech/image-studio) 维护，节点管理 API 由 [V-Scheduler](https://github.com/ictrektech/V-Scheduler/blob/main/docs/node-management.md) 维护。

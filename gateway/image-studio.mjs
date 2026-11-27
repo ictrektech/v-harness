@@ -32,6 +32,12 @@ export const ROUTES = [
   { method: 'GET', path: /^\/api\/v1\/me$/ },
   { method: 'GET', path: /^\/api\/v1\/models$/ },
   { method: 'GET', path: /^\/api\/v1\/compute\/placements$/ },
+  { method: 'GET', path: /^\/api\/v1\/compute$/ },
+  { method: 'POST', path: /^\/api\/v1\/compute\/deployments$/ },
+  { method: 'POST', path: /^\/api\/v1\/compute\/deployments\/[a-f0-9]{32}\/(start|stop|models)$/ },
+  { method: 'DELETE', path: /^\/api\/v1\/compute\/deployments\/[a-f0-9]{32}$/ },
+  { method: 'DELETE', path: /^\/api\/v1\/compute\/deployments\/[a-f0-9]{32}\/models\/[A-Za-z0-9_.@%+-]+$/ },
+
   { method: 'GET', path: /^\/api\/v1\/models\/[^/]+$/ },
   { method: 'POST', path: /^\/api\/v1\/models\/[^/]+\/(pull|stop|sync)$/ },
   { method: 'POST', path: /^\/api\/v1\/inputs$/ },
@@ -91,7 +97,7 @@ async function forward(namespace, req, res) {
     return;
   }
   const token = path === '/health' ? undefined : await accessTokenFor(namespace);
-  if (!token && path === '/api/v1/compute/placements') {
+  if (!token && path.startsWith('/api/v1/compute')) {
     json(res, 401, {
       error: 'vos-token-unavailable',
       message: 'VOS 登录令牌缺失或已过期，请在 v-harness 页面刷新后重试',

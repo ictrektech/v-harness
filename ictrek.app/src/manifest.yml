@@ -11,16 +11,15 @@ category: [productivity]
 icon: icon.png
 arch: [amd64, arm64]
 
-frontend:
-  enabled: true
-  basePath: /app/com.ictrek.v-harness
-
 platform:
   version: ">=3.0.0"
 
 dependencies:
   apps:
     - id: com.ictrek.v-scheduler
+      version: latest
+      optional: true
+    - id: com.ictrek.image-studio
       version: latest
       optional: true
 

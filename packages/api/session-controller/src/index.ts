@@ -332,7 +332,7 @@ export class SessionController extends TypertRemoteService {
     }
     const resolved = await this.ctx.llm.resolveCallConfig({
       provider: selection.provider, model: selection.model,
-      ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(selection.reasoningEffort) },
+      ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: brandString<ReasoningEffortId>(selection.reasoningEffort) },
     })
     await this.ctx.agentDefaultModel.saveSelection({
       provider: resolved.provider, model: resolved.model,

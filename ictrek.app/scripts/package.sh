@@ -12,7 +12,6 @@ APP_NAME="v-harness"
 APP_ID="com.ictrek.v-harness"
 ROUTER_PAGE_ID="v-harness"
 ROUTER_IFRAME_SRC="/app/com.ictrek.v-harness/?v=__APP_VERSION__"
-FRONTEND_BASE_PATH="/app/com.ictrek.v-harness"
 # A spreadsheet token only identifies the release table; reading it still needs
 # a tenant token derived from feishu_app_secret. Keeping the default lets a
 # fresh clone package without extra setup, matching v-office.
@@ -323,8 +322,9 @@ verify_package() {
 
   local manifest_text compose_text routers_text
   manifest_text="$(tar xOf "$app_tarball" manifest.yml)"
-  grep -Fq "  basePath: ${FRONTEND_BASE_PATH}" <<< "$manifest_text" \
-    || die "manifest frontend.basePath must be ${FRONTEND_BASE_PATH}"
+  if grep -q '^frontend:' <<< "$manifest_text"; then
+    die "manifest entry pages must be declared in routers.yml"
+  fi
   grep -Fq "id: ${APP_ID}" <<< "$manifest_text" \
     || die "manifest id must be ${APP_ID}"
 

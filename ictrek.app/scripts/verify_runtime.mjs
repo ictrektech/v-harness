@@ -278,6 +278,11 @@ try {
    assert.doesNotMatch(await readFile(logs + '/' + file, 'utf8'), /prompt section .* is already registered/);
  }
  console.log('GLOBAL MARKET DEFAULT AND BUNDLED PLUGINS: PASS');
+ const durable = '/data/startup-smoke/workspace/release-persistence';
+ await mkdir(durable, { recursive: true });
+ await writeFile(durable + '/design.md', 'Persistent design file\n');
+ await writeFile(durable + '/output.svg', '<svg xmlns="http://www.w3.org/2000/svg"><text>Persistent output</text></svg>');
+
  if (optionalBundles.length) {
    for (const name of optionalBundles) {
      const change = await rpc('pluginManager/setBundleEnabled', { name, enabled: true });
@@ -299,6 +304,8 @@ try {
    }
    assert.ok(ready, 'optional bundles did not boot');
    const inventory = await rpc('pluginManager/listPlugins', {});
+   assert.ok(inventory.some(item => item.entryId === 'mcp-openmotion' && item.fiberPhase === 'active'), 'OpenMotion MCP adapter');
+   assert.ok(inventory.some(item => item.entryId === 'openmotion-skills' && item.fiberPhase === 'active'), 'OpenMotion Skills');
    for (const name of ['@liustack/modsearch', 'billion-context', 'billion-context/dsh-compaction-gate']) {
      assert.ok(inventory.some(item => item.moduleName === name && item.fiberPhase === 'active'), name);
    }

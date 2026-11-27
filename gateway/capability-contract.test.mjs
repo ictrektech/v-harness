@@ -25,6 +25,7 @@ import { after, before, describe, it } from 'node:test';
 
 import * as album from './album.mjs';
 import * as imageStudio from './image-studio.mjs';
+import * as schedulerAdmin from './scheduler-admin.mjs';
 import * as photocraft from './photocraft.mjs';
 import * as services from './services.mjs';
 import * as weknora from './weknora.mjs';
@@ -52,6 +53,7 @@ const MODULES = [
   { name: 'album', module: album },
   { name: 'photocraft', module: photocraft },
   { name: 'image-studio', module: imageStudio },
+  { name: 'v-scheduler', module: schedulerAdmin },
   { name: 'weknora', module: weknora },
   { name: 'vh-services', module: services },
 ];
@@ -166,6 +168,42 @@ it('signs Image Studio placement and generation requests with the selected tenan
   }
 });
 
+it('signs Scheduler node requests with the selected tenant credential and refuses other routes', async () => {
+  const seen = [];
+  const upstream = createServer((req, res) => {
+    seen.push([req.url, req.headers.authorization]);
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{"code":"OK","data":{}}');
+  });
+  await listen(upstream);
+  const previous = process.env.V_SCHEDULER_URL;
+  process.env.V_SCHEDULER_URL = 'http://127.0.0.1:' + upstream.address().port;
+  rememberTokens('scheduler-fixture', { access: 'fixture-scheduler', expiresAt: Date.now() + 120_000 });
+  const capability = await import('./scheduler-admin.mjs?tenant-node-auth');
+  const gateway = createServer((req, res) => {
+    void capability.handleSchedulerAdminEgress(req.headers['x-test-tenant'], req, res);
+  });
+  await listen(gateway);
+  try {
+    const port = gateway.address().port;
+    const headers = { 'x-test-tenant': 'scheduler-fixture', authorization: 'Bearer untrusted' };
+    const path = '/scheduler/api/v1/managed-nodes';
+    assert.equal((await ask({ port, path, headers })).status, 200);
+    assert.equal((await ask({ port, path: path + '/node-a/runtime', method: 'POST', headers })).status, 200);
+    assert.equal((await ask({ port, path })).status, 401);
+    assert.equal((await ask({ port, path: '/scheduler/api/v1/secrets', headers })).status, 403);
+    assert.deepEqual(seen, [[path, 'Bearer fixture-scheduler'], [path + '/node-a/runtime', 'Bearer fixture-scheduler']]);
+  } finally {
+    forgetTokens('scheduler-fixture');
+    if (previous === undefined) delete process.env.V_SCHEDULER_URL;
+    else process.env.V_SCHEDULER_URL = previous;
+    for (const server of [gateway, upstream]) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+  }
+});
+
 describe('capability registry', () => {
   it('names every capability socket exactly once', () => {
     const names = CAPABILITIES.map((entry) => entry.name);
@@ -174,7 +212,7 @@ describe('capability registry', () => {
     assert.equal(new Set(sockets).size, sockets.length);
     assert.deepEqual(
       names,
-      ['voffice', 'album', 'photocraft', 'image-studio', 'weknora', 'vh-services'],
+      ['voffice', 'album', 'photocraft', 'v-scheduler', 'image-studio', 'weknora', 'vh-services'],
     );
   });
 
@@ -185,7 +223,7 @@ describe('capability registry', () => {
       assert.equal(entry?.egress, true, `${name} must be egress-capable`);
       // The services panel can start and stop containers; delegation waits for
       // the cross-tenant measurement P6 requires, whatever the rollout says.
-      assert.equal(entry?.delegable, name !== 'vh-services', `${name} delegability drifted`);
+      assert.equal(entry?.delegable, !['vh-services', 'v-scheduler'].includes(name), `${name} delegability drifted`);
     }
   });
 

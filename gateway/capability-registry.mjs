@@ -49,6 +49,7 @@ export const CAPABILITIES = [
   { name: 'voffice', socket: 'voffice.sock', egress: true, delegable: true },
   { name: 'album', socket: 'album.sock', egress: true, delegable: true },
   { name: 'photocraft', socket: 'photocraft.sock', egress: true, delegable: true },
+  { name: 'v-scheduler', socket: 'v-scheduler.sock', egress: true, delegable: false },
   { name: 'image-studio', socket: 'image-studio.sock', egress: true, delegable: true },
   { name: 'weknora', socket: 'weknora.sock', egress: true, delegable: true },
   { name: 'vh-services', socket: 'vh-services.sock', egress: true, delegable: false },

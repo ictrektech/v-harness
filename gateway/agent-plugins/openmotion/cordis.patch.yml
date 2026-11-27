@@ -1,0 +1,20 @@
+- insert:
+    - id: mcp-openmotion
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: openmotion
+        transport: stdio
+        command: node
+        args: ["--experimental-strip-types", "/usr/local/share/vh-openmotion/mcp.ts"]
+        cwd: !!js process.env.HOME + '/workspace'
+        env:
+          MOTION_DATA_DIR: !!js process.env.HOME + '/workspace/OpenMotion'
+          VH_TENANT_IP: !!js process.env.VH_TENANT_IP
+        failOnStartupError: true
+        toolCallTimeoutMs: 180000
+    - id: openmotion-skills
+      name: "@deepseek-ai/dsh-skill-filesystem"
+      config:
+        providerName: openmotion
+        includeDefaultRoots: false
+        customSkillDirs: ["/usr/local/share/vh-openmotion/skills"]

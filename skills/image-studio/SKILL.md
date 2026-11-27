@@ -1,6 +1,6 @@
 ---
 name: image-studio
-description: Generate, edit, or animate images with the local Image Studio service, and prepare model weights when one is missing.
+description: Generate, edit, or animate images with the local Image Studio service, prepare model weights, manage V-Scheduler compute nodes and Image Studio remote deployments.
 ---
 
 # Image Studio
@@ -147,3 +147,28 @@ Models whose key starts with `v-router/` are served by V-Router instead of local
 - One generation may queue behind another; a video can take up to an hour. Do not retry while a job is running.
 - If the service is unreachable, report that plainly and stop; do not start another client or install a different renderer.
 - Do not infer model names, capabilities, or readiness from memory; read the catalog.
+
+
+## Compute nodes and remote model preparation
+
+Use the tenant socket CLI at `/opt/v-harness/skills/image-studio/scripts/v-scheduler.mjs`. It forwards the current VOS identity. Listing needs a signed-in account, changes need a VOS administrator. Read `nodes`, `managed-nodes` and `backends` before choosing a target. Show the named target and requested change to the user and use their existing authorization.
+
+- `add --json-file PATH` verifies and saves a connection. The JSON accepts `name`, `host`, `ssh_port` (default 22), `ssh_user` (default root), `auth_method` (password or key), `ssh_password` or `ssh_key`, optional `sudo_password`, and `profile`. Use the user-provided private file. Keep credentials out of command arguments and replies.
+- `update ID --json-file PATH` updates supplied fields. Omit credentials to retain them. Empty `sudo_password` clears explicit sudo.
+- `rescan ID` refreshes hardware. `runtime ID` runs the Scheduler's configured container test. `remove ID` removes the saved node configuration.
+- Accepted profiles are `jetson-thor`, `dgx-spark`, `jetson-orin`, `arm-cpu`, `amd-cpu`, `amd-cuda`, `arm-cuda`, and `sophon-bm1688`. Read the returned compatible profiles.
+
+Use the Image Studio CLI above for the deployment workflow.
+
+1. `compute` lists eligible targets, deployments and model preparations. Select a returned target.
+2. `deploy-backend --kind ssh|cluster --node-id ID --request-key KEY` creates the backend. Preserve KEY on retry, then read `compute` until that deployment is running. Surface a failed state and `last_error`.
+3. Check `models` and prepare local model weights first. Run `prepare-model DEPLOYMENT --model-key KEY [--model-variant VARIANT]`.
+4. Poll `compute` until that model preparation is `registered`. Report `phase`, `received_bytes`, `total_bytes` and `weight_source`. The owner app checks a read-only Model Hub share first and copies verified files when needed. A `transferring` or `interrupted` state is incomplete. Retry `prepare-model` for an interrupted transfer.
+5. Read `placements` and generate using the exact `--compute-deployment-id`. Verify the returned Scheduler task and node.
+6. Use `backend-start`, `backend-stop`, or `backend-remove DEPLOYMENT` for its lifecycle. `remove-remote-model DEPLOYMENT --model-id KEY[@VARIANT]` unregisters that model and deletes its target weights. An active-model refusal must be resolved through the owning app before retrying.
+
+A successful deployment receipt starts an asynchronous workflow. Read its state before claiming readiness. A 401 needs a refreshed VOS sign-in, 403 needs the owning service's administrator permission, 409 needs the current state to be resolved. Report the owner's error code.
+
+## Persistent deliverables
+
+Write projects and exported files under the user's `$HOME/workspace`. That directory and the tenant's `.dsh` data are stored in the main machine's VOS application storage. Temporary directories are for scratch work. Return workspace-relative paths for files the user should retain. OpenMotion projects live in `$HOME/workspace/OpenMotion`; keep exports there or in the active project.

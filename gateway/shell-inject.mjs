@@ -182,6 +182,7 @@ function appPath(path) {
 function fixUrl(value) {
   var text = String(value);
   if (text === "") return value;
+  if (text.indexOf("/#/app/") === 0) return value;
   // Only this deployment's own http(s) pages are routed under the app prefix.
   // A blob: URL reports the page's origin, so the branch below used to treat it
   // as a page address and rebuilt it as "blob:///app/...#http://...", which no
