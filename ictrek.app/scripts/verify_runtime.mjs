@@ -304,8 +304,11 @@ try {
    }
    assert.ok(ready, 'optional bundles did not boot');
    const inventory = await rpc('pluginManager/listPlugins', {});
-   assert.ok(inventory.some(item => item.entryId === 'mcp-openmotion' && item.fiberPhase === 'active'), 'OpenMotion MCP adapter');
-   assert.ok(inventory.some(item => item.entryId === 'openmotion-skills' && item.fiberPhase === 'active'), 'OpenMotion Skills');
+   const motion = (await rpc('pluginManager/listBundles', {})).find(item => item.name === 'openmotion-dsh');
+   for (const id of ['mcp-openmotion', 'openmotion-skills']) {
+     const row = motion?.rows.find(item => item.rowId === id);
+     assert.ok(row?.entryId && inventory.some(item => item.entryId === row.entryId && item.fiberPhase === 'active'), JSON.stringify({ id, row }));
+   }
    for (const name of ['@liustack/modsearch', 'billion-context', 'billion-context/dsh-compaction-gate']) {
      assert.ok(inventory.some(item => item.moduleName === name && item.fiberPhase === 'active'), name);
    }

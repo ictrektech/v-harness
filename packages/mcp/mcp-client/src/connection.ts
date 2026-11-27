@@ -258,10 +258,10 @@ export function startConnection(
     reconnectTimer.unref()
   }
 
-  function lost(record: Generation, error: string): void {
+  function lost(record: Generation, error: string, reason?: Error): void {
     if (!isCurrent(record)) return
     current = undefined
-    settling = close(record).then((confirmed) => {
+    settling = close(record, reason).then((confirmed) => {
       readiness.resolve({ error: new Error(error) })
       if (confirmed) scheduleReconnect(error, record.connectedAt)
     })
@@ -277,7 +277,8 @@ export function startConnection(
   function invalidateSession(record: Generation, error: unknown): void {
     if (!isCurrent(record)) return
     ctx.logger.warn(`${label}: session invalidated by the server: ${diagnostic(error, 'tool call')}`)
-    lost(record, 'MCP session invalidated by the server; reconnecting')
+    lost(record, 'MCP session invalidated by the server; reconnecting',
+      mcpRequestError(error, 'session', binding.redacting ? text => binding.redact(text) : undefined))
   }
 
   function isStopped(): boolean { return disposed || closureFailure !== undefined }
