@@ -19,6 +19,7 @@ const UPSTREAM_TIMEOUT_MS = 120_000;
 
 /** Routes the capability exposes; everything else is refused locally. */
 export const ROUTES = [
+  { method: 'POST', path: /^\/scheduler\/api\/v1\/nodes\/[A-Za-z0-9%:._-]{1,128}(?:\/(?:approve|drain|revoke))?$/ },
   { method: 'GET', path: /^\/scheduler\/api\/v1\/(nodes|managed-nodes|backend-deployments)$/ },
   { method: 'POST', path: /^\/scheduler\/api\/v1\/managed-nodes$/ },
   { method: 'PUT', path: /^\/scheduler\/api\/v1\/managed-nodes\/[A-Za-z0-9_.-]{1,128}$/ },

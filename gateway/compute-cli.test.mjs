@@ -57,4 +57,10 @@ test('compute CLIs send the native method, path and complete JSON body', async t
   assert.deepEqual(JSON.parse(calls[1].body), { model_key: 'sdxl', model_variant: 'q4' });
   assert.deepEqual(JSON.parse(calls[4].body), settings);
   assert.deepEqual(JSON.parse(calls[5].body), settings);
+  await run(process.execPath, [nodes, 'drain', 'vos:node-a'], { env });
+  await run(process.execPath, [nodes, 'resume', 'vos:node-a'], { env });
+  assert.deepEqual(calls.slice(-2).map(call => [call.method, call.path, JSON.parse(call.body)]), [
+    ['POST', '/scheduler/api/v1/nodes/vos%3Anode-a/drain', { draining: true }],
+    ['POST', '/scheduler/api/v1/nodes/vos%3Anode-a/drain', { draining: false }],
+  ]);
 });

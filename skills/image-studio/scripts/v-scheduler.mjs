@@ -62,7 +62,7 @@ async function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2))
   const [command, id] = positional
   if (!command || flags.has('help')) {
-    return print({ commands: ['nodes', 'managed-nodes', 'backends', 'add --json-file PATH', 'update ID --json-file PATH', 'rescan ID', 'runtime ID', 'remove ID'] })
+    return print({ commands: ['nodes', 'managed-nodes', 'backends', 'add --json-file PATH', 'update ID --json-file PATH', 'rescan ID', 'runtime ID', 'remove ID', 'budget ID --json-file PATH', 'approve ID --json-file PATH', 'drain ID', 'resume ID', 'revoke ID'] })
   }
   const connection = resolveConnection(flags)
   if (!connection.socketPath) throw new CliError('Open v-harness in VOS before using node management')
@@ -78,6 +78,17 @@ async function main() {
     method = command === 'add' ? 'POST' : 'PUT'
     path = prefix + 'managed-nodes'
     if (command === 'update') path += '/' + encodeURIComponent(requireArgument(id, 'node ID'))
+  } else if (['budget', 'approve'].includes(command)) {
+    const file = requireArgument(stringFlag(flags, 'json-file'), '--json-file')
+    body = JSON.parse(readFileSync(file, 'utf8'))
+    method = 'POST'
+    path = prefix + 'nodes/' + encodeURIComponent(requireArgument(id, 'node ID'))
+    if (command === 'approve') path += '/approve'
+  } else if (['drain', 'resume', 'revoke'].includes(command)) {
+    method = 'POST'
+    path = prefix + 'nodes/' + encodeURIComponent(requireArgument(id, 'node ID'))
+    path += command === 'revoke' ? '/revoke' : '/drain'
+    body = command === 'revoke' ? {} : { draining: command === 'drain' }
   } else if (['rescan', 'runtime', 'remove'].includes(command)) {
     path = prefix + 'managed-nodes/' + encodeURIComponent(requireArgument(id, 'node ID'))
     method = command === 'remove' ? 'DELETE' : 'POST'

@@ -156,6 +156,7 @@ Use the tenant socket CLI at `/opt/v-harness/skills/image-studio/scripts/v-sched
 - `add --json-file PATH` verifies and saves a connection. The JSON accepts `name`, `host`, `ssh_port` (default 22), `ssh_user` (default root), `auth_method` (password or key), `ssh_password` or `ssh_key`, optional `sudo_password`, and `profile`. Use the user-provided private file. Keep credentials out of command arguments and replies.
 - `update ID --json-file PATH` updates supplied fields. Omit credentials to retain them. Empty `sudo_password` clears explicit sudo.
 - `rescan ID` refreshes hardware. `runtime ID` runs the Scheduler's configured container test. `remove ID` removes the saved node configuration.
+- `budget ID --json-file PATH` updates a scheduling node's budget. `approve ID --json-file PATH` approves a pending registration. The native NodeEdit JSON requires `version`, `display_name`, and `capacities`, with optional `resident_baseline`, `safety_reserve`, and `vos_member_id`. Read the current register first and preserve its version. `drain ID` pauses new scheduling, `resume ID` allows it again, and `revoke ID` revokes enrollment. A conflict requires rereading state.
 - Accepted profiles are `jetson-thor`, `dgx-spark`, `jetson-orin`, `arm-cpu`, `amd-cpu`, `amd-cuda`, `arm-cuda`, and `sophon-bm1688`. Read the returned compatible profiles.
 
 Use the Image Studio CLI above for the deployment workflow.

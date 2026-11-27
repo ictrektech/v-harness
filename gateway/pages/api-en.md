@@ -2,7 +2,7 @@
 
 Use your VOS account to start a conversation, submit work and read the result from a script. API sessions use your v-harness workspace and the default model selected under **Settings → Models**. Choose a V-Scheduler model available to your account, or configure a personal provider through Settings → Models → Add model provider. Inference through a personal provider uses the credentials stored by that tenant. A regular VOS account with access to v-harness can use these endpoints.
 
-The 0.2.2-rc.3 VOS runtime uses its installed storage service even when a plugin carries an older copy. Existing workspace and session IDs remain valid across the upgrade. The request, response and authentication contract below is unchanged.
+The 0.2.3-alpha.2 VOS runtime uses its installed storage service even when a plugin carries an older copy. Existing workspace and session IDs remain valid across the upgrade. The request, response and authentication contract below is unchanged.
 
 See the [application guide](https://twp99wyutbs.feishu.cn/docx/Iu0tdedumoMZ1LxMUSWckt7wn5v) for bundled plugins and DS Bot migration. Sessions, tasks, events and authentication use the endpoints below.
 
