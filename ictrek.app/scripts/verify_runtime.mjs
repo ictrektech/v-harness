@@ -58,11 +58,11 @@ const upstream = createServer(async (req, res) => {
      res.end('{}');
      return;
    }
-   res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }, {id:'sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] }));
+   res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }, {id:'sensevoice-int8',qualified:'v-voice/sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] }));
  } else if (req.url === '/v1/audio/transcriptions') {
    assert.match(req.headers['content-type'],/multipart\/form-data; boundary=/);
    const chunks=[];for await(const chunk of req)chunks.push(chunk);
-   assert.ok(Buffer.concat(chunks).includes(Buffer.from('app-v-voice/sensevoice-int8')));
+   assert.ok(Buffer.concat(chunks).includes(Buffer.from('v-voice/sensevoice-int8')));
    res.end(JSON.stringify({text:'voice fixture completed'}));
  } else if (req.url === '/v1/chat/completions') {
    req.resume();

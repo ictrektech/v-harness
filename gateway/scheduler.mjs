@@ -100,7 +100,7 @@ export async function handleScheduler(req, res, path) {
     const payload = await response.json();
     const data = (payload.models ?? []).filter(row => typeof row.id === 'string' && row.upstream_id === 'app-v-voice'
       && Array.isArray(row.endpoints) && row.endpoints.some(endpoint => normalized(endpoint) === 'audio/transcriptions'))
-      .map(row => ({id:`${row.upstream_id}/${row.id}`,name:row.name ?? row.id}));
+      .map(row => ({id:row.qualified ?? row.id,name:row.name ?? row.id}));
     return reply(200,{data});
   }
   if (req.method === 'POST' && path === '/v1/audio/transcriptions') {
