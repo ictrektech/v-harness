@@ -22,21 +22,19 @@ v-harness 有两条**独立**的流水线，顺序不能颠倒：
 | `~/.feishu.json` | 构建机（**不提交**） | `feishu_app_id` / `feishu_app_secret` / `feishu_spreadsheet_token` |
 | `~/.feishu.components.json` | CI（由 secrets 生成） | 同上，供 `package.sh` 读取 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | GitHub secrets | CI 读写飞书 |
-| `FEISHU_SPREADSHEET_TOKEN` | GitHub secrets 或本地配置文件 | 定位发布表；**仓库里不留任何值** |
+| 发布表 ID `Htotsn3oahO1zxt73YMcaB1zn8e` | 脚本固定默认值 | 公开文档标识，不是凭据，不放入 GitHub secrets |
 | `APPSTORE_IP` / `APPSTORE_TOKEN` | GitHub secrets | 推送到 VOS App Store |
 
-三个飞书取值都不写进仓库。本地放在 `~/.feishu.json`：
+飞书应用凭据不写进仓库。构建机使用可写的 `~/.feishu.json`：
 
 ```json
 {
   "feishu_app_id": "...",
-  "feishu_app_secret": "...",
-  "feishu_spreadsheet_token": "..."
+  "feishu_app_secret": "..."
 }
 ```
 
-两个脚本的解析顺序一致：环境变量 `FEISHU_SPREADSHEET_TOKEN` → 配置文件里的
-`feishu_spreadsheet_token` → 报错退出。缺失时**不会静默使用内置默认值**。
+发布表使用上述固定 ID；认证使用 `feishu_app_id` 和 `feishu_app_secret`。CI 打包优先读取 `$HOME/.feishu.components.json`。发布表 ID 不应作为认证凭据管理。
 
 ## 0.1 新机器准备
 
@@ -49,7 +47,7 @@ v-harness 有两条**独立**的流水线，顺序不能颠倒：
 docker            # 24+，建议装 buildx
 python3           # 脚本用它读写飞书 JSON
 python3 -c 'import yaml'   # 缺失时：pip install pyyaml
-git curl tar
+curl tar
 ```
 
 **② 登录 SWR**
@@ -64,23 +62,22 @@ docker login swr.cn-southwest-2.myhuaweicloud.com
 // ~/.feishu.json   （0600，不在仓库里）
 {
   "feishu_app_id": "...",
-  "feishu_app_secret": "...",
-  "feishu_spreadsheet_token": "..."
+  "feishu_app_secret": "..."
 }
 ```
 
-三个值向平台管理员索取。**不要从别的机器复制整个 home 目录**，也不要把它们写进仓库。
+应用凭据由平台管理员提供。**不要从别的机器复制整个 home 目录**，也不要把它们写进仓库。
 
-基础镜像会被镜像到 `swr.../ictrek/node:22-bookworm-slim`，第二台机器构建时直接拉 SWR，不再依赖 Docker Hub。首次拉不到时会自动尝试 `docker.m.daocloud.io` 等镜像源。
+基础镜像会被镜像到 `swr.../ictrek/node:24.22.3-bookworm-slim-<amd64|arm64>`，第二台机器构建时直接拉 SWR，不再依赖 Docker Hub。首次拉不到时会自动尝试 `docker.m.daocloud.io` 等镜像源。
 
 ## 1. 发布镜像
 
-在对应架构的构建机上执行（amd 用 x86_64，arm 用 aarch64）：
+先在本机提交并推送代码，用 rsync 同步到匹配架构构建机的 `~/dev/repos/v-harness`。所有 Git 操作只在本机运行；将完整提交哈希作为 `V_HARNESS_SOURCE_REVISION` 传入。构建输出和日志放在构建机 `~/dev/build/v-harness`。在构建机执行（amd 用 x86_64，arm 用 aarch64）：
 
 ```bash
 ./build_image.sh --dry-run          # 先看计划：target、tag、sheet、版本
-./build_image.sh --target amd       # 构建 + push SWR + 写飞书
-./build_image.sh --target arm       # 换 arm 构建机
+V_HARNESS_SOURCE_REVISION=<本地完整提交哈希> ./build_image.sh --target amd --sheet AMD_with_cuda,AMD_with_mxn100
+V_HARNESS_SOURCE_REVISION=<本地完整提交哈希> ./build_image.sh --target arm --sheet ARM_without_cuda,l4t,ARM_with_cuda,thor_spark,SOPHON_bm1688
 ```
 
 产物：
@@ -136,14 +133,14 @@ gh release view vx.y.z --json assets     # 应包含 v-harness_x.y.z_pull.tar
 
 之后在 VOS 应用商店确认版本号已更新。
 
-## 3. 本地验证应用包（可选）
+## 3. 包结构校验
 
-不推 tag 也能先验证打包内容，但需要飞书可达：
+发布任务以 GitHub Actions 的 `package.sh` 和发布结果为准。只有明确要求额外手工验包时，才在构建机同步源码后执行，并将 `DIST_DIR` 指向该机器的 `~/dev/build/v-harness`；不得在本地 Mac 构建应用包。例如：
 
 ```bash
-PACKAGE_VERSION=0.1.0 ./ictrek.app/scripts/package.sh
-tar tf ictrek.app/dist/v-harness_0.1.0_pull.tar
-tar xOf ictrek.app/dist/v-harness_0.1.0_pull.tar app.tar.gz | tar tz
+PACKAGE_VERSION=0.1.0 DIST_DIR="$HOME/dev/build/v-harness/package" ./ictrek.app/scripts/package.sh
+tar tf $HOME/dev/build/v-harness/package/v-harness_0.1.0_pull.tar
+tar xOf $HOME/dev/build/v-harness/package/v-harness_0.1.0_pull.tar app.tar.gz | tar tz
 ```
 
 `package.sh` 会校验：
