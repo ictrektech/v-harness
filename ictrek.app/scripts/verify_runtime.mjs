@@ -109,6 +109,10 @@ try {
    const graph = JSON.parse(html.match(/globalThis\["__DSH_BOOT__"\] = ([^<]+)<\/script>/u)[1]);
    const inventory = await rpc('pluginManager/listPlugins', {});
    const bundles = await rpc('pluginManager/listBundles', {});
+   for(const name of ['@deepseek-ai/dsh-experimental-voice-input-bundle','@deepseek-ai/dsh-experimental-plugin-market-bundle','@deepseek-ai/dsh-experimental-auto-review','@deepseek-ai/dsh-experimental-forge-bundle']) {
+     const bundle=bundles.find(item=>item.name===name);
+     assert.equal(bundle?.enabled,true,name);assert.equal(bundle?.error,undefined,name);
+   }
    for (const [name, version] of Object.entries(bundled)) {
      const entry = bundles.find(item => item.name === name);
      assert.equal(entry?.version, version, name);
