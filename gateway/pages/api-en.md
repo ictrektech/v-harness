@@ -146,7 +146,7 @@ You can also ask the agent to manage these resources. For example, “List compu
 Workflow:
 
 1. Select a workspace in v-harness. Under **Plugins → Installed → openmotion-dsh**, check that the switch is on. Restart the workspace if prompted.
-2. Ask “Use OpenMotion to open the template library,” or describe the subject, duration, aspect ratio and style. Once the agent calls the plugin, open its returned preview/Studio link. Opening plugin details alone does not open the editor. Preview links require your VOS account. Preserve the complete path, query and hash; refresh the workspace if sign-in expires.
+2. Ask “Use OpenMotion to open the template library,” or describe the subject, duration, aspect ratio and style. Once the agent calls the plugin, open its returned preview/Studio link. Opening plugin details alone does not open the editor. Preview links require your VOS account. Preserve the complete path, query and hash; refresh the workspace if sign-in expires. If the reply is a plain-text path, ask for a clickable Markdown link or open OpenMotion from Services. Template and project assets and APIs load through the same preview service; retain the original link when refreshing.
 3. Review the visuals and timeline in the preview, and request edits in chat. Preview before approving export. Follow OpenMotion’s setup instructions to configure providers when generating image, video, music or narration assets.
 4. After approval, ask the agent to export MP4 and save the project, assets and final video in the workspace. Projects use `$HOME/workspace/OpenMotion`. Download the returned files or back them up separately.
 

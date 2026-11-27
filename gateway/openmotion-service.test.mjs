@@ -21,13 +21,15 @@ test('OpenMotion directs the preview handoff to the authenticated VOS user brows
 });
 
 test('Studio assets stay under the service prefix without changing external URLs or binary responses',()=>{
- const input=Buffer.from('<script src="/editor-assets/index.js"></script> fetch("/motion-api/templates"); url(/design-system/font.woff2); const external="https://example.com/api/test"; const file="/home/workspace";');
+ const input=Buffer.from('<script src="/editor-assets/index.js"></script> fetch("/motion-api/templates"); url(/design-system/font.woff2); const external="https://example.com/api/test"; const file="/home/workspace"; call("/project/status"); call("/phase1/call");');
  const output=editorBytes(input,'text/javascript',4173).toString();
  assert.ok(output.includes('"/__vh/svc/4173/editor-assets/index.js"'));
  assert.ok(output.includes('"/__vh/svc/4173/motion-api/templates"'));
  assert.ok(output.includes('url(/__vh/svc/4173/design-system/font.woff2)'));
  assert.ok(output.includes('https://example.com/api/test'));
  assert.ok(output.includes('"/home/workspace"'));
+ assert.ok(output.includes('call("/project/status")'));
+ assert.ok(output.includes('call("/phase1/call")')); 
  assert.equal(editorBytes(input,'image/png',4173),input);
  assert.equal(editorBytes(input,'text/javascript',undefined),input);
 });
