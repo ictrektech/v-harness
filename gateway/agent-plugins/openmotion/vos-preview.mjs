@@ -49,5 +49,13 @@ export async function exposePreview(response) {
       console.error(error.message);
     }
   }
-  return JSON.parse(result);
+  result = result.replaceAll(
+    'Use the host built-in browser to open previewUrl in this conversation.',
+    'Return the complete mapped VOS previewUrl to the user, who opens it in their authenticated browser. Do not open it in a server-side browser or start another server.',
+  );
+  const adapted = JSON.parse(result);
+  if (adapted.result?.serverInfo?.name === 'openmotion' && typeof adapted.result.instructions === 'string') {
+    adapted.result.instructions += '\nVOS integration: preview and Studio run in the user\'s authenticated VOS browser. Return the mapped preview link and explain that the user can click it or open Services. A server-side browser does not carry that login. Do not install another OpenMotion copy, launch another server, or claim the user has already opened the page.';
+  }
+  return adapted;
 }

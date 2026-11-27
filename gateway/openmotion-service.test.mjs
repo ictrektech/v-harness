@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {openMotionHeaders} from './openmotion-service.mjs';
 import {editorBytes} from './agent-plugins/openmotion/vos-editor.mjs';
+import {exposePreview} from './agent-plugins/openmotion/vos-preview.mjs';
 
 test('OpenMotion proxy preserves same-origin admission while using local upstream origin',()=>{
  const headers={host:'127.0.0.1:4173'};
@@ -10,6 +11,13 @@ test('OpenMotion proxy preserves same-origin admission while using local upstrea
  assert.equal(headers.referer,'http://127.0.0.1:4173/');
  for(const origin of ['https://other.example','https://vos.example:9999','invalid'])assert.equal(openMotionHeaders({headers:{host:'vos.example:1180',origin}},{}),false);
  assert.equal(openMotionHeaders({headers:{host:'vos.example:1180','sec-fetch-site':'cross-site'}},{}),false);
+});
+
+test('OpenMotion directs the preview handoff to the authenticated VOS user browser',async()=>{
+ const result=await exposePreview({result:{serverInfo:{name:'openmotion'},instructions:'OpenMotion tools',nextAction:'Use the host built-in browser to open previewUrl in this conversation.'}});
+ assert.ok(result.result.instructions.includes('authenticated VOS browser'));
+ assert.ok(result.result.nextAction.includes('mapped VOS previewUrl'));
+ assert.ok(!result.result.nextAction.includes('Use the host built-in browser'));
 });
 
 test('Studio assets stay under the service prefix without changing external URLs or binary responses',()=>{
