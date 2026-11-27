@@ -135,13 +135,7 @@ gh release view vx.y.z --json assets     # 应包含 v-harness_x.y.z_pull.tar
 
 ## 3. 包结构校验
 
-发布任务以 GitHub Actions 的 `package.sh` 和发布结果为准。只有明确要求额外手工验包时，才在构建机同步源码后执行，并将 `DIST_DIR` 指向该机器的 `~/dev/build/v-harness`；不得在本地 Mac 构建应用包。例如：
-
-```bash
-PACKAGE_VERSION=0.1.0 DIST_DIR="$HOME/dev/build/v-harness/package" ./ictrek.app/scripts/package.sh
-tar tf $HOME/dev/build/v-harness/package/v-harness_0.1.0_pull.tar
-tar xOf $HOME/dev/build/v-harness/package/v-harness_0.1.0_pull.tar app.tar.gz | tar tz
-```
+发布任务以 GitHub Actions 的 `package.sh` 和发布结果为准。不要另行在本地 Mac 构建应用包。
 
 `package.sh` 会校验：
 
