@@ -5,6 +5,17 @@ import { packedWorkspaceClosure, readWorkspacePackages } from '../packages/sandb
 import { acceptsNpmPlatform } from '../scripts/npm-platform.ts'
 
 const root = process.cwd()
+// VOS uses V-Voice; omit the local recognizer before computing the deploy closure.
+const voiceRoot = join(root, 'packages/experimental/voice-input-bundle')
+const voiceManifestPath = join(voiceRoot, 'package.json')
+const voiceManifest = JSON.parse(readFileSync(voiceManifestPath, 'utf8'))
+delete voiceManifest.dependencies['@deepseek-ai/dsh-experimental-speech-to-text-sensevoice']
+writeFileSync(voiceManifestPath, JSON.stringify(voiceManifest, null, 2) + '\n')
+const voicePatchPath = join(voiceRoot, 'cordis.patch.yml')
+const voicePatch = readFileSync(voicePatchPath, 'utf8')
+const localRow = /    - id: speech-to-text-sensevoice\n[\s\S]*?(?=    - id:)/u
+if (!localRow.test(voicePatch)) throw new Error('Recheck the VOS voice composition before deploying')
+writeFileSync(voicePatchPath, voicePatch.replace(localRow, '').replace('defaultProvider: sensevoice-local', 'defaultProvider: v-scheduler-voice'))
 const path = join(root, 'apps/cli/package.json')
 const manifest = JSON.parse(readFileSync(path, 'utf8'))
 const packages = readWorkspacePackages(root)

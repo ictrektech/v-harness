@@ -17,6 +17,9 @@ const optionalBundles = bundled ? JSON.parse(await readFile(
 const profile = '/data/startup-smoke/.dsh/profiles/web';
 const fixtureFile = '/data/.vh/release-session-fixture.json';
 const runtimeModules = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules';
+const runtimePackages = await readdir(runtimeModules);
+assert.ok(!runtimePackages.some(name => name.startsWith('sherpa-onnx')), 'local ASR native dependencies must not ship');
+assert.ok(!(await readdir(runtimeModules + '/@deepseek-ai')).includes('dsh-experimental-speech-to-text-sensevoice'), 'local SenseVoice plugin must not ship');
 
 assert.ok((await readFile('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-api-remotes/lib/client.js','utf8')).includes('selectDefaultModel'), 'browser Remote assembly must include default-model selection');
 assert.equal(execFileSync('npm', ['config', 'get', 'registry'], { encoding: 'utf8' }).trim(), 'https://registry.npmjs.org/');
