@@ -62,7 +62,7 @@ const standardProps: GlobalStandardProps & Omit<SessionStandardProps, 'sessionId
   useWorkspaces: unusedStandardHook,
   useContextMenu: contextMenuHook(),
   inputActions: {
-    insertQuote: () => false,
+    insertQuote: () => false, insertRegionTokens: () => false,
     captureInsertion: unusedStandardHook,
     insertText: unusedStandardHook,
     setDraft: unusedStandardHook,

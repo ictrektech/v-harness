@@ -16,7 +16,7 @@ import { profileComposition } from '../../../settings/settings/tests/profile-com
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { recordKeyFor } from '../src/auth.ts'
 import { assemble } from './assemble.ts'
-import { closeMockServers, mockServer, textEvents, anthropicTextEvents } from './mock-server.ts'
+import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
 import { brandString } from '@deepseek-ai/dsh-brand'
 
 /** One text block, then a tool call truncated by the output-token ceiling. */

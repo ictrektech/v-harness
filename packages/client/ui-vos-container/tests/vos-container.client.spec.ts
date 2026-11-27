@@ -47,7 +47,7 @@ function pick(candidate: { name: string; value?: string }, action: 'pick' | 'dri
  * @returns the fetch double, for call assertions.
  */
 function stubList(body: unknown, status = 200) {
-  const fetchSpy = vi.fn(async () => new Response(JSON.stringify(body), { status }))
+  const fetchSpy = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(body), { status }))
   vi.stubGlobal('fetch', fetchSpy)
   return fetchSpy
 }
@@ -129,7 +129,7 @@ describe('the container listing', () => {
       description: 'com.ictrek.demo · running',
       section: 'source.section',
     })
-    expect(rows[0].value).toBe(refOf(container.id, container.name))
+    expect(rows[0]?.value).toBe(refOf(container.id, container.name))
   })
 
   it('filters on the container name and its application', async () => {
@@ -139,7 +139,7 @@ describe('the container listing', () => {
       .toEqual([container.name])
     expect((await source.candidates(session, request(`${LEVEL}/other`))).map(row => row.name))
       .toEqual(['vos-app-other-db-1'])
-    expect((await source.candidates(session, request(`${LEVEL}/missing`)))[0].name).toBe('source.empty')
+    expect((await source.candidates(session, request(`${LEVEL}/missing`)))[0]?.name).toBe('source.empty')
   })
 
   it('says the listing is empty rather than offering nothing to pick', async () => {
@@ -186,7 +186,7 @@ describe('the marker', () => {
   it('renders a replayed message back into the same chip data', () => {
     const tag = markerOf(refOf(container.id, container.name))
     const marker = `prefix ${tag} suffix`
-    const token = containerRule.match(marker, 0)
+    const token = containerRule.match(marker, 0, {} as never)
     expect(token).toEqual({
       id: 'vosContainer',
       start: marker.indexOf('<'),

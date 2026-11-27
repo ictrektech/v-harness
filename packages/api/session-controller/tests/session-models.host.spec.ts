@@ -397,7 +397,7 @@ describe('Web session model selection', () => {
     ctx.effect(() => ctx.llm.registerAdapter(['v-scheduler'], new CatalogAdapter('V-Scheduler', [
       { provider: 'v-scheduler', id: 'private/visible', name: 'Visible' },
     ])))
-    const controller = createSessionTestController(ctx, {
+    const controller = await createSessionTestController(ctx, {
       defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(), cwd: '/tmp',
     })
     try {

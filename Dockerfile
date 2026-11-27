@@ -260,7 +260,8 @@ RUN npm pack --ignore-scripts --registry="${NPM_REGISTRY}" @openmotion/app@0.2.1
  && npm ci --omit=dev --ignore-scripts --registry="${NPM_REGISTRY}"
 COPY gateway/agent-plugins/prepare-openmotion.mjs /build/prepare-openmotion.mjs
 COPY gateway/agent-plugins/openmotion/vos-*.mjs /build/openmotion/app/
-RUN node /build/prepare-openmotion.mjs /build/openmotion/app
+RUN node /build/prepare-openmotion.mjs /build/openmotion/app \
+ && chmod -R a+rX /build/openmotion/app
 
 FROM ${BASE_IMAGE}
 
