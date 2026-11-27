@@ -49,6 +49,8 @@ The static `cordis.patch.yml` adds the four voice rows, selects `sensevoice-loca
 -----
 
 <a id="model-experience"></a>
+The VOS profile enables voice input and selects **V-Voice · V-Scheduler**. It reuses V-Voice ASR through the tenant inference capability and disables the local SenseVoice provider, so this profile does not download local speech models. In its settings, the VOS provider shows service readiness and identifies the V-Scheduler route. Install and start V-Voice and V-Scheduler and enable an ASR model there. The browser still requires microphone permission. Other profiles retain their local SenseVoice setup.
+
 ## Model Experience
 
 None, as recordings and preparation remain outside model requests; ordinary user submission owns any later text.

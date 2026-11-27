@@ -57,6 +57,8 @@ kind: "package-reference"
 -----
 
 <a id="model-experience"></a>
+VOS 配置默认开启语音输入并选择 **V-Voice · V-Scheduler**，通过租户推理能力复用 V-Voice ASR，同时停用本地 SenseVoice 服务，因此不会下载本地识别模型。设置页显示服务就绪状态和 V-Scheduler 调用路径。需先安装并启动 V-Voice、V-Scheduler，并在 V-Voice 启用 ASR 模型；浏览器仍需麦克风权限。其他配置保留本地 SenseVoice 的安装流程。
+
 ## 模型体验
 
 无，因为录音与准备不进入模型请求；之后的文字由普通用户提交拥有。
