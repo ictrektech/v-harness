@@ -143,6 +143,15 @@ Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。
 
 预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。默认开启，可直接在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
 
+使用步骤：
+
+1. 在 v-harness 选择工作区，在「插件 → 已安装 → openmotion-dsh」确认开关开启；如有重启提示，按提示重启工作区。
+2. 在对话里说「用 OpenMotion 打开模板库」或描述动画的主题、时长、画幅和风格。智能体调用插件后，点击它返回的预览/Studio 链接；仅打开插件详情页不会打开编辑器。
+3. 在预览中检查画面和时间轴，在对话里提出修改；先预览，再确认导出。生成图片、视频、配乐或配音素材时，先按 OpenMotion 的引导配置相应供应商。
+4. 确认后让智能体导出 MP4，把项目、素材和成片保存在工作区。项目目录为 `$HOME/workspace/OpenMotion`；从返回的文件链接下载或另行备份。
+
+可直接复制：「用 OpenMotion 做一个 10 秒、16:9 的产品介绍动画，先用文字和几何图形，给我分镜和可打开的预览；等我确认后再导出 MP4，把项目和视频保存到工作区。」
+
 租户主目录中的工作区、设计文件、导出文件、会话和插件设置通过 `${VOS_APP_STORAGE_PATH}/data:/data` 保存在主 VOS 机器上。交付文件请保存在 `$HOME/workspace`。普通容器重建和应用升级会沿用该存储。删除应用数据或修改存储设置前，请先备份应用存储。
 
 这些集成通过租户私有 Unix socket 调用，由网关提供当前 VOS 令牌。公共 VOS API v1 的会话、提示词和事件协议保持原有契约。原生算力 API 由 [Image Studio](https://github.com/ictrektech/image-studio) 维护，节点管理 API 由 [V-Scheduler](https://github.com/ictrektech/V-Scheduler/blob/main/docs/node-management.md) 维护。

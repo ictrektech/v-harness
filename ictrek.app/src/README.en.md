@@ -109,6 +109,15 @@ You can also ask the agent to manage these resources. For example, “List compu
 
 **OpenMotion 0.2.1** is preinstalled as `openmotion-dsh`, using the official local application's MCP tools and Skills. It is enabled by default. Ask for an OpenMotion project, an animation, or a video export. Its project data is stored in `$HOME/workspace/OpenMotion`. Media providers need their own configuration. Large renders require sufficient CPU, memory and disk space.
 
+Workflow:
+
+1. Select a workspace in v-harness. Under **Plugins → Installed → openmotion-dsh**, check that the switch is on. Restart the workspace if prompted.
+2. Ask “Use OpenMotion to open the template library,” or describe the subject, duration, aspect ratio and style. Once the agent calls the plugin, open its returned preview/Studio link. Opening plugin details alone does not open the editor.
+3. Review the visuals and timeline in the preview, and request edits in chat. Preview before approving export. Follow OpenMotion’s setup instructions to configure providers when generating image, video, music or narration assets.
+4. After approval, ask the agent to export MP4 and save the project, assets and final video in the workspace. Projects use `$HOME/workspace/OpenMotion`. Download the returned files or back them up separately.
+
+Example: “Use OpenMotion to make a 10-second, 16:9 product introduction with text and geometric shapes. Show a storyboard and a working preview first. Wait for approval before exporting MP4, and save the project and video in the workspace.”
+
 Workspaces, designs, exported files, sessions and plugin settings under your tenant home are stored on the main VOS machine through `${VOS_APP_STORAGE_PATH}/data:/data`. Save deliverables under `$HOME/workspace`. The VOS app storage survives ordinary container replacement and app upgrades. Back up the app's storage before deleting its data or changing storage settings.
 
 
