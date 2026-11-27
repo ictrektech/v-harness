@@ -94,6 +94,26 @@ export async function handleScheduler(req, res, path) {
   const token = await accessTokenFor(namespace);
   if (!token) return reply(401, { error: { message: 'VOS session expired; refresh v-harness' } });
   if (req.method === 'GET' && path === '/v1/models') return reply(200, { data: await catalog(token) });
+  if (req.method === 'GET' && path === '/v1/audio/models') {
+    const response = await fetch(`${ORIGIN}/api/v1/models`, {headers:{authorization:`Bearer ${token}`},signal:AbortSignal.timeout(15000)});
+    if (!response.ok) return reply(response.status, {error:{message:'V-Scheduler voice discovery failed'}});
+    const payload = await response.json();
+    const data = (payload.models ?? []).filter(row => typeof row.id === 'string' && row.upstream_id === 'app-v-voice'
+      && Array.isArray(row.endpoints) && row.endpoints.some(endpoint => normalized(endpoint) === 'audio/transcriptions'))
+      .map(row => ({id:`${row.upstream_id}/${row.id}`,name:row.name ?? row.id}));
+    return reply(200,{data});
+  }
+  if (req.method === 'POST' && path === '/v1/audio/transcriptions') {
+    const contentType = req.headers['content-type'] ?? '';
+    if (!contentType.startsWith('multipart/form-data;')) return reply(415,{error:{message:'Use multipart/form-data for speech'}});
+    const abort = new AbortController();
+    res.once('close',()=>abort.abort());
+    const response = await fetch(`${ORIGIN}${path}`, {method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':contentType},body:req,duplex:'half',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(120000)])});
+    res.writeHead(response.status,{'content-type':response.headers.get('content-type') ?? 'application/json','cache-control':'no-store'});
+    if(response.body)await pipeline(Readable.fromWeb(response.body),res);else res.end();
+    return;
+  }
+
   if (req.method !== 'POST' || !['/v1/chat/completions', '/v1/responses', '/v1/messages', '/text/v1/chat/completions'].includes(path)) {
     return reply(403, { error: { message: 'Inference route not allowed' } });
   }

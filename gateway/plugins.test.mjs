@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import registryPlugins from './agent-plugins/registry-plugins.json' with { type: 'json' };
 import optionalBundles from './agent-plugins/optional-bundles.json' with { type: 'json' };
 
-const defaultBundles = Object.keys(registryPlugins).filter(name => !optionalBundles.includes(name));
+const experimentalBundles = ['@deepseek-ai/dsh-experimental-voice-input-bundle', '@deepseek-ai/dsh-experimental-plugin-market-bundle', '@deepseek-ai/dsh-experimental-auto-review', '@deepseek-ai/dsh-experimental-forge-bundle'];
+const defaultBundles = [...experimentalBundles, ...Object.keys(registryPlugins).filter(name => !optionalBundles.includes(name))];
 
 /** Deployed browser plugins every image carries; the sync refuses a payload without them. */
 const MANAGED = ['dsh-client-ui-settings-models', 'dsh-llm-pi-ai', 'dsh-api-session-controller', 'dsh-api-remotes'];
@@ -73,6 +74,9 @@ test('a new profile declares the published payload plugins as dependencies', asy
 
   const manifest = JSON.parse(await readFile(join(user.profile, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.dependencies, registryPlugins);
+  assert.deepEqual(optionalBundles, ['@liustack/modsearch']);
+  assert.ok(manifest.dsh.profile.bundles.includes('openmotion-dsh'));
+  assert.ok(manifest.dsh.profile.bundles.includes('billion-context'));
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'vh-agent-plugins', ...defaultBundles,
   ]);
@@ -109,7 +113,7 @@ test('an existing profile drops DS Bot and keeps other user plugins and Bot data
   const manifest = JSON.parse(upgraded);
   assert.deepEqual(manifest.dependencies, { 'dsh-pet': '0.4.4', ...registryPlugins });
   assert.deepEqual(manifest.dsh.profile.bundles, [
-    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-pet', 'billion-context', 'vh-agent-plugins', ...defaultBundles,
+    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-pet', 'billion-context', 'vh-agent-plugins', ...defaultBundles.filter(name => name !== 'billion-context'),
   ]);
   assert.equal(existsSync(botDir), false);
   assert.equal(existsSync(sharedBotDir), false);

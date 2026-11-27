@@ -79,6 +79,8 @@ export const zh = {
   'preparation.cancelling': '正在取消准备…',
 
   cloudReady: '云端语音识别已就绪。',
+  vosReady: 'V-Voice 识别服务已就绪。',
+  vos: '录音通过 V-Scheduler 交给 V-Voice 识别；v-harness 不下载或加载本地识别模型。',
   discard: '丢弃识别文字',
   transcribingShort: '识别中…', wakingShort: '唤醒中…',
   provider: '识别服务', language: '识别语言',
@@ -183,6 +185,8 @@ export const en: Record<VoiceKey, string> = {
   'preparation.cancelling': 'Cancelling preparation…',
 
   cloudReady: 'Cloud speech recognition is ready.',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   discard: 'Discard transcript',
   transcribingShort: 'Transcribing…', wakingShort: 'Waking…',
   provider: 'Recognition service', language: 'Recognition language',
@@ -290,6 +294,8 @@ export const ja = {
   'preparation.cancelled': '準備をキャンセルしました。完了済みのダウンロードは保持されます。',
   'preparation.cancelling': '準備をキャンセル中…',
   'cloudReady': 'クラウド音声認識の準備ができました。',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   'discard': '文字起こしを破棄',
   'transcribingShort': '文字起こし中…',
   'wakingShort': '起動中…',
@@ -404,6 +410,8 @@ export const es = {
   'preparation.cancelling': 'Cancelando preparación…',
 
   cloudReady: 'El reconocimiento de voz en la nube está listo.',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   discard: 'Descartar transcripción',
   transcribingShort: 'Transcribiendo…', wakingShort: 'Despertando…',
   provider: 'Servicio de reconocimiento', language: 'Idioma de reconocimiento',
@@ -505,6 +513,8 @@ export const fr = {
   'preparation.cancelling': 'Annulation de la préparation…',
 
   cloudReady: 'La reconnaissance vocale dans le cloud est prête.',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   discard: 'Supprimer la transcription',
   transcribingShort: 'Transcription…', wakingShort: 'Le réveil…',
   provider: 'Service de reconnaissance', language: 'Langue de reconnaissance',
@@ -606,6 +616,8 @@ export const de = {
   'preparation.cancelling': 'Vorbereitung abbrechen…',
 
   cloudReady: 'Die Cloud-Spracherkennung ist fertig.',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   discard: 'Transkript verwerfen',
   transcribingShort: 'Transkribieren…', wakingShort: 'Aufwachen…',
   provider: 'Anerkennungsdienst', language: 'Erkennungssprache',
@@ -707,6 +719,8 @@ export const ru = {
   'preparation.cancelling': 'Отмена подготовки…',
 
   cloudReady: 'Облачное распознавание речи готово.',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   discard: 'Удалить расшифровку',
   transcribingShort: 'Расшифровка…', wakingShort: 'Пробуждение…',
   provider: 'Служба распознавания', language: 'Язык распознавания',
@@ -808,6 +822,8 @@ export const pt = {
   'preparation.cancelling': 'Cancelando a preparação…',
 
   cloudReady: 'O reconhecimento de fala na nuvem está pronto.',
+  vosReady: 'V-Voice recognition service is ready.',
+  vos: 'Recordings are transcribed by V-Voice through V-Scheduler. v-harness does not download or load local recognition models.',
   discard: 'Descartar transcrição',
   transcribingShort: 'Transcrevendo…', wakingShort: 'Acordando…',
   provider: 'Serviço de reconhecimento', language: 'Linguagem de reconhecimento',

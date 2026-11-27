@@ -75,3 +75,13 @@
 # installed plugin bundles — see gateway/deployment-trust.mjs. A static row
 # would replace the whole config and drift from the plugin's versioned bundle
 # defaults.
+
+# VOS dictation reuses V-Voice through the tenant's V-Scheduler capability.
+- id: speech-to-text
+  config:
+    defaultProvider: v-scheduler-voice
+- id: speech-to-text-sensevoice
+  disabled: true
+- insert:
+    - id: speech-to-text-v-scheduler
+      name: /usr/local/share/vh-voice/index.mjs

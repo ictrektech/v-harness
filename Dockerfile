@@ -318,7 +318,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
       sudo util-linux ca-certificates curl wget \
       build-essential python3 python3-pip python3-venv linux-libc-dev xz-utils \
       postgresql-client redis-tools sqlite3 \
-      git openssh-client \
+      git gh openssh-client \
       procps iproute2 net-tools iputils-ping netcat-openbsd bind9-dnsutils \
       iptables nftables bubblewrap tini \
       lsof zip pkg-config \
@@ -350,6 +350,19 @@ RUN corepack enable \
 
 COPY gateway/ /opt/v-harness/gateway/
 COPY gateway/vos.patch.yml /usr/local/share/v-harness/vos.patch.yml
+COPY gateway/voice/ /usr/local/share/vh-voice/
+# GitLab CLI for the enabled change-request provider; official pinned release.
+RUN set -eu; arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) digest=b17f858b8d700f1607f8ec02fe092a455da6a8dd18dac3eb6ccb09db1befd4bf ;; \
+      arm64) digest=a529fd254824b0f3f8d2350080c9b46633b67ff3e2b11455836d7a680c498b09 ;; \
+      *) exit 1 ;; esac; \
+    curl -fL --retry 3 --connect-timeout 20 "https://gitlab.com/gitlab-org/cli/-/releases/v1.133.0/downloads/glab_1.133.0_linux_${arch}.tar.gz" -o /tmp/glab.tar.gz; \
+    echo "$digest  /tmp/glab.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/glab.tar.gz -C /tmp bin/glab; \
+    install -m 0755 /tmp/bin/glab /usr/local/bin/glab; \
+    rm -rf /tmp/glab.tar.gz /tmp/bin
+
 COPY bin/ /opt/v-harness/bin/
 COPY bin/install-mnemon.sh /tmp/install-mnemon.sh
 ARG SKILL_PYPI_INDEX=https://mirrors.huaweicloud.com/repository/pypi/simple

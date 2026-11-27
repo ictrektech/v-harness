@@ -131,7 +131,7 @@ Archify, Mnemon, PPT Design Skill and Vox Director are available to the Agent th
 
 For PGV, send `{"requestId":"<unique-id>","text":"Use /pgv to check which extensions are installed in my configured PostgreSQL database."}` to the same prompt endpoint. The Agent uses credentials already provisioned to the workspace and connects to the PGV service. v-harness exposes this through the existing prompt and event endpoints. From a VOS app on `vos_default`, connect directly to `pgv:5432` (PostgreSQL) or `pgv-redis:6379` (Redis). For Database Connector HTTP, use the base `http://pgv-viewer:8081/app/com.ictrek.pgv` on a trusted internal network or `https://<vos-host>:1180/app/com.ictrek.pgv` with the VOS CA. Call `POST /api/vos/login` with matching `Origin` and JSON `{"access_token":"<VOS admin token>"}` to receive the `pgv_vos_session` cookie. Use that cookie for `GET /api/auth/check` and `GET /api/connection/list`, and revoke it with `POST /api/auth/logout` and matching `Origin`. PGV credentials and the v-harness Bearer token serve separate APIs. Find the complete PGV operation fields, responses and errors in **PGV → Integration Guide → API & protocol reference**.
 
-In **Plugins → Installed**, you can enable ModSearch to handle web searches and Billion Context to manage context for eligible model requests in your profile. The default is disabled for both bundles. API-created sessions use the same tenant’s settings and plugin selection as sessions created in the web UI. The VOS API v1 session, prompt and event contracts are unchanged. See the [VOS app guide](https://twp99wyutbs.feishu.cn/docx/Iu0tdedumoMZ1LxMUSWckt7wn5v) for setup.
+In **Plugins → Installed**, you can enable ModSearch to handle web searches and Billion Context to manage context for eligible model requests in your profile. Billion Context is enabled by default; ModSearch is disabled by default. API-created sessions use the same tenant’s settings and plugin selection as sessions created in the web UI. The VOS API v1 session, prompt and event contracts are unchanged. See the [VOS app guide](https://twp99wyutbs.feishu.cn/docx/Iu0tdedumoMZ1LxMUSWckt7wn5v) for setup.
 
 ## Compute nodes and model deployments
 
@@ -141,8 +141,35 @@ You can also ask the agent to manage these resources. For example, “List compu
 
 ## OpenMotion and persistent files
 
-**OpenMotion 0.2.1** is preinstalled as `openmotion-dsh`, using the official local application's MCP tools and Skills. Enable it under **Plugins → Installed** and restart when prompted. Ask for an OpenMotion project, an animation, or a video export. Its project data is stored in `$HOME/workspace/OpenMotion`. Media providers need their own configuration. Large renders require sufficient CPU, memory and disk space.
+**OpenMotion 0.2.1** is preinstalled as `openmotion-dsh`, using the official local application's MCP tools and Skills. It is enabled by default. Ask for an OpenMotion project, an animation, or a video export. Its project data is stored in `$HOME/workspace/OpenMotion`. Media providers need their own configuration. Large renders require sufficient CPU, memory and disk space.
 
 Workspaces, designs, exported files, sessions and plugin settings under your tenant home are stored on the main VOS machine through `${VOS_APP_STORAGE_PATH}/data:/data`. Save deliverables under `$HOME/workspace`. The VOS app storage survives ordinary container replacement and app upgrades. Back up the app's storage before deleting its data or changing storage settings.
 
 These integrations use tenant-private Unix sockets, with the current VOS token supplied by the gateway. Public VOS API v1 sessions, prompts and events retain their existing contract. The native compute API remains owned by [Image Studio](https://github.com/ictrektech/image-studio) and node management by [V-Scheduler](https://github.com/ictrektech/V-Scheduler/blob/main/docs/node-management.md).
+
+
+## Voice input and enabled experimental features
+
+OpenMotion, Billion Context, Voice input, Custom plugin indexes, Auto authorization review, and Change requests & worktrees are enabled by default. Find the experimental features under **Plugins → Installed → Experimental plugins**. ModSearch remains disabled by default.
+
+Voice input selects **V-Voice · V-Scheduler**, reusing ASR models enabled in V-Voice with V-Scheduler user authorization and resource admission. v-harness does not automatically download or load local SenseVoice models. Install and start V-Voice and V-Scheduler, and prepare an ASR model in V-Voice. In Voice input settings, allow microphone access, select the input device and language, then record in the conversation composer. Check the transcription before sending the message. If unavailable, check the V-Voice model and scheduling resources and retry; refresh v-harness when sign-in expires. Upgrades migrate the former local SenseVoice selection to this service while retaining old model files.
+
+Git, GitHub CLI (`gh`), and GitLab CLI (`glab`) are installed in the image for change requests and worktrees. Private repositories still require signing in inside the tenant. Enabling custom plugin indexes does not add index sources. Enabling Auto authorization review makes that access mode available without changing existing conversations' access modes.
+
+Dictation uses the existing `speech/catalog`, `speech/configure`, `speech/prepare`, and `speech/transcribe` Remote protocols and does not automatically submit an Agent message. Public session API v1 paths, authentication, requests and events remain unchanged.
+
+### VOS speech Remote interface
+
+These same-origin browser routes use the base `/app/com.ictrek.v-harness/api/`, the tenant Cookie derived from VOS login, and Connection source checks. Discovery includes only V-Voice ASR models visible to the current user and never uses administrator service credentials. Send POST JSON such as `{"type":"client-request","rpcId":"<unique-id>","method":"speech/catalog","payload":{"args":{}}}`; the URL suffix and method use the same name below. Success is `{"type":"server-response","rpcId":"<same-id>","result":{"ok":true,"value":...}}`; failures have result.ok:false and result.error (code, message, details).
+
+| Method suffix | payload.args | Successful value |
+|---|---|---|
+| `speech/catalog` | Empty object | providers (id, name, location, languages, preparation), selection (providerId, language), maxAudioBytes (4194304 bytes), maxDurationSeconds (120 seconds) |
+| `speech/configure` | patch with optional providerId and language; omitted fields keep their values | No value; saves this user's selection |
+| `speech/prepare` | Required providerId; optional options; VOS needs no downloadSource | No value; checks service availability without downloading models |
+| `speech/cancelPreparation` | Required providerId | No value; cancels and awaits the current readiness check |
+| `speech/transcribe` | Required request.audioBase64; optional request.providerId and request.language | text (string, possibly empty), audioSeconds and inferenceSeconds (seconds) |
+
+The providerId is v-scheduler-voice. Protocol location is cloud, meaning an out-of-process service; this deployment actually uses V-Voice inside VOS. Language defaults to auto; accepted values are auto, zh, en, ja, ko, yue. preparation.phase is checking, ready, failed, or cancelled. checking includes startedAt (Unix milliseconds), failed includes message, and the other states omit those fields. Audio must be canonical base64 of complete 16 kHz mono 16-bit PCM WAV, within the catalog byte/time limits and V-Voice admission limits. Transcription waits at most 120 seconds. Cancellation aborts the request; V-Scheduler still confirms resource release.
+
+Excess encoded length returns speech/invalid-audio. WAV validation, unknown provider/language, missing ASR, recognition and admission failures return speech/transcription-failed with variable diagnostic details.reason. Missing VOS login returns HTTP 401; an untrusted source returns 403. Service failures use the Remote result, so also check result.ok. Check V-Voice and V-Scheduler before explicitly retrying an unavailable or busy service. There is no silent fallback to a local model.

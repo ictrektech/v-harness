@@ -12,10 +12,12 @@ const upstream = createServer(async (req, res) => {
     res.end(JSON.stringify({ models: [
       { id: 'native', qualified: `private/${owner}`, endpoints: ['chat_completions'] },
       { qualified: 'registered/embed', endpoints: ['embeddings'], capabilities: ['chat'] },
+      ...(owner === 'alice' ? [{id:'sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] : []),
     ] })); return;
   }
   let body = '';
   for await (const chunk of req) body += chunk;
+  if(req.url === '/v1/audio/transcriptions'){seen.at(-1).body=body;res.end(JSON.stringify({text:'voice fixture'}));return;}
   seen.at(-1).body = JSON.parse(body);
   if (req.url === '/v1/completions') {
     if (seen.at(-1).body.stream) {
@@ -108,4 +110,17 @@ test('text completion models support chat responses and split SSE frames', async
   const stream = await (await request('/text/v1/chat/completions', alice, { ...body, stream: true })).text();
   assert.match(stream, /"content":"hello"/);
   assert.match(stream, /data: \[DONE\]/);
+});
+
+test('voice discovery and multipart inference retain tenant identity', async () => {
+ const aliceModels=await request('/v1/audio/models',alice).then(r=>r.json());
+ assert.equal(aliceModels.data[0].id,'app-v-voice/sensevoice-int8');
+ assert.deepEqual((await request('/v1/audio/models',bob).then(r=>r.json())).data,[]);
+ assert.equal((await request('/v1/audio/models','invalid')).status,401);
+ assert.equal((await request('/v1/audio/transcriptions',alice,{})).status,415);
+ const body=new FormData();body.set('model','app-v-voice/sensevoice-int8');body.set('file',new Blob(['wave']),'recording.wav');
+ const result=await fetch(base+'/v1/audio/transcriptions',{method:'POST',headers:{authorization:'Bearer '+alice},body});
+ assert.deepEqual(await result.json(),{text:'voice fixture'});
+ assert.equal(seen.at(-1).authorization,'Bearer alice-token');
+ assert.ok(seen.at(-1).body.includes('app-v-voice/sensevoice-int8'));
 });

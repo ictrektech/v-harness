@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Voice input",
-    "description": "Transcribe recordings locally with SenseVoice; first use requires installing dependencies.",
+    "description": "Transcribe recordings with the selected service. VOS uses V-Voice through V-Scheduler without a separate local model.",
     "detail": "docs/DETAIL.md"
   }
 }

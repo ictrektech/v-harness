@@ -61,6 +61,10 @@ const PROFILE_BUNDLES = [
   '@deepseek-ai/dsh-base',
   '@deepseek-ai/dsh-web-app',
   AGENT_BUNDLE_NAME,
+  '@deepseek-ai/dsh-experimental-voice-input-bundle',
+  '@deepseek-ai/dsh-experimental-plugin-market-bundle',
+  '@deepseek-ai/dsh-experimental-auto-review',
+  '@deepseek-ai/dsh-experimental-forge-bundle',
   ...PROFILE_PLUGINS.filter(name => !optionalBundles.includes(name)),
 ]
 

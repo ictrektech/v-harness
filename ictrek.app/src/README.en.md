@@ -36,8 +36,8 @@ Open Plugins in the sidebar to find the preinstalled bundles. Open Settings → 
 - **Context** (`dsh-context@0.87.2`). Open Context in the conversation's right sidebar to inspect usage, composition and compaction history. [Usage guide](https://github.com/bowenliang123/dsh-context)
 - **Image Gen** (`dsh-image-gen@0.12.3`). Configure a provider and its credentials in the plugin settings, then ask for an image generation or edit in a conversation. [Provider configuration](https://github.com/shanliuling/dsh-image-gen)
 - **ModSearch** (`@liustack/modsearch@5.10.17`). In **Plugins → Installed**, enable the bundle. Open its settings, select a search engine, add a key if the engine requires one, then ask the agent to search the web. While enabled, ModSearch handles the workspace profile's web searches. [Engine setup](https://github.com/liustack/modsearch)
-- **Billion Context** (`billion-context@0.1.216`). In **Plugins → Installed**, enable the bundle, then start a conversation. It runs context management through a proxy inside your tenant. To return to the standard DSH compaction workflow, disable the whole bundle from the same page. [Upstream usage guide](https://github.com/ranxianglei/billion-context)
-- Both bundles start disabled. If the app prompts for a restart after enabling or disabling a bundle, click **Restart** and wait for v-harness to reopen.
+- **Billion Context** (`billion-context@0.1.216`). Enabled by default; start a conversation directly. It runs context management through a proxy inside your tenant. To return to the standard DSH compaction workflow, disable the whole bundle from the same page. [Upstream usage guide](https://github.com/ranxianglei/billion-context)
+- Billion Context starts enabled; ModSearch starts disabled. If the app prompts for a restart after enabling or disabling a bundle, click **Restart** and wait for v-harness to reopen.
 - **Mnemon** (`dsh-mnemon@0.5.56`). Open Memory System to inspect memory views and storage settings for your workspace. Follow the provider's instructions to connect an external memory space. [Usage guide](https://github.com/omdsh-dev/dsh-mnemon)
 - **Skills Manager** (`@michengai/dsh-skills-manager@1.5.5`). Open Plugins → Skills Manager to browse and manage skills in your tenant. [Usage guide](https://github.com/MichengAI/dsh-skills-manager)
 - **Agent teamwork**. Select a workspace and open a top-level conversation in v-harness. Click the model and reasoning-level button at the bottom right of the composer, select **Agent teamwork**, then turn on **Enable agent teamwork**. The switch starts off in new conversations and applies to the current top-level conversation. Describe the work to divide, then click **Show session panel** in the conversation header to see **Subagents** and **Shared tasks**. Turning off teamwork after a model request requires confirmation.
@@ -107,6 +107,17 @@ You can also ask the agent to manage these resources. For example, “List compu
 
 ## OpenMotion and persistent files
 
-**OpenMotion 0.2.1** is preinstalled as `openmotion-dsh`, using the official local application's MCP tools and Skills. Enable it under **Plugins → Installed** and restart when prompted. Ask for an OpenMotion project, an animation, or a video export. Its project data is stored in `$HOME/workspace/OpenMotion`. Media providers need their own configuration. Large renders require sufficient CPU, memory and disk space.
+**OpenMotion 0.2.1** is preinstalled as `openmotion-dsh`, using the official local application's MCP tools and Skills. It is enabled by default. Ask for an OpenMotion project, an animation, or a video export. Its project data is stored in `$HOME/workspace/OpenMotion`. Media providers need their own configuration. Large renders require sufficient CPU, memory and disk space.
 
 Workspaces, designs, exported files, sessions and plugin settings under your tenant home are stored on the main VOS machine through `${VOS_APP_STORAGE_PATH}/data:/data`. Save deliverables under `$HOME/workspace`. The VOS app storage survives ordinary container replacement and app upgrades. Back up the app's storage before deleting its data or changing storage settings.
+
+
+## Voice input and enabled experimental features
+
+OpenMotion, Billion Context, Voice input, Custom plugin indexes, Auto authorization review, and Change requests & worktrees are enabled by default. Find the experimental features under **Plugins → Installed → Experimental plugins**. ModSearch remains disabled by default.
+
+Voice input selects **V-Voice · V-Scheduler**, reusing ASR models enabled in V-Voice with V-Scheduler user authorization and resource admission. v-harness does not automatically download or load local SenseVoice models. Install and start V-Voice and V-Scheduler, and prepare an ASR model in V-Voice. In Voice input settings, allow microphone access, select the input device and language, then record in the conversation composer. Check the transcription before sending the message. If unavailable, check the V-Voice model and scheduling resources and retry; refresh v-harness when sign-in expires. Upgrades migrate the former local SenseVoice selection to this service while retaining old model files.
+
+Git, GitHub CLI (`gh`), and GitLab CLI (`glab`) are installed in the image for change requests and worktrees. Private repositories still require signing in inside the tenant. Enabling custom plugin indexes does not add index sources. Enabling Auto authorization review makes that access mode available without changing existing conversations' access modes.
+
+Dictation uses the existing `speech/catalog`, `speech/configure`, `speech/prepare`, and `speech/transcribe` Remote protocols and does not automatically submit an Agent message. Public session API v1 paths, authentication, requests and events remain unchanged.

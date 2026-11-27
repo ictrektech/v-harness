@@ -68,7 +68,7 @@ export function PreparationCard({ provider, connected, prepare, cancelPreparatio
   const summary = !connected ? t('reconnecting') : preparing && current ? t(`step.${current.kind}`, { name: provider.name })
     : state.phase === 'downloading' ? t('short.downloading')
       : state.phase === 'failed' ? t('short.failed')
-        : state.phase === 'ready' && provider.location === 'cloud' ? t('cloudReady')
+        : state.phase === 'ready' && provider.location === 'cloud' ? t(provider.id === 'v-scheduler-voice' ? 'vosReady' : 'cloudReady')
           : t(`preparation.${state.phase}`, { name: provider.name })
   return <section className={css.preparation} data-speech-provider={provider.id}>
     <strong>{provider.name}</strong>
@@ -154,7 +154,7 @@ export function VoicePreparation({ useSpeechReadiness, ...props }: Pick<InjectFa
         {selected?.languages.map(language =>
           <option key={language} value={language}>{languageNames[language] ?? language}</option>)}
       </select></label>
-      <p>{props.t(selected?.location === 'cloud' ? 'cloud' : 'local')}</p>
+      <p>{props.t(selected?.id === 'v-scheduler-voice' ? 'vos' : selected?.location === 'cloud' ? 'cloud' : 'local')}</p>
       {error && <p role="alert">{props.t('failed', { message: error })}</p>}
     </div>}
     {catalog?.providers.map(provider =>

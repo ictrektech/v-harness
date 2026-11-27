@@ -41,7 +41,7 @@ const personalReply = 'Personal model fixture completed';
 const personalKey = 'isolated-personal-model-test';
 let personalRequests = 0;
 let schedulerAvailable = true;
-const upstream = createServer((req, res) => {
+const upstream = createServer(async (req, res) => {
  const key = req.headers.authorization?.replace(/^Bearer /, '');
  const subject = tokens.get(key);
  res.setHeader('content-type', 'application/json');
@@ -58,7 +58,12 @@ const upstream = createServer((req, res) => {
      res.end('{}');
      return;
    }
-   res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }] }));
+   res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }, {id:'sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] }));
+ } else if (req.url === '/v1/audio/transcriptions') {
+   assert.match(req.headers['content-type'],/multipart\/form-data; boundary=/);
+   const chunks=[];for await(const chunk of req)chunks.push(chunk);
+   assert.ok(Buffer.concat(chunks).includes(Buffer.from('app-v-voice/sensevoice-int8')));
+   res.end(JSON.stringify({text:'voice fixture completed'}));
  } else if (req.url === '/v1/chat/completions') {
    req.resume();
    const personal = key === personalKey;
@@ -114,6 +119,13 @@ try {
        assert.ok(!inventory.some(item => item.moduleName === name && item.fiberPhase === 'active'), name);
        continue;
      }
+     if(name === 'openmotion-dsh') {
+       for(const id of ['mcp-openmotion','openmotion-skills']) {
+         const row=entry.rows.find(item=>item.rowId===id);
+         assert.ok(row?.entryId && inventory.some(item=>item.entryId===row.entryId && item.fiberPhase==='active'),id);
+       }
+       continue;
+     }
      const host = inventory.find(item => item.moduleName === name);
      assert.equal(host?.fiberPhase, 'active', JSON.stringify(host ?? { name }));
      const client = graph.entries.find(item => item.id === name);
@@ -142,6 +154,14 @@ try {
    console.log('AGENT TEAMS AUTHENTICATED STATE AND ARTWORK THROUGH VOS PREFIX: PASS');
    console.log('PINNED PLUGINS, ACTIVE HOST FIBERS, BROWSER BUNDLES AND CORE SETTINGS: PASS');
  }
+ const speech = await rpc('speech/catalog', {});
+ assert.equal(speech.selection.providerId,'v-scheduler-voice');
+ assert.ok(speech.providers.some(provider=>provider.id==='v-scheduler-voice'));
+ assert.ok(!speech.providers.some(provider=>provider.id==='sensevoice-local'));
+ const wave=Buffer.alloc(32044);wave.write('RIFF');wave.writeUInt32LE(32036,4);wave.write('WAVE',8);wave.write('fmt ',12);wave.writeUInt32LE(16,16);wave.writeUInt16LE(1,20);wave.writeUInt16LE(1,22);wave.writeUInt32LE(16000,24);wave.writeUInt32LE(32000,28);wave.writeUInt16LE(2,32);wave.writeUInt16LE(16,34);wave.write('data',36);wave.writeUInt32LE(32000,40);
+ const transcript=await rpc('speech/transcribe',{request:{audioBase64:wave.toString('base64'),language:'auto'}});
+ assert.equal(transcript.text,'voice fixture completed');assert.equal(transcript.audioSeconds,1);
+ console.log('DEFAULT V-VOICE PROVIDER WITHOUT LOCAL MODEL INSTALLATION: PASS');
  const workspace = await rpc('workspace/create', { request: { path: '/home/startup-smoke/workspace' } });
  assert.ok(workspace.workspace.workspaceId);
  console.log('WORKSPACE CONTROLLER CREATE: PASS');

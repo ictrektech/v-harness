@@ -131,7 +131,7 @@ Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。
 
 调用 PGV 时，向同一个提示词端点提交 `{"requestId":"<唯一ID>","text":"用 /pgv 检查已配置的 PostgreSQL 数据库安装了哪些扩展。"}`。Agent 使用已为工作区配置的服务凭据连接 PGV，通过现有提示词和事件端点返回结果。加入 `vos_default` 的 VOS 应用也可直连 `pgv:5432`（PostgreSQL）或 `pgv-redis:6379`（Redis）。数据库连接器 HTTP 基址为可信内网的 `http://pgv-viewer:8081/app/com.ictrek.pgv`，或使用 VOS CA 的 `https://<vos-host>:1180/app/com.ictrek.pgv`。使用同源 `Origin` 和 JSON `{"access_token":"<VOS admin 令牌>"}` 调用 `POST /api/vos/login` 获取 `pgv_vos_session` Cookie。携带该 Cookie 调用 `GET /api/auth/check` 和 `GET /api/connection/list`，最后携带 Cookie 与同源 `Origin` 调用 `POST /api/auth/logout` 注销。PGV 服务凭据和 v-harness Bearer 令牌各用于对应的接口。PGV 完整请求字段、响应和错误见 **PGV → 接入指南 → API 与协议参考**。
 
-在「插件 → 已安装」中，可以启用 ModSearch 处理网页搜索，或启用 Billion Context 管理符合条件的模型请求上下文。两个插件均默认关闭。通过 API 创建的会话使用当前租户在 Web 界面配置的插件及设置。VOS API v1 的会话、提示词和事件协议保持一致。安装使用步骤见 [VAI 应用使用文档](https://twp99wyutbs.feishu.cn/docx/DTWGdRXGhoblP5xue4Gcf8Bpnsc)。
+在「插件 → 已安装」中，可以启用 ModSearch 处理网页搜索，或启用 Billion Context 管理符合条件的模型请求上下文。Billion Context 默认开启，ModSearch 默认关闭。通过 API 创建的会话使用当前租户在 Web 界面配置的插件及设置。VOS API v1 的会话、提示词和事件协议保持一致。安装使用步骤见 [VAI 应用使用文档](https://twp99wyutbs.feishu.cn/docx/DTWGdRXGhoblP5xue4Gcf8Bpnsc)。
 
 ## 算力节点与模型部署
 
@@ -141,8 +141,35 @@ Archify、Mnemon、PPT Design Skill 和 Vox Director 沿用会话任务入口。
 
 ## OpenMotion 与文件持久化
 
-预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。在「插件 → 已安装」启用，按提示重启，即可在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
+预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。默认开启，可直接在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
 
 租户主目录中的工作区、设计文件、导出文件、会话和插件设置通过 `${VOS_APP_STORAGE_PATH}/data:/data` 保存在主 VOS 机器上。交付文件请保存在 `$HOME/workspace`。普通容器重建和应用升级会沿用该存储。删除应用数据或修改存储设置前，请先备份应用存储。
 
 这些集成通过租户私有 Unix socket 调用，由网关提供当前 VOS 令牌。公共 VOS API v1 的会话、提示词和事件协议保持原有契约。原生算力 API 由 [Image Studio](https://github.com/ictrektech/image-studio) 维护，节点管理 API 由 [V-Scheduler](https://github.com/ictrektech/V-Scheduler/blob/main/docs/node-management.md) 维护。
+
+
+## 默认开启的语音与实验功能
+
+OpenMotion、Billion Context，以及「插件 → 已安装 → 实验性插件」中的语音输入、自定义插件索引、自动授权审查、变更请求与工作树均默认开启。ModSearch 保持默认关闭。
+
+语音输入默认选择 **V-Voice · V-Scheduler**，复用 V-Voice 已启用的 ASR 模型，识别请求经过 V-Scheduler 的用户权限和资源调度；v-harness 不自动下载或装载本地 SenseVoice 模型。先安装并启动 V-Voice 与 V-Scheduler，在 V-Voice 准备 ASR 模型。然后在语音输入详情页允许麦克风、选择输入设备和识别语言，在会话输入区录音，结束后核对转写文字，再发送消息。服务未就绪时检查 V-Voice 模型和调度资源，再重试；登录过期时刷新 v-harness。升级会把原本地 SenseVoice 选择迁移至该服务，保留旧模型文件。
+
+变更请求与工作树所需 Git、GitHub CLI (`gh`) 和 GitLab CLI (`glab`) 已随镜像安装。访问私有仓库仍需在当前租户中完成相应账号登录；开启自定义插件索引不会自动添加索引源。默认启用自动授权审查只使该访问模式可选，不会改变已有会话的访问模式。
+
+语音转写使用已有 `speech/catalog`、`speech/configure`、`speech/prepare` 和 `speech/transcribe` Remote 协议，麦克风音频不会自动提交为 Agent 消息。公开会话 API v1 的路径、鉴权、请求和事件格式不变。
+
+### VOS 语音 Remote 接口
+
+以下为同源浏览器接口，基址 `/app/com.ictrek.v-harness/api/`，使用 VOS 登录派生的租户 Cookie 和 Connection 来源校验；仅返回当前用户可见的 V-Voice ASR 模型，不使用管理员服务凭据。POST JSON 外壳为 `{"type":"client-request","rpcId":"<unique-id>","method":"speech/catalog","payload":{"args":{}}}`，URL 后缀和 method 使用下表同一方法名。成功返回 `{"type":"server-response","rpcId":"<same-id>","result":{"ok":true,"value":...}}`；失败返回 `result.ok:false` 及 `result.error`（code、message、details）。
+
+| 方法后缀 | payload.args | 成功 value |
+|---|---|---|
+| `speech/catalog` | 空对象 | `providers`（id、name、location、languages、preparation）、`selection`（providerId、language）、`maxAudioBytes`（4194304 字节）、`maxDurationSeconds`（120 秒） |
+| `speech/configure` | `patch`：可选 providerId、language；省略字段保持原设置 | 无返回值；保存当前用户的选择 |
+| `speech/prepare` | 必填 providerId；可选 options；VOS 服务无需 downloadSource | 无返回值；重新检查服务可用性，不下载模型 |
+| `speech/cancelPreparation` | 必填 providerId | 无返回值；取消并等待当前服务检查结束 |
+| `speech/transcribe` | 必填 request.audioBase64；可选 request.providerId、request.language | text（字符串，可为空）、audioSeconds、inferenceSeconds（均为秒） |
+
+本部署 providerId 为 `v-scheduler-voice`，location 为 `cloud`（协议中表示进程外服务，此处实际为 VOS 内的 V-Voice）。默认 language 为 auto；完整可选值为 auto、zh、en、ja、ko、yue。preparation.phase 为 checking、ready、failed、cancelled；checking 含 startedAt（Unix 毫秒），failed 含 message，其他状态不带这些字段。音频必须是完整、标准 base64 编码的 16 kHz、单声道、16-bit PCM WAV，受上述大小与时长限制及 V-Voice 自身准入限制约束。转写最多等待 120 秒，取消会中止请求，资源释放仍由 V-Scheduler 确认。
+
+超出 base64 编码长度返回 `speech/invalid-audio`；WAV 校验、未知服务/语言、缺少 ASR 模型、识别或调度失败返回 `speech/transcription-failed`，details.reason 为可变诊断文字。没有 VOS 登录返回 HTTP 401，来源不可信返回 403；服务内错误由 Remote 结果表达，应同时检查 result.ok。服务未就绪或资源忙时先检查 V-Voice/V-Scheduler，再明确重试；不会静默切换到本地模型。

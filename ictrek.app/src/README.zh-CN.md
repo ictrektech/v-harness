@@ -36,8 +36,8 @@ VOS 版本以前缀跟随官方 DSH 版本，后缀 `.vos.xx` 记录本项目的
 - **Context**（`dsh-context@0.87.2`）。从会话右栏打开 Context，查看上下文用量、组成和压缩历史。 [使用说明](https://github.com/bowenliang123/dsh-context)
 - **Image Gen**（`dsh-image-gen@0.12.3`）。从插件设置配置可用的生图供应商和凭据，保存后在会话中请求生成或编辑图片。 [供应商配置](https://github.com/shanliuling/dsh-image-gen)
 - **ModSearch**（`@liustack/modsearch@5.10.17`）。在「插件 → 已安装」中启用插件。在插件设置中选择搜索引擎，按引擎要求填写 API 密钥，再在对话里让智能体搜索网页。启用后，当前用户的 Web 搜索由 ModSearch 接管。[搜索引擎配置](https://github.com/liustack/modsearch)
-- **Billion Context**（`billion-context@0.1.216`）。在「插件 → 已安装」中启用插件，再开始对话。它通过租户内部的代理管理会话上下文。要恢复 DSH 默认压缩方式，请在同一页面停用整个插件。[上游使用指南](https://github.com/ranxianglei/billion-context)
-- 这两个插件默认关闭。启用或停用后若提示重启，请点击「重启」并等待 v-harness 重新打开。
+- **Billion Context**（`billion-context@0.1.216`）。默认开启，可直接开始对话。它通过租户内部的代理管理会话上下文。要恢复 DSH 默认压缩方式，请在同一页面停用整个插件。[上游使用指南](https://github.com/ranxianglei/billion-context)
+- Billion Context 默认开启，ModSearch 默认关闭。启用或停用后若提示重启，请点击「重启」并等待 v-harness 重新打开。
 - **Mnemon**（`dsh-mnemon@0.5.56`）。从插件面板查看 Memory System，检查当前工作区的记忆视图和存储设置。首次连接外部记忆空间时，按供应商说明配置凭据。 [使用说明](https://github.com/omdsh-dev/dsh-mnemon)
 - **Skills Manager**（`@michengai/dsh-skills-manager@1.5.5`）。打开「插件 → Skills Manager」，查看和管理租户的技能。 [使用说明](https://github.com/MichengAI/dsh-skills-manager)
 - **智能体团队协作**。在 v-harness 选择工作区并打开根会话，点击输入框右下角显示「模型名 + 推理等级」的按钮，在弹出的菜单中点击「智能体团队协作」，再打开「开启智能体团队协作」。新会话默认关闭，开关只影响当前根会话。启用后描述分工，点击会话顶部的「显示会话面板」，在「子智能体」和「共享任务」查看成员与进度。有模型请求记录的会话停用时需要确认。
@@ -107,6 +107,17 @@ Agent API 的鉴权和会话用法见「设置 → API 文档」。新技能沿�
 
 ## OpenMotion 与文件持久化
 
-预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。在「插件 → 已安装」启用，按提示重启，即可在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
+预装 **OpenMotion 0.2.1**，插件名称为 `openmotion-dsh`，使用官方本地应用的 MCP 工具和 Skills。默认开启，可直接在对话中请求创建 OpenMotion 项目、动画或导出视频。项目数据写入 `$HOME/workspace/OpenMotion`。媒体供应商需要单独配置，较大的渲染需要足够的 CPU、内存和磁盘。
 
 租户主目录中的工作区、设计文件、导出文件、会话和插件设置通过 `${VOS_APP_STORAGE_PATH}/data:/data` 保存在主 VOS 机器上。交付文件请保存在 `$HOME/workspace`。普通容器重建和应用升级会沿用该存储。删除应用数据或修改存储设置前，请先备份应用存储。
+
+
+## 默认开启的语音与实验功能
+
+OpenMotion、Billion Context，以及「插件 → 已安装 → 实验性插件」中的语音输入、自定义插件索引、自动授权审查、变更请求与工作树均默认开启。ModSearch 保持默认关闭。
+
+语音输入默认选择 **V-Voice · V-Scheduler**，复用 V-Voice 已启用的 ASR 模型，识别请求经过 V-Scheduler 的用户权限和资源调度；v-harness 不自动下载或装载本地 SenseVoice 模型。先安装并启动 V-Voice 与 V-Scheduler，在 V-Voice 准备 ASR 模型。然后在语音输入详情页允许麦克风、选择输入设备和识别语言，在会话输入区录音，结束后核对转写文字，再发送消息。服务未就绪时检查 V-Voice 模型和调度资源，再重试；登录过期时刷新 v-harness。升级会把原本地 SenseVoice 选择迁移至该服务，保留旧模型文件。
+
+变更请求与工作树所需 Git、GitHub CLI (`gh`) 和 GitLab CLI (`glab`) 已随镜像安装。访问私有仓库仍需在当前租户中完成相应账号登录；开启自定义插件索引不会自动添加索引源。默认启用自动授权审查只使该访问模式可选，不会改变已有会话的访问模式。
+
+语音转写使用已有 `speech/catalog`、`speech/configure`、`speech/prepare` 和 `speech/transcribe` Remote 协议，麦克风音频不会自动提交为 Agent 消息。公开会话 API v1 的路径、鉴权、请求和事件格式不变。

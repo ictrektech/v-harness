@@ -15,7 +15,7 @@
 
 ## 插件安装
 
-预装的 12 个插件及其版本由 [镜像配置](../gateway/agent-plugins/registry-plugins.json) 固定。用户在侧栏「插件」查看预装插件，在「设置 → 内置插件」检查运行状态。插件市场默认使用「全球」下载区域，标准 npm 安装使用官方源；可在插件市场设置中调整。ModSearch 与 Billion Context 默认关闭，可在「插件 → 已安装」中按需启用。旧用户首次启动时移除 DS Bot 及其设置入口，保留插件数据。
+预装的 12 个插件及其版本由 [镜像配置](../gateway/agent-plugins/registry-plugins.json) 固定。用户在侧栏「插件」查看预装插件，在「设置 → 内置插件」检查运行状态。插件市场默认使用「全球」下载区域，标准 npm 安装使用官方源；可在插件市场设置中调整。OpenMotion、Billion Context、语音输入、自定义插件索引、自动授权审查和变更请求与工作树默认开启；仅 ModSearch 默认关闭。旧用户首次启动时移除 DS Bot 及其设置入口，保留插件数据。
 
 ## VOS 认证
 
@@ -97,4 +97,15 @@ Start PGV on the same VOS device, then use `/pgv` with the workspace's approved 
 
 V-Scheduler 自动发现的 ModelInfer DeepSeek V4 对话模型支持在会话模型选择器设置「关闭」「低」「高」「最高」。默认「高」。沿用现有会话模型目录和 Chat Completions 端点，分别发送 `reasoning_effort: "none"` 或 `reasoning_effort: "high"`。
 
-本版基于 DSH 0.2.3-alpha.2。预装 OpenMotion 本地应用 0.2.1 的 MCP/Skills 插件，默认关闭。在「设置 → VOS 运维」查看节点与应用后端，并进入 V-Scheduler 节点管理或 Image Studio 部署界面。会话可使用内置 Image Studio 技能执行节点管理、后端部署和模型传输注册。文件持久化路径及完整流程见包内中英文 README。
+本版基于 DSH 0.2.3-alpha.2。预装 OpenMotion 本地应用 0.2.1 的 MCP/Skills 插件，默认开启。在「设置 → VOS 运维」查看节点与应用后端，并进入 V-Scheduler 节点管理或 Image Studio 部署界面。会话可使用内置 Image Studio 技能执行节点管理、后端部署和模型传输注册。文件持久化路径及完整流程见包内中英文 README。
+
+
+## 默认开启的语音与实验功能
+
+OpenMotion、Billion Context，以及「插件 → 已安装 → 实验性插件」中的语音输入、自定义插件索引、自动授权审查、变更请求与工作树均默认开启。ModSearch 保持默认关闭。
+
+语音输入默认选择 **V-Voice · V-Scheduler**，复用 V-Voice 已启用的 ASR 模型，识别请求经过 V-Scheduler 的用户权限和资源调度；v-harness 不自动下载或装载本地 SenseVoice 模型。先安装并启动 V-Voice 与 V-Scheduler，在 V-Voice 准备 ASR 模型。然后在语音输入详情页允许麦克风、选择输入设备和识别语言，在会话输入区录音，结束后核对转写文字，再发送消息。服务未就绪时检查 V-Voice 模型和调度资源，再重试；登录过期时刷新 v-harness。升级会把原本地 SenseVoice 选择迁移至该服务，保留旧模型文件。
+
+变更请求与工作树所需 Git、GitHub CLI (`gh`) 和 GitLab CLI (`glab`) 已随镜像安装。访问私有仓库仍需在当前租户中完成相应账号登录；开启自定义插件索引不会自动添加索引源。默认启用自动授权审查只使该访问模式可选，不会改变已有会话的访问模式。
+
+语音转写使用已有 `speech/catalog`、`speech/configure`、`speech/prepare` 和 `speech/transcribe` Remote 协议，麦克风音频不会自动提交为 Agent 消息。公开会话 API v1 的路径、鉴权、请求和事件格式不变。

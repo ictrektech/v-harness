@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "语音输入",
-    "description": "在本机使用 SenseVoice 转写录音，首次使用需安装依赖。",
+    "description": "通过所选服务转写录音；VOS 默认复用 V-Voice（经 V-Scheduler），无需另装本地模型。",
     "detail": "docs/DETAIL.zh.md"
   }
 }
