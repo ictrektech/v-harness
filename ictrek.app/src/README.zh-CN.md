@@ -127,7 +127,7 @@ OpenMotion、Billion Context，以及「插件 → 已安装 → 实验性插件
 
 语音输入默认选择 **V-Voice · V-Scheduler**，复用 V-Voice 已启用的 ASR 模型，识别请求经过 V-Scheduler 的用户权限和资源调度；v-harness 发布镜像不包含本地 SenseVoice 插件及其 sherpa-onnx 原生依赖，不下载或装载本地识别模型。先安装并启动 V-Voice 与 V-Scheduler，在 V-Voice 准备 ASR 模型。然后在语音输入详情页允许麦克风、选择输入设备和识别语言，在会话输入区录音，结束后核对转写文字，再发送消息。服务未就绪时检查 V-Voice 模型和调度资源，再重试；登录过期时刷新 v-harness。升级会把原本地 SenseVoice 选择迁移至该服务，保留旧模型文件。
 
-在「插件 → 已安装 → 语音输入」打开「识别服务 / 运算节点」下拉框。`V-Voice · V-Scheduler` 使用自动路由；带模型名和节点 ID 的 `V-Voice · <模型> · <节点>` 选项使用该节点已登记的部署和执行器。先由管理员在 V-Voice 准备后端与模型，点击「刷新运算节点」后再选择。选择按当前账号保存，录音开始时固定；节点失效或执行位置不匹配时本次识别失败，不切换到其他节点。刷新后重新选择可用项，再录音。节点功能要求 V-Voice 提供 `/api/v1/compute/placements` 和 `/api/v1/compute/transcriptions`；旧版只显示自动服务。
+在「插件 → 已安装 → 语音输入」打开「识别服务 / 运算节点」下拉框。`V-Voice · V-Scheduler` 使用自动路由；带模型名和节点 ID 的 `V-Voice · <模型> · <节点>` 选项使用该节点已登记的部署和执行器。先由管理员在 V-Voice 准备后端与模型，点击「刷新运算节点」后再选择。选择按当前账号保存，录音开始时固定；节点失效或执行位置不匹配时本次识别失败，不切换到其他节点。刷新后重新选择可用项，再录音。节点功能要求配套版本通过 V-Scheduler 提供 `/api/v1/voice/compute/placements` 和 `/api/v1/voice/compute/transcriptions`；旧版只显示自动服务。
 
 变更请求与工作树所需 Git、GitHub CLI (`gh`) 和 GitLab CLI (`glab`) 已随镜像安装。访问私有仓库仍需在当前租户中完成相应账号登录；开启自定义插件索引不会自动添加索引源。默认启用自动授权审查只使该访问模式可选，不会改变已有会话的访问模式。
 

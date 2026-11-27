@@ -8,6 +8,7 @@
         args: ["--experimental-strip-types", "/usr/local/share/vh-openmotion/mcp.ts"]
         cwd: !!js process.env.HOME + '/workspace'
         env:
+          PORT: '4173'
           MOTION_DATA_DIR: !!js process.env.HOME + '/workspace/OpenMotion'
           VH_TENANT_IP: !!js process.env.VH_TENANT_IP
         failOnStartupError: true

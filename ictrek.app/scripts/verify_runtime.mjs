@@ -63,9 +63,9 @@ const upstream = createServer(async (req, res) => {
      return;
    }
    res.end(JSON.stringify({ models: [{ id: model, endpoints: ['chat/completions'] }, {id:'sensevoice-int8',qualified:'v-voice/sensevoice-int8',upstream_id:'app-v-voice',endpoints:['audio/transcriptions']}] }));
- } else if(req.url === '/api/v1/compute/placements') {
+ } else if(req.url === '/api/v1/voice/compute/placements') {
    res.end(JSON.stringify({items:[{deployment_id:'a'.repeat(32),executor_id:'fixture-voice-worker',node_id:'fixture-remote-node',model_id:'sensevoice-int8',task_type:'voice.transcribe'}]}));
- } else if(req.url === '/api/v1/compute/transcriptions') {
+ } else if(req.url === '/api/v1/voice/compute/transcriptions') {
    const chunks=[];for await(const chunk of req)chunks.push(chunk);
    assert.ok(Buffer.concat(chunks).includes(Buffer.from('fixture-voice-worker')));
    res.end(JSON.stringify({deployment_id:'a'.repeat(32),executor_id:'fixture-voice-worker',node_id:'fixture-remote-node',transcription:{text:'remote voice fixture completed'}}));
@@ -77,7 +77,7 @@ const upstream = createServer(async (req, res) => {
  } else if (req.url === '/v1/chat/completions') {
    const pieces=[];for await(const piece of req)pieces.push(piece);
    const requestBody=JSON.parse(Buffer.concat(pieces).toString());
-   if(JSON.stringify(requestBody.messages).includes('OpenMotionSmoke')) {
+   if(requestBody.tools?.length && JSON.stringify(requestBody.messages).includes('OpenMotionSmoke')) {
      const result=requestBody.messages.find(message=>message.role==='tool' && message.tool_call_id==='motion-smoke');
      let delta,finish;
      if(result) {
@@ -109,7 +109,7 @@ const upstream = createServer(async (req, res) => {
  }
 });
 upstream.listen(18090,'127.0.0.1'); await once(upstream,'listening');
-const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090',V_VOICE_URL:'http://127.0.0.1:18090',VH_NET_ALLOW_CIDRS:'127.0.0.1/32'},stdio:['ignore','inherit','inherit']});
+const gateway=spawn('/opt/v-harness/bin/entrypoint',[],{env:{...process.env,VOS_OIDC_USERINFO_URL:'http://127.0.0.1:18090/userinfo',V_SCHEDULER_URL:'http://127.0.0.1:18090',VH_NET_ALLOW_CIDRS:'127.0.0.1/32'},stdio:['ignore','inherit','inherit']});
 try {
  const base='http://127.0.0.1:8080';
  for(let i=0;i<100;i++){try{const r=await fetch(base+'/__vh/health');if(r.ok)break;}catch{} await new Promise(r=>setTimeout(r,300));}

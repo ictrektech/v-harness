@@ -6,7 +6,6 @@ import { GATEWAY_IP } from './addressing.mjs';
 import { accessTokenFor } from './vos-token-store.mjs';
 
 const ORIGIN = process.env.V_SCHEDULER_URL ?? 'http://v-scheduler:8080';
-const VOICE_ORIGIN = process.env.V_VOICE_URL ?? 'http://v-voice-backend:7070';
 const keys = new Map();
 
 /**
@@ -105,8 +104,8 @@ export async function handleScheduler(req, res, path) {
     return reply(200,{data});
   }
   if (req.method === 'GET' && path === '/v1/audio/placements') {
-    const response = await fetch(`${VOICE_ORIGIN}/api/v1/compute/placements`, {headers:{authorization:`Bearer ${token}`},signal:AbortSignal.timeout(15000)});
-    // Older V-Voice installations still support automatic Scheduler recognition.
+    const response = await fetch(`${ORIGIN}/api/v1/voice/compute/placements`, {headers:{authorization:`Bearer ${token}`},signal:AbortSignal.timeout(15000)});
+    // Older V-Scheduler installations still support automatic Scheduler recognition.
     if (response.status === 404) return reply(200,{items:[]});
     if (!response.ok) return reply(response.status,{error:{message:'V-Voice compute discovery failed'}});
     const payload = await response.json();
@@ -120,7 +119,7 @@ export async function handleScheduler(req, res, path) {
     if (!contentType.startsWith('multipart/form-data;')) return reply(415,{error:{message:'Use multipart/form-data for speech'}});
     const abort = new AbortController();
     res.once('close',()=>abort.abort());
-    const url = path === '/v1/audio/transcriptions' ? `${ORIGIN}${path}` : `${VOICE_ORIGIN}/api/v1/compute/transcriptions`;
+    const url = path === '/v1/audio/transcriptions' ? `${ORIGIN}${path}` : `${ORIGIN}/api/v1/voice/compute/transcriptions`;
     const response = await fetch(url, {method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':contentType},body:req,duplex:'half',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(120000)])});
     res.writeHead(response.status,{'content-type':response.headers.get('content-type') ?? 'application/json','cache-control':'no-store'});
     if(response.body)await pipeline(Readable.fromWeb(response.body),res);else res.end();
