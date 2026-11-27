@@ -25,6 +25,8 @@ workspace, and private deliverables.
 
 You can run v-harness with a personal provider. V-Scheduler is an optional dependency.
 
+The v-harness installation manifest declares only V-Scheduler. V-Voice, Image Studio and other API integrations are not app dependencies. Install those services when using their features; their absence does not block v-harness installation, upgrades or personal models. This changes installation constraints only; feature API requests and responses are unchanged.
+
 1. Open Account menu → Settings → Models → Add model provider.
 2. Select **Third-party model provider**, choose a provider from the catalog, enter your API key and save. For a self-hosted or compatible endpoint, choose **Custom model API**, enter a provider ID, base URL, protocol, model IDs and any required key, then save. The endpoint must be reachable from v-harness.
 3. Under **Default model for new conversations**, select your personal model. To switch in the current conversation, use the model menu at the bottom right of the composer. Existing conversations keep their selected models. If your provider is missing, refresh the catalog and check the endpoint, protocol, model IDs and credentials.

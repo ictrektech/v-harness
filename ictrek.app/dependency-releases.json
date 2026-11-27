@@ -1,5 +1,3 @@
 {
-  "com.ictrek.v-scheduler": "ictrektech/V-Scheduler",
-  "com.ictrek.image-studio": "ictrektech/image-studio",
-  "com.ictrek.v-voice": "ictrektech/V-yovoice"
+  "com.ictrek.v-scheduler": "ictrektech/V-Scheduler"
 }

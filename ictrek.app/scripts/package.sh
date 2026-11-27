@@ -266,6 +266,9 @@ PY
 import sys, yaml
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     manifest = yaml.safe_load(f) or {}
+dependencies = (manifest.get("dependencies") or {}).get("apps") or []
+if [item.get("id") for item in dependencies] != ["com.ictrek.v-scheduler"]:
+    raise SystemExit("v-harness declares only V-Scheduler as an app dependency; API integrations are not installation dependencies")
 profiles = manifest.get("profiles") or []
 names = [str(item.get("name")) for item in profiles if isinstance(item, dict)]
 if sorted(names) != ["amd", "arm"]:

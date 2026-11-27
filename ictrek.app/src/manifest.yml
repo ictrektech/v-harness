@@ -19,12 +19,6 @@ dependencies:
     - id: com.ictrek.v-scheduler
       version: latest
       optional: true
-    - id: com.ictrek.image-studio
-      version: latest
-      optional: true
-    - id: com.ictrek.v-voice
-      version: latest
-      optional: true
 
 oauth2:
   client:
