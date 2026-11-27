@@ -120,6 +120,14 @@ export class HostConnectionService extends Service implements HostConnectionHand
     return this.authentication.authenticate(request)
   }
 
+  /** Legacy plugin gate, using the Connection owner's declared authentication scope. */
+  requestRejection(request: ConnectionTrustRequest): 401 | 403 | 503 | undefined {
+    if (!this.isTrustedRequest(request)) return 403
+    if (this.disposed) return 401
+    const admission = this.owner['connection.authentication'].authenticate(request)
+    return 'rejection' in admission ? admission.rejection : undefined
+  }
+
   /** Create one in-process Peer owned by the Context that read this service. */
   createPeer(options: {
     readonly principal: Principal

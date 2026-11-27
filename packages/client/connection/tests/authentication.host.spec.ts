@@ -15,6 +15,24 @@ function setup(): { ctx: Context; connection: HostConnectionService; authenticat
 }
 const request = { headers: { host: 'localhost' } }
 
+it('keeps legacy plugin admission scoped to the owner and fails closed', async () => {
+  const { ctx, connection, authentication } = setup()
+  const peer = connection.createPeer({ principal: { kind: 'owner' } })
+  let check: (request: { headers: Record<string, string> }) => number | undefined = () => 503
+  const plugin = ctx.plugin({
+    inject: ['connection'],
+    apply(scope: Context) { check = request => scope.connection.requestRejection(request) },
+  })
+  await plugin.await()
+  expect(check(request)).toBe(401)
+  const remove = authentication.register({ authenticate: () => peer })
+  expect(check(request)).toBeUndefined()
+  expect(check({ headers: { host: 'untrusted.example', origin: 'https://untrusted.example' } })).toBe(403)
+  await peer.dispose()
+  expect(check(request)).toBe(401)
+  await remove()
+})
+
 it('requires a WebServer for a physical RPC channel', () => {
   const { connection } = setup()
   expect(() => connection.rpc.handle('/custom', async () => ({ ok: true, value: null })))

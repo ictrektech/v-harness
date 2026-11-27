@@ -224,6 +224,9 @@ export interface HostConnectionHandle {
    */
   admit(request: ConnectionTrustRequest): PeerAdmission
 
+  /** Compatibility gate for bundled plugins written before admit(); undefined means admitted. */
+  requestRejection(request: ConnectionTrustRequest): 401 | 403 | 503 | undefined
+
   /**
    * Create an independent in-process Peer, disposed with the Context that read `ctx.connection`.
    * @param options - fixed principal and interaction participation (default answer).
