@@ -1,5 +1,7 @@
 # v-harness
 
+During upgrades, keep app storage and select `amd-cpu` for `amd` or `arm-cpu` for `arm`. Supply the new `profiles` explicitly when using the VOS API. Select the matching old Profile on rollback. Application APIs stay the same.
+
 VOS versions follow the official DSH version with a `.vos.xx` revision suffix, such as `0.2.2-rc.1.vos.01`. The revision increments for each release using the same upstream version and restarts at `.vos.01` when the upstream version changes.
 
 A multi-user agent workspace. Every user has independent sessions, a private

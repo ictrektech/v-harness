@@ -271,8 +271,8 @@ if [item.get("id") for item in dependencies] != ["com.ictrek.v-scheduler"]:
     raise SystemExit("v-harness declares only V-Scheduler as an app dependency; API integrations are not installation dependencies")
 profiles = manifest.get("profiles") or []
 names = [str(item.get("name")) for item in profiles if isinstance(item, dict)]
-if sorted(names) != ["amd", "arm"]:
-    raise SystemExit(f"manifest profiles must be amd and arm, got {names!r}")
+if sorted(names) != ["amd-cpu", "arm-cpu"]:
+    raise SystemExit(f"manifest profiles must be amd-cpu and arm-cpu, got {names!r}")
 for item in profiles:
     conflicts = item.get("conflicts") or []
     missing = [other for other in names if other != item.get("name") and other not in conflicts]

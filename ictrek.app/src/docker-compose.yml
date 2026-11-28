@@ -98,7 +98,7 @@ x-v-harness-base: &v-harness-base
 services:
   v-harness-amd:
     <<: *v-harness-base
-    profiles: ["amd"]
+    profiles: ["amd-cpu"]
     image: ${V_HARNESS_AMD_IMAGE}
     pull_policy: always
     mem_limit: ${V_HARNESS_MEM_LIMIT:-8g}
@@ -106,7 +106,7 @@ services:
 
   v-harness-arm:
     <<: *v-harness-base
-    profiles: ["arm"]
+    profiles: ["arm-cpu"]
     image: ${V_HARNESS_ARM_IMAGE}
     pull_policy: always
     mem_limit: ${V_HARNESS_MEM_LIMIT:-8g}
